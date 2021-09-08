@@ -15,27 +15,15 @@ KResultOr<FlatPtr> Process::sys$realpath(Userspace<const Syscall::SC_realpath_pa
 {
     VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(rpath);
+    auto params = TRY(copy_typed_from_user(user_params));
 
-    Syscall::SC_realpath_params params;
-    if (!copy_from_user(&params, user_params))
-        return EFAULT;
-
-    auto path = get_syscall_path_argument(params.path);
-    if (path.is_error())
-        return path.error();
-
-    auto custody_or_error = VirtualFileSystem::the().resolve_path(path.value()->view(), current_directory());
-    if (custody_or_error.is_error())
-        return custody_or_error.error();
-    auto& custody = custody_or_error.value();
-    auto absolute_path = custody->try_create_absolute_path();
-    if (!absolute_path)
-        return ENOMEM;
+    auto path = TRY(get_syscall_path_argument(params.path));
+    auto custody = TRY(VirtualFileSystem::the().resolve_path(path->view(), current_directory()));
+    auto absolute_path = TRY(custody->try_serialize_absolute_path());
 
     size_t ideal_size = absolute_path->length() + 1;
     auto size_to_copy = min(ideal_size, params.buffer.size);
-    if (!copy_to_user(params.buffer.data, absolute_path->characters(), size_to_copy))
-        return EFAULT;
+    TRY(copy_to_user(params.buffer.data, absolute_path->characters(), size_to_copy));
     // Note: we return the whole size here, not the copied size.
     return ideal_size;
 };

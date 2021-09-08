@@ -8,8 +8,10 @@
 #include <LibCore/Timer.h>
 #include <LibGUI/IconView.h>
 #include <LibGUI/Model.h>
+#include <LibGUI/ModelEditingDelegate.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Scrollbar.h>
+
 #include <LibGfx/Palette.h>
 
 REGISTER_WIDGET(GUI, IconView);
@@ -401,10 +403,24 @@ Gfx::IntRect IconView::editing_rect(ModelIndex const& index) const
     if (!index.is_valid())
         return {};
     auto& item_data = get_item_data(index.row());
-    return item_data.text_rect.inflated(4, 4);
+    auto editing_rect = item_data.text_rect;
+    editing_rect.set_height(font_for_index(index)->glyph_height() + 8);
+    editing_rect.set_y(item_data.text_rect.y() - 2);
+    return editing_rect;
 }
 
-Gfx::IntRect IconView::paint_invalidation_rect(const ModelIndex& index) const
+void IconView::editing_widget_did_change(const ModelIndex& index)
+{
+    if (m_editing_delegate->value().is_string()) {
+        auto text_width = font_for_index(index)->width(m_editing_delegate->value().as_string());
+        m_edit_widget_content_rect.set_width(min(text_width + 8, effective_item_size().width()));
+        m_edit_widget_content_rect.center_horizontally_within(editing_rect(index).translated(frame_thickness(), frame_thickness()));
+        update_edit_widget_position();
+    }
+}
+
+Gfx::IntRect
+IconView::paint_invalidation_rect(const ModelIndex& index) const
 {
     if (!index.is_valid())
         return {};
@@ -433,8 +449,7 @@ void IconView::did_change_cursor_index(const ModelIndex& old_index, const ModelI
 void IconView::get_item_rects(int item_index, ItemData& item_data, const Gfx::Font& font) const
 {
     auto item_rect = this->item_rect(item_index);
-    item_data.icon_rect = { 0, 0, 32, 32 };
-    item_data.icon_rect.center_within(item_rect);
+    item_data.icon_rect = Gfx::IntRect(0, 0, 32, 32).centered_within(item_rect);
     item_data.icon_offset_y = -font.glyph_height() - 6;
     item_data.icon_rect.translate_by(0, item_data.icon_offset_y);
 
@@ -549,7 +564,8 @@ void IconView::paint_event(PaintEvent& event)
 
         const auto& text_rect = item_data.text_rect;
 
-        painter.fill_rect(text_rect, background_color);
+        if (m_edit_index != item_data.index)
+            painter.fill_rect(text_rect, background_color);
 
         if (is_focused() && item_data.index == cursor_index()) {
             painter.draw_rect(text_rect, widget_background_color);

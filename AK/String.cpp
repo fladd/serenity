@@ -176,7 +176,8 @@ ByteBuffer String::to_byte_buffer() const
 {
     if (!m_impl)
         return {};
-    return ByteBuffer::copy(reinterpret_cast<const u8*>(characters()), length());
+    // FIXME: Handle OOM failure.
+    return ByteBuffer::copy(bytes()).release_value();
 }
 
 template<typename T>
@@ -446,6 +447,11 @@ String String::to_snakecase() const
     return StringUtils::to_snakecase(*this);
 }
 
+String String::to_titlecase() const
+{
+    return StringUtils::to_titlecase(*this);
+}
+
 bool operator<(const char* characters, const String& string)
 {
     if (!characters)
@@ -510,7 +516,7 @@ InputStream& operator>>(InputStream& stream, String& string)
     }
 }
 
-String String::vformatted(StringView fmtstr, TypeErasedFormatParams params)
+String String::vformatted(StringView fmtstr, TypeErasedFormatParams& params)
 {
     StringBuilder builder;
     vformat(builder, fmtstr, params);

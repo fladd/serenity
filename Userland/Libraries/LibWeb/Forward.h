@@ -27,10 +27,13 @@ class Selector;
 class StyleProperties;
 class StyleResolver;
 class StyleSheet;
+class StyleValue;
 enum class Display;
 }
 
 namespace Web::DOM {
+class AbortController;
+class AbortSignal;
 class CharacterData;
 class Comment;
 class Document;
@@ -202,6 +205,8 @@ class XMLHttpRequestEventTarget;
 }
 
 namespace Web::Bindings {
+class AbortControllerWrapper;
+class AbortSignalWrapper;
 class CSSStyleDeclarationWrapper;
 class CSSStyleSheetWrapper;
 class CanvasRenderingContext2DWrapper;

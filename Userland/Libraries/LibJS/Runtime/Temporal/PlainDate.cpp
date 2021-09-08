@@ -173,7 +173,7 @@ Optional<ISODate> regulate_iso_date(GlobalObject& global_object, double year, do
     // 3. If overflow is "reject", then
     if (overflow == "reject"sv) {
         // IMPLEMENTATION DEFINED: This is an optimization that allows us to treat these doubles as normal integers from this point onwards.
-        // This does not change the exposed behaviour as the call to IsValidISODate will immediately check that these values are valid ISO
+        // This does not change the exposed behavior as the call to IsValidISODate will immediately check that these values are valid ISO
         // values (for years: -273975 - 273975, for months: 1 - 12, for days: 1 - 31) all of which are subsets of this check.
         if (!AK::is_within_range<i32>(year) || !AK::is_within_range<u8>(month) || !AK::is_within_range<u8>(day)) {
             vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidPlainDate);
@@ -183,7 +183,7 @@ Optional<ISODate> regulate_iso_date(GlobalObject& global_object, double year, do
         auto m = static_cast<u8>(month);
         auto d = static_cast<u8>(day);
         // a. If ! IsValidISODate(year, month, day) is false, throw a RangeError exception.
-        if (is_valid_iso_date(y, m, d)) {
+        if (!is_valid_iso_date(y, m, d)) {
             vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidPlainDate);
             return {};
         }
@@ -193,7 +193,7 @@ Optional<ISODate> regulate_iso_date(GlobalObject& global_object, double year, do
     // 4. If overflow is "constrain", then
     else if (overflow == "constrain"sv) {
         // IMPLEMENTATION DEFINED: This is an optimization that allows us to treat this double as normal integer from this point onwards. This
-        // does not change the exposed behaviour as the parent's call to CreateTemporalDate will immediately check that this value is a valid
+        // does not change the exposed behavior as the parent's call to CreateTemporalDate will immediately check that this value is a valid
         // ISO value for years: -273975 - 273975, which is a subset of this check.
         if (!AK::is_within_range<i32>(year)) {
             vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidPlainDate);
@@ -330,6 +330,85 @@ ISODate balance_iso_date(double year_, double month_, double day)
 
     // 16. Return the Record { [[Year]]: year, [[Month]]: month, [[Day]]: day }.
     return ISODate { .year = year, .month = static_cast<u8>(month), .day = static_cast<u8>(day) };
+}
+
+// 3.5.7 PadISOYear ( y ), https://tc39.es/proposal-temporal/#sec-temporal-padisoyear
+String pad_iso_year(i32 y)
+{
+    // 1. Assert: y is an integer.
+
+    // 2. If y > 999 and y ≤ 9999, then
+    if (y > 999 && y <= 9999) {
+        // a. Return y formatted as a four-digit decimal number.
+        return String::number(y);
+    }
+    // 3. If y ≥ 0, let yearSign be "+"; otherwise, let yearSign be "-".
+    auto year_sign = y >= 0 ? '+' : '-';
+
+    // 4. Let year be abs(y), formatted as a six-digit decimal number, padded to the left with zeroes as necessary.
+    // 5. Return the string-concatenation of yearSign and year.
+    return String::formatted("{}{:06}", year_sign, abs(y));
+}
+
+// 3.5.8 TemporalDateToString ( temporalDate, showCalendar ), https://tc39.es/proposal-temporal/#sec-temporal-temporaldatetostring
+Optional<String> temporal_date_to_string(GlobalObject& global_object, PlainDate& temporal_date, StringView show_calendar)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: Type(temporalDate) is Object.
+    // 2. Assert: temporalDate has an [[InitializedTemporalDate]] internal slot.
+
+    // 3. Let year be ! PadISOYear(temporalDate.[[ISOYear]]).
+    auto year = pad_iso_year(temporal_date.iso_year());
+
+    // 4. Let month be temporalDate.[[ISOMonth]] formatted as a two-digit decimal number, padded to the left with a zero if necessary.
+    auto month = String::formatted("{:02}", temporal_date.iso_month());
+
+    // 5. Let day be temporalDate.[[ISODay]] formatted as a two-digit decimal number, padded to the left with a zero if necessary.
+    auto day = String::formatted("{:02}", temporal_date.iso_day());
+
+    // 6. Let calendarID be ? ToString(temporalDate.[[Calendar]]).
+    auto calendar_id = Value(&temporal_date.calendar()).to_string(global_object);
+    if (vm.exception())
+        return {};
+
+    // 7. Let calendar be ! FormatCalendarAnnotation(calendarID, showCalendar).
+    auto calendar = format_calendar_annotation(calendar_id, show_calendar);
+
+    // 8. Return the string-concatenation of year, the code unit 0x002D (HYPHEN-MINUS), month, the code unit 0x002D (HYPHEN-MINUS), day, and calendar.
+    return String::formatted("{}-{}-{}{}", year, month, day, calendar);
+}
+
+// 3.5.9 AddISODate ( year, month, day, years, months, weeks, days, overflow ), https://tc39.es/proposal-temporal/#sec-temporal-addisodate
+Optional<ISODate> add_iso_date(GlobalObject& global_object, i32 year, u8 month, u8 day, double years, double months, double weeks, double days, String const& overflow)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: year, month, day, years, months, weeks, and days are integers.
+    VERIFY(years == trunc(years) && months == trunc(months) && weeks == trunc(weeks) && days == trunc(days));
+
+    // 2. Assert: overflow is either "constrain" or "reject".
+    VERIFY(overflow == "constrain"sv || overflow == "reject"sv);
+
+    // 3. Let intermediate be ! BalanceISOYearMonth(year + years, month + months).
+    auto intermediate_year_month = balance_iso_year_month(year + years, month + months);
+
+    // 4. Let intermediate be ? RegulateISODate(intermediate.[[Year]], intermediate.[[Month]], day, overflow).
+    auto intermediate_date = regulate_iso_date(global_object, intermediate_year_month.year, intermediate_year_month.month, day, overflow);
+    if (vm.exception())
+        return {};
+
+    // 5. Set days to days + 7 × weeks.
+    days += 7 * weeks;
+
+    // 6. Let d be intermediate.[[Day]] + days.
+    auto d = intermediate_date->day + days;
+
+    // 7. Let intermediate be ! BalanceISODate(intermediate.[[Year]], intermediate.[[Month]], d).
+    auto intermediate = balance_iso_date(intermediate_date->year, intermediate_date->month, d);
+
+    // 8. Return ? RegulateISODate(intermediate.[[Year]], intermediate.[[Month]], intermediate.[[Day]], overflow).
+    return regulate_iso_date(global_object, intermediate.year, intermediate.month, intermediate.day, overflow);
 }
 
 // 3.5.10 CompareISODate ( y1, m1, d1, y2, m2, d2 ), https://tc39.es/proposal-temporal/#sec-temporal-compareisodate

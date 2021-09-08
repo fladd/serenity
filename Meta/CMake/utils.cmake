@@ -1,3 +1,7 @@
+
+include(${CMAKE_CURRENT_LIST_DIR}/serenity_components.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/code_generators.cmake)
+
 function(serenity_install_headers target_name)
     file(GLOB_RECURSE headers RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "*.h")
     foreach(header ${headers})
@@ -20,6 +24,7 @@ function(serenity_generated_sources target_name)
         foreach(generated ${GENERATED_SOURCES})
             get_filename_component(generated_name ${generated} NAME)
             add_dependencies(${target_name} generate_${generated_name})
+            add_dependencies(all_generated generate_${generated_name})
         endforeach()
     endif()
 endfunction()
@@ -77,7 +82,7 @@ function(serenity_bin target_name)
 endfunction()
 
 function(serenity_test test_src sub_dir)
-    cmake_parse_arguments(SERENITY_TEST "MAIN_ALREADY_DEFINED" "CUSTOM_MAIN" "LIBS" ${ARGN})
+    cmake_parse_arguments(PARSE_ARGV 2 SERENITY_TEST "MAIN_ALREADY_DEFINED" "CUSTOM_MAIN" "LIBS")
     set(TEST_SOURCES ${test_src})
     if ("${SERENITY_TEST_CUSTOM_MAIN}" STREQUAL "")
         set(SERENITY_TEST_CUSTOM_MAIN "$<TARGET_OBJECTS:LibTestMain>")
@@ -98,7 +103,7 @@ endfunction()
 
 
 function(serenity_testjs_test test_src sub_dir)
-    cmake_parse_arguments(SERENITY_TEST "" "CUSTOM_MAIN" "LIBS" ${ARGN})
+    cmake_parse_arguments(PARSE_ARGV 2 SERENITY_TEST "" "CUSTOM_MAIN" "LIBS")
     if ("${SERENITY_TEST_CUSTOM_MAIN}" STREQUAL "")
         set(SERENITY_TEST_CUSTOM_MAIN "$<TARGET_OBJECTS:JavaScriptTestRunnerMain>")
     endif()
@@ -109,11 +114,11 @@ function(serenity_testjs_test test_src sub_dir)
 endfunction()
 
 function(serenity_app target_name)
-    cmake_parse_arguments(SERENITY_APP "" "ICON" "" ${ARGN})
+    cmake_parse_arguments(PARSE_ARGV 1 SERENITY_APP "" "ICON" "")
 
     serenity_bin("${target_name}")
-    set(small_icon "${CMAKE_SOURCE_DIR}/Base/res/icons/16x16/${SERENITY_APP_ICON}.png")
-    set(medium_icon "${CMAKE_SOURCE_DIR}/Base/res/icons/32x32/${SERENITY_APP_ICON}.png")
+    set(small_icon "${SerenityOS_SOURCE_DIR}/Base/res/icons/16x16/${SERENITY_APP_ICON}.png")
+    set(medium_icon "${SerenityOS_SOURCE_DIR}/Base/res/icons/32x32/${SERENITY_APP_ICON}.png")
 
     if (EXISTS "${small_icon}")
         embed_resource("${target_name}" serenity_icon_s "${small_icon}")
@@ -134,113 +139,6 @@ function(serenity_app target_name)
     endif()
 endfunction()
 
-define_property(TARGET PROPERTY SERENITY_COMPONENT_NAME BRIEF_DOCS "SerenityOS component name" FULL_DOCS "-")
-define_property(TARGET PROPERTY SERENITY_COMPONENT_DESCRIPTION BRIEF_DOCS "SerenityOS component description" FULL_DOCS "-")
-define_property(TARGET PROPERTY SERENITY_COMPONENT_RECOMMENDED BRIEF_DOCS "SerenityOS component recommended (flag)" FULL_DOCS "-")
-define_property(TARGET PROPERTY SERENITY_COMPONENT_REQUIRED BRIEF_DOCS "SerenityOS component required (flag)" FULL_DOCS "-")
-define_property(TARGET PROPERTY SERENITY_COMPONENT_DEPENDS BRIEF_DOCS "SerenityOS component dependencies" FULL_DOCS "-")
-
-function(serenity_component name)
-    cmake_parse_arguments(SERENITY_COMPONENT "RECOMMENDED;REQUIRED" "DESCRIPTION" "TARGETS;DEPENDS" ${ARGN})
-    string(TOUPPER "${name}" NAME_UPPER)
-    option("BUILD_${NAME_UPPER}" "Build ${name}" ${SERENITY_COMPONENT_RECOMMENDED})
-    add_custom_target("Component${name}")
-    set_property(TARGET "Component${name}" PROPERTY SERENITY_COMPONENT_NAME ${name})
-    set_property(TARGET "Component${name}" PROPERTY SERENITY_COMPONENT_DESCRIPTION ${SERENITY_COMPONENT_DESCRIPTION})
-    set_property(TARGET "Component${name}" PROPERTY SERENITY_COMPONENT_RECOMMENDED ${SERENITY_COMPONENT_RECOMMENDED})
-    set_property(TARGET "Component${name}" PROPERTY SERENITY_COMPONENT_REQUIRED ${SERENITY_COMPONENT_REQUIRED})
-    set_property(TARGET "Component${name}" PROPERTY SERENITY_COMPONENT_DEPENDS ${SERENITY_COMPONENT_DEPENDS})
-    if(NOT "${SERENITY_COMPONENT_TARGETS}" STREQUAL "")
-        foreach(target IN LISTS SERENITY_COMPONENT_TARGETS)
-          add_dependencies("Component${name}" "${target}")
-        endforeach()
-    endif()
-    if(BUILD_EVERYTHING OR BUILD_${NAME_UPPER} OR SERENITY_COMPONENT_REQUIRED)
-        add_dependencies(components "Component${name}")
-    endif()
-    foreach(dependency ${SERENITY_COMPONENT_DEPENDS})
-        add_dependencies("Component${name}" "Component${dependency}")
-    endforeach()
-endfunction()
-
-macro(export_components_helper file_name current_dir)
-    get_property(sub_dirs DIRECTORY ${current_dir} PROPERTY SUBDIRECTORIES)
-    foreach(sub_dir ${sub_dirs})
-        export_components_helper(${file_name} ${sub_dir})
-    endforeach()
-
-    get_property(targets DIRECTORY ${current_dir} PROPERTY BUILDSYSTEM_TARGETS)
-    foreach(target ${targets})
-        get_property(component_name TARGET ${target} PROPERTY SERENITY_COMPONENT_NAME)
-        if(NOT "${component_name}" STREQUAL "")
-            get_property(component_name TARGET ${target} PROPERTY SERENITY_COMPONENT_NAME)
-            get_property(component_description TARGET ${target} PROPERTY SERENITY_COMPONENT_DESCRIPTION)
-            get_property(component_recommended TARGET ${target} PROPERTY SERENITY_COMPONENT_RECOMMENDED)
-            get_property(component_required TARGET ${target} PROPERTY SERENITY_COMPONENT_REQUIRED)
-            get_property(component_depends TARGET ${target} PROPERTY SERENITY_COMPONENT_DEPENDS)
-            file(APPEND ${file_name} "[${component_name}]\n")
-            file(APPEND ${file_name} "description=${component_description}\n")
-            if(component_recommended)
-                file(APPEND ${file_name} "recommended=1\n")
-            else()
-                file(APPEND ${file_name} "recommended=0\n")
-            endif()
-            if(component_required)
-                file(APPEND ${file_name} "required=1\n")
-            else()
-                file(APPEND ${file_name} "required=0\n")
-            endif()
-            string(TOUPPER "${component_name}" component_name_upper)
-            if(BUILD_${component_name_upper})
-                file(APPEND ${file_name} "user_selected=1\n")
-            else()
-                file(APPEND ${file_name} "user_selected=0\n")
-            endif()
-
-            file(APPEND ${file_name} "depends=${component_depends}\n")
-            file(APPEND ${file_name} "\n")
-        endif()
-    endforeach()
-endmacro()
-
-function(export_components file_name)
-    file(WRITE ${file_name} "[Global]\n")
-    if(BUILD_EVERYTHING)
-        file(APPEND ${file_name} "build_everything=1\n")
-    else()
-        file(APPEND ${file_name} "build_everything=0\n")
-    endif()
-    file(APPEND ${file_name} "\n")
-    export_components_helper(${file_name} ${CMAKE_CURRENT_SOURCE_DIR})
-endfunction()
-
-function(compile_gml source output string_name)
-    set(source ${CMAKE_CURRENT_SOURCE_DIR}/${source})
-    add_custom_command(
-        OUTPUT ${output}
-        COMMAND ${write_if_different} ${output} ${CMAKE_SOURCE_DIR}/Meta/text-to-cpp-string.sh ${string_name} ${source}
-        VERBATIM
-        DEPENDS ${CMAKE_SOURCE_DIR}/Meta/text-to-cpp-string.sh
-        MAIN_DEPENDENCY ${source}
-    )
-    get_filename_component(output_name ${output} NAME)
-    add_custom_target(generate_${output_name} DEPENDS ${output})
-endfunction()
-
-
-function(compile_ipc source output)
-    set(source ${CMAKE_CURRENT_SOURCE_DIR}/${source})
-    add_custom_command(
-        OUTPUT ${output}
-        COMMAND ${write_if_different} ${output} ${CMAKE_BINARY_DIR}/Userland/DevTools/IPCCompiler/IPCCompiler ${source}
-        VERBATIM
-        DEPENDS IPCCompiler
-        MAIN_DEPENDENCY ${source}
-    )
-    get_filename_component(output_name ${output} NAME)
-    add_custom_target(generate_${output_name} DEPENDS ${output})
-endfunction()
-
 function(embed_resource target section file)
     get_filename_component(asm_file "${file}" NAME)
     set(asm_file "${CMAKE_CURRENT_BINARY_DIR}/${target}-${section}.s")
@@ -248,29 +146,9 @@ function(embed_resource target section file)
     file(SIZE "${input_file}" file_size)
     add_custom_command(
         OUTPUT "${asm_file}"
-        COMMAND "${CMAKE_SOURCE_DIR}/Meta/generate-embedded-resource-assembly.sh" "${asm_file}" "${section}" "${input_file}" "${file_size}"
-        DEPENDS "${input_file}" "${CMAKE_SOURCE_DIR}/Meta/generate-embedded-resource-assembly.sh"
+        COMMAND "${SerenityOS_SOURCE_DIR}/Meta/generate-embedded-resource-assembly.sh" "${asm_file}" "${section}" "${input_file}" "${file_size}"
+        DEPENDS "${input_file}" "${SerenityOS_SOURCE_DIR}/Meta/generate-embedded-resource-assembly.sh"
         COMMENT "Generating ${asm_file}"
     )
     target_sources("${target}" PRIVATE "${asm_file}")
-endfunction()
-
-function(generate_state_machine source header)
-    get_filename_component(header_name ${header} NAME)
-    set(target_name "generate_${header_name}")
-    # Note: This function is called twice with the same header, once in the kernel
-    #       and once in Userland/LibVT, this check makes sure that only one target
-    #       is generated for that header.
-    if(NOT TARGET ${target_name})
-        set(source ${CMAKE_CURRENT_SOURCE_DIR}/${source})
-        set(output ${CMAKE_CURRENT_BINARY_DIR}/${header})
-        add_custom_command(
-            OUTPUT ${output}
-            COMMAND ${write_if_different} ${output} ${CMAKE_BINARY_DIR}/Userland/DevTools/StateMachineGenerator/StateMachineGenerator ${source}
-            VERBATIM
-            DEPENDS StateMachineGenerator
-            MAIN_DEPENDENCY ${source}
-        )
-        add_custom_target(${target_name} DEPENDS ${output})
-    endif()
 endfunction()

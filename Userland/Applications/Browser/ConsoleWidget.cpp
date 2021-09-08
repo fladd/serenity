@@ -1,5 +1,7 @@
 /*
  * Copyright (c) 2020, Hunter Salyer <thefalsehonesty@gmail.com>
+ * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,15 +12,8 @@
 #include <LibGUI/Button.h>
 #include <LibGUI/TextBox.h>
 #include <LibGfx/FontDatabase.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/MarkupGenerator.h>
-#include <LibJS/Parser.h>
-#include <LibJS/Runtime/Error.h>
 #include <LibJS/SyntaxHighlighter.h>
-#include <LibWeb/Bindings/DOMExceptionWrapper.h>
-#include <LibWeb/DOM/DocumentType.h>
-#include <LibWeb/DOM/Text.h>
-#include <LibWeb/DOMTreeModel.h>
 
 namespace Browser {
 
@@ -27,18 +22,13 @@ ConsoleWidget::ConsoleWidget()
     set_layout<GUI::VerticalBoxLayout>();
     set_fill_with_background_color(true);
 
-    auto base_document = Web::DOM::Document::create();
-    base_document->append_child(adopt_ref(*new Web::DOM::DocumentType(base_document)));
-    auto html_element = base_document->create_element("html");
-    base_document->append_child(html_element);
-    auto head_element = base_document->create_element("head");
-    html_element->append_child(head_element);
-    auto body_element = base_document->create_element("body");
-    html_element->append_child(body_element);
-    m_output_container = body_element;
-
-    m_output_view = add<Web::InProcessWebView>();
-    m_output_view->set_document(base_document);
+    m_output_view = add<Web::OutOfProcessWebView>();
+    m_output_view->load("data:text/html,<html></html>");
+    // Wait until our output WebView is loaded, and then request any messages that occurred before we existed
+    m_output_view->on_load_finish = [this](auto&) {
+        if (on_request_messages)
+            on_request_messages(0);
+    };
 
     auto& bottom_container = add<GUI::Widget>();
     bottom_container.set_layout<GUI::HorizontalBoxLayout>();
@@ -64,39 +54,6 @@ ConsoleWidget::ConsoleWidget()
 
         if (on_js_input)
             on_js_input(js_source);
-
-        // no interpreter being set means we are running in multi-process mode
-        if (!m_interpreter)
-            return;
-
-        auto parser = JS::Parser(JS::Lexer(js_source));
-        auto program = parser.parse_program();
-
-        StringBuilder output_html;
-        if (parser.has_errors()) {
-            auto error = parser.errors()[0];
-            auto hint = error.source_location_hint(js_source);
-            if (!hint.is_empty())
-                output_html.append(String::formatted("<pre>{}</pre>", escape_html_entities(hint)));
-            m_interpreter->vm().throw_exception<JS::SyntaxError>(m_interpreter->global_object(), error.to_string());
-        } else {
-            m_interpreter->run(m_interpreter->global_object(), *program);
-        }
-
-        if (m_interpreter->exception()) {
-            auto* exception = m_interpreter->exception();
-            m_interpreter->vm().clear_exception();
-            output_html.append("Uncaught exception: ");
-            auto error = exception->value();
-            if (error.is_object())
-                output_html.append(JS::MarkupGenerator::html_from_error(error.as_object()));
-            else
-                output_html.append(JS::MarkupGenerator::html_from_value(error));
-            print_html(output_html.string_view());
-            return;
-        }
-
-        print_html(JS::MarkupGenerator::html_from_value(m_interpreter->vm().last_value()));
     };
 
     set_focus_proxy(m_input);
@@ -114,25 +71,56 @@ ConsoleWidget::~ConsoleWidget()
 {
 }
 
-void ConsoleWidget::handle_js_console_output(const String& method, const String& line)
+void ConsoleWidget::request_console_messages()
 {
-    if (method == "html") {
-        print_html(line);
-    } else if (method == "clear") {
-        clear_output();
-    }
+    VERIFY(!m_waiting_for_messages);
+    VERIFY(on_request_messages);
+    on_request_messages(m_highest_received_message_index + 1);
+    m_waiting_for_messages = true;
 }
 
-void ConsoleWidget::set_interpreter(WeakPtr<JS::Interpreter> interpreter)
+void ConsoleWidget::notify_about_new_console_message(i32 message_index)
 {
-    if (m_interpreter.ptr() == interpreter.ptr())
+    if (message_index <= m_highest_received_message_index) {
+        dbgln("Notified about console message we already have");
         return;
+    }
+    if (message_index <= m_highest_notified_message_index) {
+        dbgln("Notified about console message we're already aware of");
+        return;
+    }
 
-    m_interpreter = interpreter;
-    m_console_client = make<BrowserConsoleClient>(interpreter->global_object().console(), *this);
-    interpreter->global_object().console().set_client(*m_console_client.ptr());
+    m_highest_notified_message_index = message_index;
+    if (!m_waiting_for_messages)
+        request_console_messages();
+}
 
-    clear_output();
+void ConsoleWidget::handle_console_messages(i32 start_index, const Vector<String>& message_types, const Vector<String>& messages)
+{
+    i32 end_index = start_index + message_types.size() - 1;
+    if (end_index <= m_highest_received_message_index) {
+        dbgln("Received old console messages");
+        return;
+    }
+
+    for (size_t i = 0; i < message_types.size(); i++) {
+        auto& type = message_types[i];
+        auto& message = messages[i];
+
+        if (type == "html") {
+            print_html(message);
+        } else if (type == "clear") {
+            clear_output();
+        } else {
+            VERIFY_NOT_REACHED();
+        }
+    }
+
+    m_highest_received_message_index = end_index;
+    m_waiting_for_messages = false;
+
+    if (m_highest_received_message_index < m_highest_notified_message_index)
+        request_console_messages();
 }
 
 void ConsoleWidget::print_source_line(const StringView& source)
@@ -147,22 +135,35 @@ void ConsoleWidget::print_source_line(const StringView& source)
     print_html(html.string_view());
 }
 
-void ConsoleWidget::print_html(const StringView& line)
+void ConsoleWidget::print_html(StringView const& line)
 {
-    auto paragraph = m_output_container->document().create_element("p");
-    paragraph->set_inner_html(line);
-
-    m_output_container->append_child(paragraph);
-    m_output_container->document().invalidate_layout();
-    m_output_container->document().update_layout();
-
-    m_output_view->scroll_to_bottom();
+    StringBuilder builder;
+    builder.append(R"~~~(
+        var p = document.createElement("p");
+        p.innerHTML = ")~~~");
+    builder.append_escaped_for_json(line);
+    builder.append(R"~~~("
+        document.body.appendChild(p);
+)~~~");
+    m_output_view->run_javascript(builder.string_view());
+    // FIXME: Make it scroll to the bottom, using `window.scrollTo()` in the JS above.
+    //        We used to call `m_output_view->scroll_to_bottom();` here, but that does not work because
+    //        it runs synchronously, meaning it happens before the HTML is output via IPC above.
 }
 
 void ConsoleWidget::clear_output()
 {
-    m_output_container->remove_all_children();
-    m_output_view->update();
+    m_output_view->run_javascript(R"~~~(
+        document.body.innerHTML = "";
+    )~~~");
+}
+
+void ConsoleWidget::reset()
+{
+    clear_output();
+    m_highest_notified_message_index = -1;
+    m_highest_received_message_index = -1;
+    m_waiting_for_messages = false;
 }
 
 }

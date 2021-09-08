@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <AK/FlyString.h>
 #include <AK/String.h>
 #include <AK/StringView.h>
+#include <AK/Variant.h>
 
 namespace JS {
 
@@ -26,6 +28,9 @@ constexpr const u32 NO_BREAK_SPACE { 0x00A0 };
 
 // U+200C ZERO WIDTH NON-JOINER
 constexpr const u32 ZERO_WIDTH_NON_JOINER { 0x200C };
+
+// U+FEFF ZERO WIDTH NO-BREAK SPACE
+constexpr const u32 ZERO_WIDTH_NO_BREAK_SPACE { 0xFEFF };
 
 // U+200D ZERO WIDTH JOINER
 constexpr const u32 ZERO_WIDTH_JOINER { 0x200D };
@@ -72,6 +77,7 @@ constexpr const u32 ZERO_WIDTH_JOINER { 0x200D };
     __ENUMERATE_JS_TOKEN(Equals, Operator)                      \
     __ENUMERATE_JS_TOKEN(EqualsEquals, Operator)                \
     __ENUMERATE_JS_TOKEN(EqualsEqualsEquals, Operator)          \
+    __ENUMERATE_JS_TOKEN(EscapedKeyword, Identifier)            \
     __ENUMERATE_JS_TOKEN(ExclamationMark, Operator)             \
     __ENUMERATE_JS_TOKEN(ExclamationMarkEquals, Operator)       \
     __ENUMERATE_JS_TOKEN(ExclamationMarkEqualsEquals, Operator) \
@@ -172,10 +178,13 @@ enum class TokenCategory {
 
 class Token {
 public:
+    Token() = default;
+
     Token(TokenType type, String message, StringView trivia, StringView value, StringView filename, size_t line_number, size_t line_column, size_t offset)
         : m_type(type)
         , m_message(message)
         , m_trivia(trivia)
+        , m_original_value(value)
         , m_value(value)
         , m_filename(filename)
         , m_line_number(line_number)
@@ -192,7 +201,14 @@ public:
 
     const String& message() const { return m_message; }
     const StringView& trivia() const { return m_trivia; }
-    const StringView& value() const { return m_value; }
+    const StringView& original_value() const { return m_original_value; }
+    StringView value() const
+    {
+        return m_value.visit(
+            [](StringView const& view) { return view; },
+            [](FlyString const& identifier) { return identifier.view(); },
+            [](Empty) -> StringView { VERIFY_NOT_REACHED(); });
+    }
     const StringView& filename() const { return m_filename; }
     size_t line_number() const { return m_line_number; }
     size_t line_column() const { return m_line_column; }
@@ -208,19 +224,26 @@ public:
         LegacyOctalEscapeSequence,
     };
     String string_value(StringValueStatus& status) const;
+    String raw_template_value() const;
+
+    void set_identifier_value(FlyString value)
+    {
+        m_value = move(value);
+    }
 
     bool is_identifier_name() const;
     bool trivia_contains_line_terminator() const;
 
 private:
-    TokenType m_type;
+    TokenType m_type { TokenType::Invalid };
     String m_message;
     StringView m_trivia;
-    StringView m_value;
+    StringView m_original_value;
+    Variant<Empty, StringView, FlyString> m_value { Empty {} };
     StringView m_filename;
-    size_t m_line_number;
-    size_t m_line_column;
-    size_t m_offset;
+    size_t m_line_number { 0 };
+    size_t m_line_column { 0 };
+    size_t m_offset { 0 };
 };
 
 }

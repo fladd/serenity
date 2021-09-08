@@ -36,10 +36,7 @@ Client::Client(NonnullRefPtr<Core::TCPSocket> socket, Core::Object* parent)
 
 void Client::die()
 {
-    deferred_invoke([this](auto& object) {
-        NonnullRefPtr protector { object };
-        remove_from_parent();
-    });
+    deferred_invoke([this] { remove_from_parent(); });
 }
 
 void Client::start()
@@ -288,6 +285,7 @@ void Client::send_error_response(unsigned code, HTTP::HttpRequest const& request
         builder.append(header);
         builder.append("\r\n");
     }
+    builder.append("Content-Type: text/html; charset=UTF-8\r\n");
 
     builder.append("\r\n");
     builder.append("<!DOCTYPE html><html><body><h1>");

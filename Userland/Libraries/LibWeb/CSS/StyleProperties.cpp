@@ -45,10 +45,38 @@ void StyleProperties::set_property(CSS::PropertyID id, const StringView& value)
 
 Optional<NonnullRefPtr<StyleValue>> StyleProperties::property(CSS::PropertyID id) const
 {
-    auto it = m_property_values.find((unsigned)id);
-    if (it == m_property_values.end())
+    auto fetch_initial = [](CSS::PropertyID id) -> Optional<NonnullRefPtr<StyleValue>> {
+        auto initial_value = property_initial_value(id);
+        if (initial_value)
+            return initial_value.release_nonnull();
         return {};
-    return it->value;
+    };
+    auto fetch_inherited = [](CSS::PropertyID) -> Optional<NonnullRefPtr<StyleValue>> {
+        // FIXME: Implement inheritance
+        return {};
+    };
+
+    auto it = m_property_values.find((unsigned)id);
+    if (it == m_property_values.end()) {
+        if (is_inherited_property(id))
+            return fetch_inherited(id);
+        return fetch_initial(id);
+    }
+
+    auto& value = it->value;
+    if (value->is_initial())
+        return fetch_initial(id);
+    if (value->is_inherit())
+        return fetch_inherited(id);
+    if (value->is_unset()) {
+        if (is_inherited_property(id)) {
+            return fetch_inherited(id);
+        } else {
+            return fetch_initial(id);
+        }
+    }
+
+    return value;
 }
 
 Length StyleProperties::length_or_fallback(CSS::PropertyID id, const Length& fallback) const
@@ -74,14 +102,6 @@ LengthBox StyleProperties::length_box(CSS::PropertyID left_id, CSS::PropertyID t
     box.right = length_or_fallback(right_id, default_value);
     box.bottom = length_or_fallback(bottom_id, default_value);
     return box;
-}
-
-String StyleProperties::string_or_fallback(CSS::PropertyID id, const StringView& fallback) const
-{
-    auto value = property(id);
-    if (!value.has_value())
-        return fallback;
-    return value.value()->to_string();
 }
 
 Color StyleProperties::color_or_fallback(CSS::PropertyID id, const DOM::Document& document, Color fallback) const
@@ -361,7 +381,7 @@ Optional<float> StyleProperties::flex_shrink_factor() const
     auto value = property(CSS::PropertyID::FlexShrink);
     if (!value.has_value())
         return {};
-    if (!value.value()->is_numeric()) {
+    if (value.value()->is_numeric()) {
         auto numeric = verify_cast<CSS::NumericStyleValue>(value.value().ptr());
         return numeric->value();
     }

@@ -7,7 +7,7 @@
 #include <AK/Format.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/ConfigFile.h>
+#include <LibCore/Version.h>
 #include <getopt.h>
 #include <limits.h>
 #include <math.h>
@@ -108,7 +108,23 @@ bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_beha
         }
     }
 
-    // We're done processing options, now let's parse positional arguments.
+    // We're done processing options.
+    // Now let's show version or help if requested.
+
+    if (m_show_version) {
+        print_version(stdout);
+        if (failure_behavior == FailureBehavior::Exit || failure_behavior == FailureBehavior::PrintUsageAndExit)
+            exit(0);
+        return false;
+    }
+    if (m_show_help) {
+        print_usage(stdout, argv[0]);
+        if (failure_behavior == FailureBehavior::Exit || failure_behavior == FailureBehavior::PrintUsageAndExit)
+            exit(0);
+        return false;
+    }
+
+    // Now let's parse positional arguments.
 
     int values_left = argc - optind;
     Vector<int, 16> num_values_for_arg;
@@ -151,21 +167,6 @@ bool ArgsParser::parse(int argc, char* const* argv, FailureBehavior failure_beha
                 return false;
             }
         }
-    }
-
-    // We're done parsing! :)
-    // Now let's show version or help if requested.
-    if (m_show_version) {
-        print_version(stdout);
-        if (failure_behavior == FailureBehavior::Exit || failure_behavior == FailureBehavior::PrintUsageAndExit)
-            exit(0);
-        return false;
-    }
-    if (m_show_help) {
-        print_usage(stdout, argv[0]);
-        if (failure_behavior == FailureBehavior::Exit || failure_behavior == FailureBehavior::PrintUsageAndExit)
-            exit(0);
-        return false;
     }
 
     return true;
@@ -244,16 +245,7 @@ void ArgsParser::print_usage(FILE* file, const char* argv0)
 
 void ArgsParser::print_version(FILE* file)
 {
-    auto version_config = Core::ConfigFile::open("/res/version.ini");
-    auto major_version = version_config->read_entry("Version", "Major", "0");
-    auto minor_version = version_config->read_entry("Version", "Minor", "0");
-
-    StringBuilder builder;
-    builder.appendff("{}.{}", major_version, minor_version);
-    if (auto git_version = version_config->read_entry("Version", "Git", ""); git_version != "")
-        builder.appendff(".g{}", git_version);
-
-    outln(file, builder.to_string());
+    outln(file, Core::Version::SERENITY_VERSION);
 }
 
 void ArgsParser::add_option(Option&& option)

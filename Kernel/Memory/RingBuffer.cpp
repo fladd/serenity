@@ -11,7 +11,7 @@
 namespace Kernel::Memory {
 
 RingBuffer::RingBuffer(String region_name, size_t capacity)
-    : m_region(MM.allocate_contiguous_kernel_region(page_round_up(capacity), move(region_name), Region::Access::Read | Region::Access::Write))
+    : m_region(MM.allocate_contiguous_kernel_region(page_round_up(capacity), move(region_name), Region::Access::Read | Region::Access::Write).release_value())
     , m_capacity_in_bytes(capacity)
 {
 }
@@ -22,20 +22,18 @@ bool RingBuffer::copy_data_in(const UserOrKernelBuffer& buffer, size_t offset, s
     bytes_copied = min(m_capacity_in_bytes - m_num_used_bytes, min(m_capacity_in_bytes - start_of_free_area, length));
     if (bytes_copied == 0)
         return false;
-    if (buffer.read(m_region->vaddr().offset(start_of_free_area).as_ptr(), offset, bytes_copied)) {
-        m_num_used_bytes += bytes_copied;
-        start_of_copied_data = m_region->physical_page(start_of_free_area / PAGE_SIZE)->paddr().offset(start_of_free_area % PAGE_SIZE);
-        return true;
-    }
-    return false;
+    if (auto result = buffer.read(m_region->vaddr().offset(start_of_free_area).as_ptr(), offset, bytes_copied); result.is_error())
+        return false;
+    m_num_used_bytes += bytes_copied;
+    start_of_copied_data = m_region->physical_page(start_of_free_area / PAGE_SIZE)->paddr().offset(start_of_free_area % PAGE_SIZE);
+    return true;
 }
 
 KResultOr<size_t> RingBuffer::copy_data_out(size_t size, UserOrKernelBuffer& buffer) const
 {
     auto start = m_start_of_used % m_capacity_in_bytes;
     auto num_bytes = min(min(m_num_used_bytes, size), m_capacity_in_bytes - start);
-    if (!buffer.write(m_region->vaddr().offset(start).as_ptr(), num_bytes))
-        return EIO;
+    TRY(buffer.write(m_region->vaddr().offset(start).as_ptr(), num_bytes));
     return num_bytes;
 }
 

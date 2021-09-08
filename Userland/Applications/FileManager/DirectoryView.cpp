@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2021, Sam Atkins <atkinssj@gmail.com>
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -10,6 +10,7 @@
 #include <AK/LexicalPath.h>
 #include <AK/NumberFormat.h>
 #include <AK/StringBuilder.h>
+#include <LibConfig/Client.h>
 #include <LibCore/File.h>
 #include <LibCore/MimeData.h>
 #include <LibCore/StandardPaths.h>
@@ -94,7 +95,7 @@ void DirectoryView::handle_activation(GUI::ModelIndex const& index)
 {
     if (!index.is_valid())
         return;
-    dbgln("on activation: {},{}, this={:p}, m_model={:p}", index.row(), index.column(), this, m_model.ptr());
+
     auto& node = this->node(index);
     auto path = node.full_path();
 
@@ -289,6 +290,9 @@ void DirectoryView::setup_table_view()
     m_table_view->set_model(m_sorting_model);
     m_table_view->set_key_column_and_sort_order(GUI::FileSystemModel::Column::Name, GUI::SortOrder::Ascending);
 
+    m_table_view->set_column_visible(GUI::FileSystemModel::Column::Inode, false);
+    m_table_view->set_column_visible(GUI::FileSystemModel::Column::SymlinkTarget, false);
+
     m_table_view->on_activation = [&](auto& index) {
         handle_activation(index);
     };
@@ -320,6 +324,34 @@ void DirectoryView::model_did_update(unsigned flags)
         });
     }
     update_statusbar();
+}
+
+void DirectoryView::set_view_mode_from_string(String const& mode)
+{
+    if (m_mode == Mode::Desktop)
+        return;
+
+    if (mode.contains("Table")) {
+        set_view_mode(DirectoryView::ViewMode::Table);
+        m_view_as_table_action->set_checked(true);
+    } else if (mode.contains("Columns")) {
+        set_view_mode(DirectoryView::ViewMode::Columns);
+        m_view_as_columns_action->set_checked(true);
+    } else {
+        set_view_mode(DirectoryView::ViewMode::Icon);
+        m_view_as_icons_action->set_checked(true);
+    }
+}
+
+void DirectoryView::config_string_did_change(String const& domain, String const& group, String const& key, String const& value)
+{
+    if (domain != "FileManager" || group != "DirectoryView")
+        return;
+
+    if (key == "ViewMode") {
+        set_view_mode_from_string(value);
+        return;
+    }
 }
 
 void DirectoryView::set_view_mode(ViewMode mode)
@@ -355,17 +387,22 @@ void DirectoryView::add_path_to_history(String path)
     m_path_history_position = m_path_history.size() - 1;
 }
 
-void DirectoryView::open(String const& path)
+bool DirectoryView::open(String const& path)
 {
     auto real_path = Core::File::real_path_for(path);
+    if (real_path.is_null() || !Core::File::is_directory(path))
+        return false;
 
-    if (model().root_path() == real_path) {
-        model().invalidate();
-        return;
+    if (chdir(real_path.characters()) < 0) {
+        perror("chdir");
     }
-
-    set_active_widget(&current_view());
-    model().set_root_path(real_path);
+    if (model().root_path() == real_path) {
+        refresh();
+    } else {
+        set_active_widget(&current_view());
+        model().set_root_path(real_path);
+    }
+    return true;
 }
 
 void DirectoryView::set_status_message(StringView const& message)
@@ -376,8 +413,7 @@ void DirectoryView::set_status_message(StringView const& message)
 
 void DirectoryView::open_parent_directory()
 {
-    auto path = String::formatted("{}/..", model().root_path());
-    model().set_root_path(path);
+    open("..");
 }
 
 void DirectoryView::refresh()
@@ -387,19 +423,13 @@ void DirectoryView::refresh()
 
 void DirectoryView::open_previous_directory()
 {
-    if (m_path_history_position > 0) {
-        set_active_widget(&current_view());
-        m_path_history_position--;
-        model().set_root_path(m_path_history[m_path_history_position]);
-    }
+    if (m_path_history_position > 0)
+        open(m_path_history[--m_path_history_position]);
 }
 void DirectoryView::open_next_directory()
 {
-    if (m_path_history_position < m_path_history.size() - 1) {
-        set_active_widget(&current_view());
-        m_path_history_position++;
-        model().set_root_path(m_path_history[m_path_history_position]);
-    }
+    if (m_path_history_position < m_path_history.size() - 1)
+        open(m_path_history[++m_path_history_position]);
 }
 
 void DirectoryView::update_statusbar()
@@ -555,6 +585,27 @@ void DirectoryView::setup_actions()
     m_force_delete_action = GUI::Action::create(
         "Delete Without Confirmation", { Mod_Shift, Key_Delete },
         [this](auto&) { do_delete(false); },
+        window());
+
+    m_view_as_icons_action = GUI::Action::create_checkable(
+        "View as &Icons", { Mod_Ctrl, KeyCode::Key_1 }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/icon-view.png"), [&](GUI::Action const&) {
+            set_view_mode(DirectoryView::ViewMode::Icon);
+            Config::write_string("FileManager", "DirectoryView", "ViewMode", "Icon");
+        },
+        window());
+
+    m_view_as_table_action = GUI::Action::create_checkable(
+        "View as &Table", { Mod_Ctrl, KeyCode::Key_2 }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/table-view.png"), [&](GUI::Action const&) {
+            set_view_mode(DirectoryView::ViewMode::Table);
+            Config::write_string("FileManager", "DirectoryView", "ViewMode", "Table");
+        },
+        window());
+
+    m_view_as_columns_action = GUI::Action::create_checkable(
+        "View as &Columns", { Mod_Ctrl, KeyCode::Key_3 }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/columns-view.png"), [&](GUI::Action const&) {
+            set_view_mode(DirectoryView::ViewMode::Columns);
+            Config::write_string("FileManager", "DirectoryView", "ViewMode", "Columns");
+        },
         window());
 }
 

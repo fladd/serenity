@@ -251,7 +251,7 @@ void KeyboardDevice::key_state_changed(u8 scan_code, bool pressed)
         HIDManagement::the().m_client->on_key_pressed(event);
 
     {
-        ScopedSpinLock lock(m_queue_lock);
+        SpinlockLocker lock(m_queue_lock);
         m_queue.enqueue(event);
     }
 
@@ -273,15 +273,15 @@ UNMAP_AFTER_INIT KeyboardDevice::~KeyboardDevice()
 {
 }
 
-bool KeyboardDevice::can_read(const FileDescription&, size_t) const
+bool KeyboardDevice::can_read(const OpenFileDescription&, size_t) const
 {
     return !m_queue.is_empty();
 }
 
-KResultOr<size_t> KeyboardDevice::read(FileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
+KResultOr<size_t> KeyboardDevice::read(OpenFileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
 {
     size_t nread = 0;
-    ScopedSpinLock lock(m_queue_lock);
+    SpinlockLocker lock(m_queue_lock);
     while (nread < size) {
         if (m_queue.is_empty())
             break;
@@ -292,9 +292,9 @@ KResultOr<size_t> KeyboardDevice::read(FileDescription&, u64, UserOrKernelBuffer
 
         lock.unlock();
 
-        auto result = buffer.write_buffered<sizeof(Event)>(sizeof(Event), [&](u8* data, size_t data_bytes) {
-            memcpy(data, &event, sizeof(Event));
-            return data_bytes;
+        auto result = buffer.write_buffered<sizeof(Event)>(sizeof(Event), [&](Bytes bytes) {
+            memcpy(bytes.data(), &event, sizeof(Event));
+            return bytes.size();
         });
         if (result.is_error())
             return result.error();
@@ -306,19 +306,17 @@ KResultOr<size_t> KeyboardDevice::read(FileDescription&, u64, UserOrKernelBuffer
     return nread;
 }
 
-KResultOr<size_t> KeyboardDevice::write(FileDescription&, u64, const UserOrKernelBuffer&, size_t)
+KResultOr<size_t> KeyboardDevice::write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t)
 {
     return 0;
 }
 
-KResult KeyboardDevice::ioctl(FileDescription&, unsigned request, Userspace<void*> arg)
+KResult KeyboardDevice::ioctl(OpenFileDescription&, unsigned request, Userspace<void*> arg)
 {
     switch (request) {
     case KEYBOARD_IOCTL_GET_NUM_LOCK: {
         auto output = static_ptr_cast<bool*>(arg);
-        if (!copy_to_user(output, &m_num_lock_on))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(output, &m_num_lock_on);
     }
     case KEYBOARD_IOCTL_SET_NUM_LOCK: {
         // In this case we expect the value to be a boolean and not a pointer.
@@ -330,9 +328,7 @@ KResult KeyboardDevice::ioctl(FileDescription&, unsigned request, Userspace<void
     }
     case KEYBOARD_IOCTL_GET_CAPS_LOCK: {
         auto output = static_ptr_cast<bool*>(arg);
-        if (!copy_to_user(output, &m_caps_lock_on))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(output, &m_caps_lock_on);
     }
     case KEYBOARD_IOCTL_SET_CAPS_LOCK: {
         auto caps_lock_value = static_cast<u8>(arg.ptr());

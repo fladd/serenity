@@ -21,7 +21,13 @@ inline bool KBufferBuilder::check_expand(size_t size)
     if (Checked<size_t>::addition_would_overflow(new_buffer_size, 1 * MiB))
         return false;
     new_buffer_size = Memory::page_round_up(new_buffer_size + 1 * MiB);
-    return m_buffer->expand(new_buffer_size);
+    auto new_buffer_or_error = KBuffer::try_create_with_size(new_buffer_size);
+    if (new_buffer_or_error.is_error())
+        return false;
+    auto new_buffer = new_buffer_or_error.release_value();
+    memcpy(new_buffer->data(), m_buffer->data(), m_buffer->size());
+    m_buffer = move(new_buffer);
+    return true;
 }
 
 bool KBufferBuilder::flush()
@@ -37,76 +43,87 @@ OwnPtr<KBuffer> KBufferBuilder::build()
     if (!flush())
         return {};
 
-    return try_make<KBuffer>(move(m_buffer));
+    return move(m_buffer);
 }
 
-KBufferBuilder::KBufferBuilder()
-    : m_buffer(KBufferImpl::try_create_with_size(4 * MiB, Memory::Region::Access::ReadWrite))
+KResultOr<KBufferBuilder> KBufferBuilder::try_create()
+{
+    auto buffer = TRY(KBuffer::try_create_with_size(4 * MiB, Memory::Region::Access::ReadWrite));
+    return KBufferBuilder { move(buffer) };
+}
+
+KBufferBuilder::KBufferBuilder(NonnullOwnPtr<KBuffer> buffer)
+    : m_buffer(move(buffer))
 {
 }
 
-void KBufferBuilder::append_bytes(ReadonlyBytes bytes)
+KResult KBufferBuilder::append_bytes(ReadonlyBytes bytes)
 {
     if (!check_expand(bytes.size()))
-        return;
+        return ENOMEM;
     memcpy(insertion_ptr(), bytes.data(), bytes.size());
     m_size += bytes.size();
+    return KSuccess;
 }
 
-void KBufferBuilder::append(const StringView& str)
+KResult KBufferBuilder::append(const StringView& str)
 {
     if (str.is_empty())
-        return;
+        return KSuccess;
     if (!check_expand(str.length()))
-        return;
+        return ENOMEM;
     memcpy(insertion_ptr(), str.characters_without_null_termination(), str.length());
     m_size += str.length();
+    return KSuccess;
 }
 
-void KBufferBuilder::append(const char* characters, int length)
+KResult KBufferBuilder::append(const char* characters, int length)
 {
     if (!length)
-        return;
+        return KSuccess;
     if (!check_expand(length))
-        return;
+        return ENOMEM;
     memcpy(insertion_ptr(), characters, length);
     m_size += length;
+    return KSuccess;
 }
 
-void KBufferBuilder::append(char ch)
+KResult KBufferBuilder::append(char ch)
 {
     if (!check_expand(1))
-        return;
+        return ENOMEM;
     insertion_ptr()[0] = ch;
     m_size += 1;
+    return KSuccess;
 }
 
-void KBufferBuilder::append_escaped_for_json(const StringView& string)
+KResult KBufferBuilder::append_escaped_for_json(const StringView& string)
 {
     for (auto ch : string) {
         switch (ch) {
         case '\e':
-            append("\\u001B");
+            TRY(append("\\u001B"));
             break;
         case '\b':
-            append("\\b");
+            TRY(append("\\b"));
             break;
         case '\n':
-            append("\\n");
+            TRY(append("\\n"));
             break;
         case '\t':
-            append("\\t");
+            TRY(append("\\t"));
             break;
         case '\"':
-            append("\\\"");
+            TRY(append("\\\""));
             break;
         case '\\':
-            append("\\\\");
+            TRY(append("\\\\"));
             break;
         default:
-            append(ch);
+            TRY(append(ch));
         }
     }
+    return KSuccess;
 }
 
 }

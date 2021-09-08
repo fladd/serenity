@@ -40,8 +40,6 @@ FlacLoaderPlugin::FlacLoaderPlugin(const StringView& path)
     reset();
     if (!m_valid)
         return;
-
-    m_resampler = make<ResampleHelper<i32>>(m_sample_rate, 44100);
 }
 
 FlacLoaderPlugin::FlacLoaderPlugin(const ByteBuffer& buffer)
@@ -58,8 +56,6 @@ FlacLoaderPlugin::FlacLoaderPlugin(const ByteBuffer& buffer)
     reset();
     if (!m_valid)
         return;
-
-    m_resampler = make<ResampleHelper<i32>>(m_sample_rate, 44100);
 }
 
 bool FlacLoaderPlugin::sniff()
@@ -138,11 +134,11 @@ bool FlacLoaderPlugin::parse_header()
     ok = ok && (m_total_samples > 0);
     CHECK_OK("Number of samples");
     // Parse checksum into a buffer first
-    ByteBuffer md5_checksum = ByteBuffer::create_uninitialized(128 / 8);
+    Array<u8, 128 / 8> md5_checksum;
     auto md5_bytes_read = streaminfo_data.read(md5_checksum);
     ok = ok && (md5_bytes_read == md5_checksum.size());
     CHECK_OK("MD5 Checksum");
-    md5_checksum.bytes().copy_to({ m_md5_checksum, sizeof(m_md5_checksum) });
+    md5_checksum.span().copy_to({ m_md5_checksum, sizeof(m_md5_checksum) });
 
     // Parse other blocks
     // TODO: For a simple first implementation, all other blocks are skipped as allowed by the FLAC specification.
@@ -199,7 +195,12 @@ FlacRawMetadataBlock FlacLoaderPlugin::next_meta_block(InputBitStream& bit_input
     u32 block_length = bit_input.read_bits_big_endian(24);
     m_data_start_location += 3;
     CHECK_IO_ERROR();
-    ByteBuffer block_data = ByteBuffer::create_uninitialized(block_length);
+    auto block_data_result = ByteBuffer::create_uninitialized(block_length);
+    if (!block_data_result.has_value()) {
+        m_error_string = "Out of memory";
+        return FlacRawMetadataBlock {};
+    }
+    auto block_data = block_data_result.release_value();
     // Reads exactly the bytes necessary into the Bytes container
     bit_input.read(block_data);
     m_data_start_location += block_length;
@@ -348,8 +349,6 @@ void FlacLoaderPlugin::next_frame()
         FlacSubframeHeader new_subframe = next_subframe_header(bit_stream, i);
         CHECK_ERROR_STRING;
         Vector<i32> subframe_samples = parse_subframe(new_subframe, bit_stream);
-        m_resampler->reset();
-        subframe_samples = m_resampler->resample(subframe_samples);
         CHECK_ERROR_STRING;
         current_subframes.append(move(subframe_samples));
     }
@@ -550,7 +549,7 @@ FlacSubframeHeader FlacLoaderPlugin::next_subframe_header(InputBitStream& bit_st
 
     FlacSubframeType subframe_type;
     u8 order = 0;
-    //LPC has the highest bit set
+    // LPC has the highest bit set
     if ((subframe_code & 0b100000) > 0) {
         subframe_type = FlacSubframeType::LPC;
         order = (subframe_code & 0b011111) + 1;
@@ -627,10 +626,17 @@ Vector<i32> FlacLoaderPlugin::parse_subframe(FlacSubframeHeader& subframe_header
     return resampler.resample(samples);
 }
 
-// Decode a subframe that isn't actually encoded
-Vector<i32> FlacLoaderPlugin::decode_verbatim([[maybe_unused]] FlacSubframeHeader& subframe, [[maybe_unused]] InputBitStream& bit_input)
+// Decode a subframe that isn't actually encoded, usually seen in random data
+Vector<i32> FlacLoaderPlugin::decode_verbatim(FlacSubframeHeader& subframe, InputBitStream& bit_input)
 {
-    TODO();
+    Vector<i32> decoded;
+    decoded.ensure_capacity(m_current_frame->sample_count);
+
+    for (size_t i = 0; i < m_current_frame->sample_count; ++i) {
+        decoded.unchecked_append(sign_extend(bit_input.read_bits_big_endian(subframe.bits_per_sample - subframe.wasted_bits_per_sample), subframe.bits_per_sample - subframe.wasted_bits_per_sample));
+    }
+
+    return decoded;
 }
 
 // Decode a subframe encoded with a custom linear predictor coding, i.e. the subframe provides the polynomial order and coefficients
@@ -807,9 +813,10 @@ ALWAYS_INLINE i32 decode_unsigned_exp_golomb(u8 k, InputBitStream& bit_input)
 u64 read_utf8_char(InputStream& input)
 {
     u64 character;
-    ByteBuffer single_byte_buffer = ByteBuffer::create_uninitialized(1);
-    input.read(single_byte_buffer);
-    u8 start_byte = single_byte_buffer[0];
+    u8 buffer = 0;
+    Bytes buffer_bytes { &buffer, 1 };
+    input.read(buffer_bytes);
+    u8 start_byte = buffer_bytes[0];
     // Signal byte is zero: ASCII character
     if ((start_byte & 0b10000000) == 0) {
         return start_byte;
@@ -825,8 +832,8 @@ u64 read_utf8_char(InputStream& input)
     u8 start_byte_bitmask = AK::exp2(bits_from_start_byte) - 1;
     character = start_byte_bitmask & start_byte;
     for (u8 i = length - 1; i > 0; --i) {
-        input.read(single_byte_buffer);
-        u8 current_byte = single_byte_buffer[0];
+        input.read(buffer_bytes);
+        u8 current_byte = buffer_bytes[0];
         character = (character << 6) | (current_byte & 0b00111111);
     }
     return character;

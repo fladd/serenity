@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, Maciej Zygmanowski <sppmacd@pm.me>
+ * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -29,7 +30,6 @@
 #include <LibGUI/Window.h>
 #include <LibJS/Interpreter.h>
 #include <LibWeb/HTML/SyntaxHighlighter/SyntaxHighlighter.h>
-#include <LibWeb/InProcessWebView.h>
 #include <LibWeb/Layout/BlockBox.h>
 #include <LibWeb/Layout/InitialContainingBlockBox.h>
 #include <LibWeb/Loader/ResourceLoader.h>
@@ -80,22 +80,7 @@ void Tab::view_source(const URL& url, const String& source)
     window->show();
 }
 
-void Tab::view_dom_tree(const String& dom_tree)
-{
-    auto window = GUI::Window::construct(&this->window());
-    window->resize(300, 500);
-    window->set_title("DOM inspector");
-    window->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/inspector-object.png"));
-    window->set_main_widget<InspectorWidget>();
-
-    auto* inspector_widget = static_cast<InspectorWidget*>(window->main_widget());
-    inspector_widget->set_dom_json(dom_tree);
-    window->show();
-    window->move_to_front();
-}
-
-Tab::Tab(BrowserWindow& window, Type type)
-    : m_type(type)
+Tab::Tab(BrowserWindow& window)
 {
     load_from_gml(tab_gml);
 
@@ -104,10 +89,7 @@ Tab::Tab(BrowserWindow& window, Type type)
 
     auto& webview_container = *find_descendant_of_type_named<GUI::Widget>("webview_container");
 
-    if (m_type == Type::InProcessWebView)
-        m_page_view = webview_container.add<Web::InProcessWebView>();
-    else
-        m_web_content_view = webview_container.add<Web::OutOfProcessWebView>();
+    m_web_content_view = webview_container.add<Web::OutOfProcessWebView>();
 
     auto& go_back_button = toolbar.add_action(window.go_back_action());
     go_back_button.on_context_menu_request = [this](auto& context_menu_event) {
@@ -193,6 +175,17 @@ Tab::Tab(BrowserWindow& window, Type type)
 
         update_actions();
         update_bookmark_button(url.to_string());
+
+        if (m_dom_inspector_widget)
+            m_dom_inspector_widget->clear_dom_json();
+
+        if (m_console_widget)
+            m_console_widget->reset();
+    };
+
+    hooks().on_load_finish = [this](auto&) {
+        if (m_dom_inspector_widget)
+            m_web_content_view->inspect_dom_tree();
     };
 
     hooks().on_link_click = [this](auto& url, auto& target, unsigned modifiers) {
@@ -220,6 +213,8 @@ Tab::Tab(BrowserWindow& window, Type type)
     m_link_context_menu->add_action(GUI::Action::create("&Download", [this](auto&) {
         start_download(m_link_context_menu_url);
     }));
+    m_link_context_menu->add_separator();
+    m_link_context_menu->add_action(window.inspect_dom_node_action());
 
     hooks().on_link_context_menu_request = [this](auto& url, auto& screen_position) {
         m_link_context_menu_url = url;
@@ -245,6 +240,8 @@ Tab::Tab(BrowserWindow& window, Type type)
     m_image_context_menu->add_action(GUI::Action::create("&Download", [this](auto&) {
         start_download(m_image_context_menu_url);
     }));
+    m_image_context_menu->add_separator();
+    m_image_context_menu->add_action(window.inspect_dom_node_action());
 
     hooks().on_image_context_menu_request = [this](auto& image_url, auto& screen_position, const Gfx::ShareableBitmap& shareable_bitmap) {
         m_image_context_menu_url = image_url;
@@ -291,24 +288,23 @@ Tab::Tab(BrowserWindow& window, Type type)
     };
 
     hooks().on_get_dom_tree = [this](auto& dom_tree) {
-        view_dom_tree(dom_tree);
+        if (m_dom_inspector_widget)
+            m_dom_inspector_widget->set_dom_json(dom_tree);
     };
 
-    hooks().on_js_console_output = [this](auto& method, auto& line) {
-        if (m_console_window) {
-            auto* console_widget = static_cast<ConsoleWidget*>(m_console_window->main_widget());
-            console_widget->handle_js_console_output(method, line);
-        }
+    hooks().on_get_dom_node_properties = [this](auto node_id, auto& specified, auto& computed) {
+        m_dom_inspector_widget->set_dom_node_properties_json(node_id, specified, computed);
     };
 
-    if (m_type == Type::InProcessWebView) {
-        hooks().on_set_document = [this](auto* document) {
-            if (document && m_console_window) {
-                auto* console_widget = static_cast<ConsoleWidget*>(m_console_window->main_widget());
-                console_widget->set_interpreter(document->interpreter().make_weak_ptr());
-            }
-        };
-    }
+    hooks().on_js_console_new_message = [this](auto message_index) {
+        if (m_console_widget)
+            m_console_widget->notify_about_new_console_message(message_index);
+    };
+
+    hooks().on_get_js_console_messages = [this](auto start_index, auto& message_types, auto& messages) {
+        if (m_console_widget)
+            m_console_widget->handle_console_messages(start_index, message_types, messages);
+    };
 
     auto focus_location_box_action = GUI::Action::create(
         "Focus location box", { Mod_Ctrl, Key_L }, Key_F6, [this](auto&) {
@@ -354,6 +350,7 @@ Tab::Tab(BrowserWindow& window, Type type)
     m_page_context_menu->add_separator();
     m_page_context_menu->add_action(window.view_source_action());
     m_page_context_menu->add_action(window.inspect_dom_tree_action());
+    m_page_context_menu->add_action(window.inspect_dom_node_action());
     hooks().on_context_menu_request = [&](auto& screen_position) {
         m_page_context_menu->popup(screen_position);
     };
@@ -366,19 +363,12 @@ Tab::~Tab()
 void Tab::load(const URL& url, LoadType load_type)
 {
     m_is_history_navigation = (load_type == LoadType::HistoryNavigation);
-
-    if (m_type == Type::InProcessWebView)
-        m_page_view->load(url);
-    else
-        m_web_content_view->load(url);
-
+    m_web_content_view->load(url);
     m_location_box->set_focus(false);
 }
 
 URL Tab::url() const
 {
-    if (m_type == Type::InProcessWebView)
-        return m_page_view->url();
     return m_web_content_view->url();
 }
 
@@ -434,16 +424,6 @@ void Tab::update_bookmark_button(const String& url)
 
 void Tab::did_become_active()
 {
-    if (m_type == Type::InProcessWebView) {
-        Web::ResourceLoader::the().on_load_counter_change = [this] {
-            if (Web::ResourceLoader::the().pending_loads() == 0) {
-                m_statusbar->set_text("");
-                return;
-            }
-            m_statusbar->set_text(String::formatted("Loading ({} pending resources...)", Web::ResourceLoader::the().pending_loads()));
-        };
-    }
-
     BookmarksBarWidget::the().on_bookmark_click = [this](auto& url, unsigned modifiers) {
         if (modifiers & Mod_Ctrl)
             on_tab_open_request(url);
@@ -472,15 +452,11 @@ void Tab::context_menu_requested(const Gfx::IntPoint& screen_position)
 
 GUI::AbstractScrollableWidget& Tab::view()
 {
-    if (m_type == Type::InProcessWebView)
-        return *m_page_view;
     return *m_web_content_view;
 }
 
 Web::WebViewHooks& Tab::hooks()
 {
-    if (m_type == Type::InProcessWebView)
-        return *m_page_view;
     return *m_web_content_view;
 }
 
@@ -502,6 +478,56 @@ BrowserWindow const& Tab::window() const
 BrowserWindow& Tab::window()
 {
     return static_cast<BrowserWindow&>(*Widget::window());
+}
+
+void Tab::show_inspector_window(Browser::Tab::InspectorTarget inspector_target)
+{
+    if (!m_dom_inspector_widget) {
+        auto window = GUI::Window::construct(&this->window());
+        window->resize(300, 500);
+        window->set_title("DOM inspector");
+        window->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/inspector-object.png"));
+        window->on_close = [&]() {
+            m_web_content_view->clear_inspected_dom_node();
+        };
+        m_dom_inspector_widget = window->set_main_widget<InspectorWidget>();
+        m_dom_inspector_widget->set_web_view(*m_web_content_view);
+        m_web_content_view->inspect_dom_tree();
+    }
+
+    if (inspector_target == InspectorTarget::HoveredElement) {
+        Optional<i32> hovered_node = m_web_content_view->get_hovered_node_id();
+        VERIFY(hovered_node.has_value());
+        m_dom_inspector_widget->set_inspected_node(hovered_node.value());
+    } else {
+        VERIFY(inspector_target == InspectorTarget::Document);
+        m_dom_inspector_widget->select_default_node();
+    }
+
+    auto* window = m_dom_inspector_widget->window();
+    window->show();
+    window->move_to_front();
+}
+
+void Tab::show_console_window()
+{
+    if (!m_console_widget) {
+        auto console_window = GUI::Window::construct(&window());
+        console_window->resize(500, 300);
+        console_window->set_title("JS Console");
+        console_window->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/filetype-javascript.png"));
+        m_console_widget = console_window->set_main_widget<ConsoleWidget>();
+        m_console_widget->on_js_input = [this](String const& js_source) {
+            m_web_content_view->js_console_input(js_source);
+        };
+        m_console_widget->on_request_messages = [this](i32 start_index) {
+            m_web_content_view->js_console_request_messages(start_index);
+        };
+    }
+
+    auto* window = m_console_widget->window();
+    window->show();
+    window->move_to_front();
 }
 
 }

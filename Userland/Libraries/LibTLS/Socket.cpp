@@ -15,9 +15,8 @@ namespace TLS {
 Optional<ByteBuffer> TLSv12::read()
 {
     if (m_context.application_buffer.size()) {
-        auto buf = m_context.application_buffer.slice(0, m_context.application_buffer.size());
-        m_context.application_buffer.clear();
-        return buf;
+        auto buf = move(m_context.application_buffer);
+        return { move(buf) };
     }
     return {};
 }
@@ -47,10 +46,18 @@ String TLSv12::read_line(size_t max_size)
     if (offset > max_size)
         return {};
 
-    auto buffer = ByteBuffer::copy(start, offset);
+    auto buffer_result = ByteBuffer::copy(start, offset);
+    if (!buffer_result.has_value()) {
+        dbgln("TLS: Failed to read line, not enough memory");
+        dbgln("max_size < offset: {} < {} (size = {})", max_size, offset, m_context.application_buffer.size());
+        dbgln("-> {:32hex-dump}", ReadonlyBytes { start, offset });
+        return {};
+    }
+
+    String line { bit_cast<char const*>(start), offset, Chomp };
     m_context.application_buffer = m_context.application_buffer.slice(offset + 1, m_context.application_buffer.size() - offset - 1);
 
-    return String::copy(buffer, Chomp);
+    return line;
 }
 
 bool TLSv12::write(ReadonlyBytes buffer)
@@ -97,7 +104,7 @@ bool TLSv12::common_connect(const struct sockaddr* saddr, socklen_t length)
         auto packet = build_hello();
         write_packet(packet);
 
-        deferred_invoke([&](auto&) {
+        deferred_invoke([&] {
             m_handshake_timeout_timer = Core::Timer::create_single_shot(
                 m_max_wait_time_for_handshake_in_seconds * 1000, [&] {
                     auto timeout_diff = Core::DateTime::now().timestamp() - m_context.handshake_initiation_timestamp;
@@ -141,7 +148,7 @@ void TLSv12::read_from_socket()
     auto notify_client_for_app_data = [&] {
         if (m_context.application_buffer.size() > 0) {
             if (!did_schedule_read) {
-                deferred_invoke([&](auto&) { read_from_socket(); });
+                deferred_invoke([&] { read_from_socket(); });
                 did_schedule_read = true;
             }
             if (on_tls_ready_to_read)

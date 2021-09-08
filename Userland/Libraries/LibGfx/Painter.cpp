@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
+ * Copyright (c) 2021, Mustafa Quraish <mustafa@cs.toronto.edu>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -583,6 +584,21 @@ void Painter::draw_rect(const IntRect& a_rect, Color color, bool rough)
                     set_physical_pixel_with_draw_op(bits[rect.right() * scale + i], color);
         }
     }
+}
+
+void Painter::draw_rect_with_thickness(const IntRect& rect, Color color, int thickness)
+{
+    VERIFY(scale() == 1); // FIXME: Add scaling support.
+
+    IntPoint p1 = rect.location();
+    IntPoint p2 = { rect.location().x() + rect.width(), rect.location().y() };
+    IntPoint p3 = { rect.location().x() + rect.width(), rect.location().y() + rect.height() };
+    IntPoint p4 = { rect.location().x(), rect.location().y() + rect.height() };
+
+    draw_line(p1, p2, color, thickness);
+    draw_line(p2, p3, color, thickness);
+    draw_line(p3, p4, color, thickness);
+    draw_line(p4, p1, color, thickness);
 }
 
 void Painter::draw_bitmap(const IntPoint& p, const CharacterBitmap& bitmap, Color color)
@@ -1455,15 +1471,17 @@ void Painter::do_draw_text(IntRect const& rect, Utf8View const& text, Font const
         VERIFY_NOT_REACHED();
     }
 
+    bounding_rect.intersect(rect);
+
     for (size_t i = 0; i < lines.size(); ++i) {
-        auto& line = lines[i];
+        auto line = Utf8View { lines[i] };
 
         IntRect line_rect { bounding_rect.x(), bounding_rect.y() + static_cast<int>(i) * line_height, bounding_rect.width(), line_height };
         line_rect.intersect(rect);
 
         TextDirection line_direction = get_text_direction(line);
-        if (text_contains_bidirectional_text(Utf8View { line }, line_direction)) { // Slow Path: The line contains mixed BiDi classes
-            auto directional_runs = split_text_into_directional_runs(Utf8View { line }, line_direction);
+        if (text_contains_bidirectional_text(line, line_direction)) { // Slow Path: The line contains mixed BiDi classes
+            auto directional_runs = split_text_into_directional_runs(line, line_direction);
             auto current_dx = line_direction == TextDirection::LTR ? 0 : line_rect.width();
             for (auto& directional_run : directional_runs) {
                 auto run_width = font.width(directional_run.text());
@@ -1476,14 +1494,14 @@ void Painter::do_draw_text(IntRect const& rect, Utf8View const& text, Font const
                 // compatible with draw_text_line.
                 StringBuilder builder;
                 builder.append(directional_run.text());
-                auto text = Utf8View { builder.to_string() };
+                auto line_text = Utf8View { builder.string_view() };
 
-                draw_text_line(run_rect, text, font, alignment, directional_run.direction(), draw_glyph);
+                draw_text_line(run_rect, line_text, font, alignment, directional_run.direction(), draw_glyph);
                 if (line_direction == TextDirection::LTR)
                     current_dx += run_width;
             }
         } else {
-            draw_text_line(line_rect, Utf8View { line }, font, alignment, line_direction, draw_glyph);
+            draw_text_line(line_rect, line, font, alignment, line_direction, draw_glyph);
         }
     }
 }

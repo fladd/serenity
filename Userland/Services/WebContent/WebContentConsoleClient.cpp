@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2021, Brandon Scott <xeon.productions@gmail.com>
  * Copyright (c) 2020, Hunter Salyer <thefalsehonesty@gmail.com>
+ * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,11 +10,23 @@
 #include <LibJS/Interpreter.h>
 #include <LibJS/MarkupGenerator.h>
 #include <LibJS/Parser.h>
-#include <LibWeb/Bindings/DOMExceptionWrapper.h>
+#include <LibWeb/Bindings/WindowObject.h>
+#include <WebContent/ConsoleGlobalObject.h>
 
 namespace WebContent {
 
-void WebContentConsoleClient::handle_input(const String& js_source)
+WebContentConsoleClient::WebContentConsoleClient(JS::Console& console, WeakPtr<JS::Interpreter> interpreter, ClientConnection& client)
+    : ConsoleClient(console)
+    , m_client(client)
+    , m_interpreter(interpreter)
+{
+    JS::DeferGC defer_gc(m_interpreter->heap());
+    auto console_global_object = m_interpreter->heap().allocate_without_global_object<ConsoleGlobalObject>(static_cast<Web::Bindings::WindowObject&>(m_interpreter->global_object()));
+    console_global_object->initialize_global_object();
+    m_console_global_object = JS::make_handle(console_global_object);
+}
+
+void WebContentConsoleClient::handle_input(String const& js_source)
 {
     auto parser = JS::Parser(JS::Lexer(js_source));
     auto program = parser.parse_program();
@@ -24,9 +37,9 @@ void WebContentConsoleClient::handle_input(const String& js_source)
         auto hint = error.source_location_hint(js_source);
         if (!hint.is_empty())
             output_html.append(String::formatted("<pre>{}</pre>", escape_html_entities(hint)));
-        m_interpreter->vm().throw_exception<JS::SyntaxError>(m_interpreter->global_object(), error.to_string());
+        m_interpreter->vm().throw_exception<JS::SyntaxError>(*m_console_global_object.cell(), error.to_string());
     } else {
-        m_interpreter->run(m_interpreter->global_object(), *program);
+        m_interpreter->run(*m_console_global_object.cell(), *program);
     }
 
     if (m_interpreter->exception()) {
@@ -45,14 +58,52 @@ void WebContentConsoleClient::handle_input(const String& js_source)
     print_html(JS::MarkupGenerator::html_from_value(m_interpreter->vm().last_value()));
 }
 
-void WebContentConsoleClient::print_html(const String& line)
+void WebContentConsoleClient::print_html(String const& line)
 {
-    m_client.async_did_js_console_output("html", line);
+    m_message_log.append({ .type = ConsoleOutput::Type::HTML, .html = line });
+    m_client.async_did_output_js_console_message(m_message_log.size() - 1);
 }
 
 void WebContentConsoleClient::clear_output()
 {
-    m_client.async_did_js_console_output("clear_output", {});
+    m_message_log.append({ .type = ConsoleOutput::Type::Clear, .html = "" });
+    m_client.async_did_output_js_console_message(m_message_log.size() - 1);
+}
+
+void WebContentConsoleClient::send_messages(i32 start_index)
+{
+    // FIXME: Cap the number of messages we send at once?
+    auto messages_to_send = m_message_log.size() - start_index;
+    if (messages_to_send < 1) {
+        // When the console is first created, it requests any messages that happened before
+        // then, by requesting with start_index=0. If we don't have any messages at all, that
+        // is still a valid request, and we can just ignore it.
+        if (start_index != 0)
+            m_client.did_misbehave("Requested non-existent console message index.");
+        return;
+    }
+
+    // FIXME: Replace with a single Vector of message structs
+    Vector<String> message_types;
+    Vector<String> messages;
+    message_types.ensure_capacity(messages_to_send);
+    messages.ensure_capacity(messages_to_send);
+
+    for (size_t i = start_index; i < m_message_log.size(); i++) {
+        auto& message = m_message_log[i];
+        switch (message.type) {
+        case ConsoleOutput::Type::HTML:
+            message_types.append("html");
+            break;
+        case ConsoleOutput::Type::Clear:
+            message_types.append("clear");
+            break;
+        }
+
+        messages.append(message.html);
+    }
+
+    m_client.async_did_get_js_console_messages(start_index, message_types, messages);
 }
 
 JS::Value WebContentConsoleClient::log()

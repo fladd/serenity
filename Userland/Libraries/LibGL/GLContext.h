@@ -56,10 +56,13 @@ public:
     virtual void gl_alpha_func(GLenum func, GLclampf ref) = 0;
     virtual void gl_hint(GLenum target, GLenum mode) = 0;
     virtual void gl_read_buffer(GLenum mode) = 0;
+    virtual void gl_draw_buffer(GLenum buffer) = 0;
     virtual void gl_read_pixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid* pixels) = 0;
     virtual void gl_tex_image_2d(GLenum target, GLint level, GLint internal_format, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid* data) = 0;
+    virtual void gl_tex_sub_image_2d(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* data) = 0;
     virtual void gl_tex_parameter(GLenum target, GLenum pname, GLfloat param) = 0;
     virtual void gl_tex_coord(GLfloat s, GLfloat t, GLfloat r, GLfloat q) = 0;
+    virtual void gl_tex_env(GLenum target, GLenum pname, GLfloat param) = 0;
     virtual void gl_bind_texture(GLenum target, GLuint texture) = 0;
     virtual void gl_active_texture(GLenum texture) = 0;
     virtual void gl_get_floatv(GLenum pname, GLfloat* params) = 0;
@@ -76,6 +79,12 @@ public:
     virtual void gl_get_integerv(GLenum pname, GLint* data) = 0;
     virtual void gl_depth_range(GLdouble min, GLdouble max) = 0;
     virtual void gl_depth_func(GLenum func) = 0;
+    virtual void gl_polygon_mode(GLenum face, GLenum mode) = 0;
+    virtual void gl_polygon_offset(GLfloat factor, GLfloat units) = 0;
+    virtual void gl_fogfv(GLenum pname, GLfloat* params) = 0;
+    virtual void gl_fogf(GLenum pname, GLfloat params) = 0;
+    virtual void gl_fogi(GLenum pname, GLint param) = 0;
+    virtual void gl_pixel_store(GLenum pname, GLfloat param) = 0;
 
     virtual void present() = 0;
 };

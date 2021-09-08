@@ -6,6 +6,7 @@
 
 #include "FileArgument.h"
 #include "MainWidget.h"
+#include <LibConfig/Client.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
 #include <LibCore/StandardPaths.h>
@@ -22,6 +23,8 @@ int main(int argc, char** argv)
     }
 
     auto app = GUI::Application::construct(argc, argv);
+
+    Config::pledge_domains("TextEditor");
 
     char const* preview_mode = "auto";
     char const* file_to_edit = nullptr;
@@ -45,11 +48,6 @@ int main(int argc, char** argv)
                 return 1;
             }
         }
-    }
-
-    if (unveil(Core::StandardPaths::config_directory().characters(), "rw") < 0) {
-        perror("unveil");
-        return 1;
     }
 
     if (unveil("/res", "r") < 0) {

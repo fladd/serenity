@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,7 +14,6 @@
 #include <LibJS/Heap/Heap.h>
 #include <LibJS/Interpreter.h>
 #include <LibJS/Parser.h>
-#include <LibJS/Runtime/VM.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/Cookie/ParsedCookie.h>
 #include <LibWeb/DOM/Document.h>
@@ -223,23 +223,91 @@ void ClientConnection::inspect_dom_tree()
     }
 }
 
-void ClientConnection::js_console_initialize()
+Messages::WebContentServer::InspectDomNodeResponse ClientConnection::inspect_dom_node(i32 node_id)
+{
+    if (auto* doc = page().top_level_browsing_context().document()) {
+        Web::DOM::Node* node = Web::DOM::Node::from_id(node_id);
+        if (!node || (&node->document() != doc)) {
+            doc->set_inspected_node(nullptr);
+            return { false, "", "" };
+        }
+
+        doc->set_inspected_node(node);
+
+        if (node->is_element()) {
+            auto& element = verify_cast<Web::DOM::Element>(*node);
+            if (!element.specified_css_values())
+                return { false, "", "" };
+
+            auto serialize_json = [](Web::CSS::StyleProperties const& properties) -> String {
+                StringBuilder builder;
+
+                JsonObjectSerializer serializer(builder);
+                properties.for_each_property([&](auto property_id, auto& value) {
+                    serializer.add(Web::CSS::string_from_property_id(property_id), value.to_string());
+                });
+                serializer.finish();
+
+                return builder.to_string();
+            };
+
+            String specified_values_json = serialize_json(*element.specified_css_values());
+            String computed_values_json = serialize_json(element.computed_style());
+            return { true, specified_values_json, computed_values_json };
+        }
+    }
+
+    return { false, "", "" };
+}
+
+Messages::WebContentServer::GetHoveredNodeIdResponse ClientConnection::get_hovered_node_id()
 {
     if (auto* document = page().top_level_browsing_context().document()) {
-        auto interpreter = document->interpreter().make_weak_ptr();
-        if (m_interpreter.ptr() == interpreter.ptr())
-            return;
-
-        m_interpreter = interpreter;
-        m_console_client = make<WebContentConsoleClient>(interpreter->global_object().console(), interpreter, *this);
-        interpreter->global_object().console().set_client(*m_console_client.ptr());
+        auto hovered_node = document->hovered_node();
+        if (hovered_node)
+            return hovered_node->id();
     }
+    return (i32)0;
+}
+
+void ClientConnection::initialize_js_console(Badge<PageHost>)
+{
+    auto* document = page().top_level_browsing_context().document();
+    auto interpreter = document->interpreter().make_weak_ptr();
+    if (m_interpreter.ptr() == interpreter.ptr())
+        return;
+
+    m_interpreter = interpreter;
+    m_console_client = make<WebContentConsoleClient>(interpreter->global_object().console(), interpreter, *this);
+    interpreter->global_object().console().set_client(*m_console_client.ptr());
 }
 
 void ClientConnection::js_console_input(const String& js_source)
 {
     if (m_console_client)
         m_console_client->handle_input(js_source);
+}
+
+void ClientConnection::run_javascript(String const& js_source)
+{
+    if (!page().top_level_browsing_context().document())
+        return;
+
+    auto& interpreter = page().top_level_browsing_context().document()->interpreter();
+
+    auto parser = JS::Parser(JS::Lexer(js_source));
+    auto program = parser.parse_program();
+    interpreter.run(interpreter.global_object(), *program);
+
+    if (interpreter.vm().exception()) {
+        dbgln("Exception :(");
+        interpreter.vm().clear_exception();
+    }
+}
+
+void ClientConnection::js_console_request_messages(i32 start_index)
+{
+    m_console_client->send_messages(start_index);
 }
 
 Messages::WebContentServer::GetSelectedTextResponse ClientConnection::get_selected_text()

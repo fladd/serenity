@@ -10,6 +10,7 @@
 #include <LibGUI/Painter.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Font.h>
+#include <LibThreading/BackgroundAction.h>
 
 REGISTER_WIDGET(DisplaySettings, MonitorWidget)
 
@@ -26,23 +27,35 @@ MonitorWidget::MonitorWidget()
 
 bool MonitorWidget::set_wallpaper(String path)
 {
-    if (path == m_desktop_wallpaper_path)
+    if (!is_different_to_current_wallpaper_path(path))
         return false;
 
-    if (path.is_empty()) {
-        m_wallpaper_bitmap = nullptr;
+    Threading::BackgroundAction<RefPtr<Gfx::Bitmap>>::create(
+        [path](auto&) {
+            RefPtr<Gfx::Bitmap> bmp;
+            if (!path.is_empty())
+                bmp = Gfx::Bitmap::try_load_from_file(path);
+            return bmp;
+        },
+
+        [this, path](RefPtr<Gfx::Bitmap> bitmap) {
+            // If we've been requested to change while we were loading the bitmap, don't bother spending the cost to
+            // move and render the now stale bitmap.
+            if (is_different_to_current_wallpaper_path(path))
+                return;
+            if (!bitmap.is_null())
+                m_wallpaper_bitmap = move(bitmap);
+            else
+                m_wallpaper_bitmap = nullptr;
+            m_desktop_dirty = true;
+            update();
+        });
+
+    if (path.is_empty())
         m_desktop_wallpaper_path = nullptr;
-        m_desktop_dirty = true;
-        update();
-        return false;
-    }
+    else
+        m_desktop_wallpaper_path = move(path);
 
-    auto bitmap = Gfx::Bitmap::try_load_from_file(path);
-    if (bitmap)
-        m_wallpaper_bitmap = move(bitmap);
-    m_desktop_wallpaper_path = move(path);
-    m_desktop_dirty = true;
-    update();
     return true;
 }
 
@@ -113,8 +126,7 @@ void MonitorWidget::redraw_desktop_if_needed()
     auto scaled_bitmap = m_wallpaper_bitmap->scaled(sw, sh);
 
     if (m_desktop_wallpaper_mode == "center") {
-        Gfx::IntRect centered_rect { {}, scaled_size };
-        centered_rect.center_within(m_desktop_bitmap->rect());
+        auto centered_rect = Gfx::IntRect({}, scaled_size).centered_within(m_desktop_bitmap->rect());
         painter.blit(centered_rect.location(), *scaled_bitmap, scaled_bitmap->rect());
     } else if (m_desktop_wallpaper_mode == "tile") {
         painter.draw_tiled_bitmap(m_desktop_bitmap->rect(), *scaled_bitmap);

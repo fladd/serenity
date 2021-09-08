@@ -5,7 +5,7 @@
  */
 
 #include <Kernel/Debug.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Process.h>
 
 namespace Kernel {
@@ -27,21 +27,16 @@ KResultOr<FlatPtr> Process::sys$readv(int fd, Userspace<const struct iovec*> iov
     Vector<iovec, 32> vecs;
     if (!vecs.try_resize(iov_count))
         return ENOMEM;
-    if (!copy_n_from_user(vecs.data(), iov, iov_count))
-        return EFAULT;
+    TRY(copy_n_from_user(vecs.data(), iov, iov_count));
     for (auto& vec : vecs) {
         total_length += vec.iov_len;
         if (total_length > NumericLimits<i32>::max())
             return EINVAL;
     }
 
-    auto description = fds().file_description(fd);
-    if (!description)
-        return EBADF;
-
+    auto description = TRY(fds().open_file_description(fd));
     if (!description->is_readable())
         return EBADF;
-
     if (description->is_directory())
         return EISDIR;
 
@@ -60,10 +55,8 @@ KResultOr<FlatPtr> Process::sys$readv(int fd, Userspace<const struct iovec*> iov
         auto buffer = UserOrKernelBuffer::for_user_buffer((u8*)vec.iov_base, vec.iov_len);
         if (!buffer.has_value())
             return EFAULT;
-        auto result = description->read(buffer.value(), vec.iov_len);
-        if (result.is_error())
-            return result.error();
-        nread += result.value();
+        auto nread_here = TRY(description->read(buffer.value(), vec.iov_len));
+        nread += nread_here;
     }
 
     return nread;
@@ -78,9 +71,7 @@ KResultOr<FlatPtr> Process::sys$read(int fd, Userspace<u8*> buffer, size_t size)
     if (size > NumericLimits<ssize_t>::max())
         return EINVAL;
     dbgln_if(IO_DEBUG, "sys$read({}, {}, {})", fd, buffer.ptr(), size);
-    auto description = fds().file_description(fd);
-    if (!description)
-        return EBADF;
+    auto description = TRY(fds().open_file_description(fd));
     if (!description->is_readable())
         return EBADF;
     if (description->is_directory())
@@ -98,10 +89,7 @@ KResultOr<FlatPtr> Process::sys$read(int fd, Userspace<u8*> buffer, size_t size)
     auto user_buffer = UserOrKernelBuffer::for_user_buffer(buffer, size);
     if (!user_buffer.has_value())
         return EFAULT;
-    auto result = description->read(user_buffer.value(), size);
-    if (result.is_error())
-        return result.error();
-    return result.value();
+    return TRY(description->read(user_buffer.value(), size));
 }
 
 }

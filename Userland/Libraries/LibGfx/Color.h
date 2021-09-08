@@ -221,9 +221,14 @@ public:
             alpha() * other.alpha() / 255);
     }
 
+    constexpr u8 luminosity() const
+    {
+        return (red() * 0.2126f + green() * 0.7152f + blue() * 0.0722f);
+    }
+
     constexpr Color to_grayscale() const
     {
-        int gray = (red() + green() + blue()) / 3;
+        auto gray = luminosity();
         return Color(gray, gray, gray, alpha());
     }
 
@@ -235,6 +240,30 @@ public:
     constexpr Color lightened(float amount = 1.2f) const
     {
         return Color(min(255, (int)((float)red() * amount)), min(255, (int)((float)green() * amount)), min(255, (int)((float)blue() * amount)), alpha());
+    }
+
+    Vector<Color> shades(u32 steps, float max = 1.f) const
+    {
+        float shade = 1.f;
+        float step = max / steps;
+        Vector<Color> shades;
+        for (u32 i = 0; i < steps; i++) {
+            shade -= step;
+            shades.append(this->darkened(shade));
+        }
+        return shades;
+    }
+
+    Vector<Color> tints(u32 steps, float max = 1.f) const
+    {
+        float shade = 1.f;
+        float step = max / steps;
+        Vector<Color> tints;
+        for (u32 i = 0; i < steps; i++) {
+            shade += step;
+            tints.append(this->lightened(shade));
+        }
+        return tints;
     }
 
     constexpr Color inverted() const
@@ -361,6 +390,11 @@ public:
         u8 out_g = (u8)(g * 255);
         u8 out_b = (u8)(b * 255);
         return Color(out_r, out_g, out_b);
+    }
+
+    constexpr Color suggested_foreground_color() const
+    {
+        return luminosity() < 128 ? Color::White : Color::Black;
     }
 
 private:

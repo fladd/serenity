@@ -35,7 +35,10 @@ void TLSv12::consume(ReadonlyBytes record)
 
     dbgln_if(TLS_DEBUG, "Consuming {} bytes", record.size());
 
-    m_context.message_buffer.append(record.data(), record.size());
+    if (!m_context.message_buffer.try_append(record)) {
+        dbgln("Not enough space in message buffer, dropping the record");
+        return;
+    }
 
     size_t index { 0 };
     size_t buffer_length = m_context.message_buffer.size();
@@ -303,7 +306,7 @@ TLSv12::TLSv12(Core::Object* parent, Options options)
 {
     m_context.options = move(options);
     m_context.is_server = false;
-    m_context.tls_buffer = ByteBuffer::create_uninitialized(0);
+    m_context.tls_buffer = {};
 #ifdef SOCK_NONBLOCK
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 #else
@@ -348,7 +351,7 @@ Singleton<DefaultRootCACertificates> DefaultRootCACertificates::s_the;
 DefaultRootCACertificates::DefaultRootCACertificates()
 {
     // FIXME: This might not be the best format, find a better way to represent CA certificates.
-    auto config = Core::ConfigFile::get_for_system("ca_certs");
+    auto config = Core::ConfigFile::open_for_system("ca_certs");
     auto now = Core::DateTime::now();
     auto last_year = Core::DateTime::create(now.year() - 1);
     auto next_year = Core::DateTime::create(now.year() + 1);

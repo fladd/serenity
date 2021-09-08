@@ -38,10 +38,10 @@ DatabaseConnection::DatabaseConnection(String database_name, int client_id)
 
     dbgln_if(SQLSERVER_DEBUG, "DatabaseConnection {} initiating connection with database '{}'", connection_id(), m_database_name);
     s_connections.set(m_connection_id, *this);
-    deferred_invoke([&](Object&) {
+    deferred_invoke([&] {
         m_database = SQL::Database::construct(String::formatted("/home/anon/sql/{}.db", m_database_name));
         m_accept_statements = true;
-        auto client_connection = ClientConnection::client_connection_for(client_id);
+        auto client_connection = ClientConnection::client_connection_for(m_client_id);
         if (client_connection)
             client_connection->async_connected(m_connection_id);
         else
@@ -53,7 +53,7 @@ void DatabaseConnection::disconnect()
 {
     dbgln_if(SQLSERVER_DEBUG, "DatabaseConnection::disconnect(connection_id {}, database '{}'", connection_id(), m_database_name);
     m_accept_statements = false;
-    deferred_invoke([&](Object&) {
+    deferred_invoke([&] {
         m_database = nullptr;
         s_connections.remove(m_connection_id);
         auto client_connection = ClientConnection::client_connection_for(client_id());

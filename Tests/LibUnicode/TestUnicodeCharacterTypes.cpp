@@ -155,6 +155,117 @@ TEST_CASE(to_unicode_lowercase_special_casing_sigma)
     EXPECT_EQ(result, "a\u180E\u03C3\u180Eb");
 }
 
+TEST_CASE(to_unicode_lowercase_special_casing_i)
+{
+    // LATIN CAPITAL LETTER I
+    auto result = Unicode::to_unicode_lowercase_full("I"sv, "en"sv);
+    EXPECT_EQ(result, "i"sv);
+
+    result = Unicode::to_unicode_lowercase_full("I"sv, "az"sv);
+    EXPECT_EQ(result, "\u0131"sv);
+
+    result = Unicode::to_unicode_lowercase_full("I"sv, "tr"sv);
+    EXPECT_EQ(result, "\u0131"sv);
+
+    // LATIN CAPITAL LETTER I WITH DOT ABOVE
+    result = Unicode::to_unicode_lowercase_full("\u0130"sv, "en"sv);
+    EXPECT_EQ(result, "\u0069\u0307"sv);
+
+    result = Unicode::to_unicode_lowercase_full("\u0130"sv, "az"sv);
+    EXPECT_EQ(result, "i"sv);
+
+    result = Unicode::to_unicode_lowercase_full("\u0130"sv, "tr"sv);
+    EXPECT_EQ(result, "i"sv);
+
+    // LATIN CAPITAL LETTER I followed by COMBINING DOT ABOVE
+    result = Unicode::to_unicode_lowercase_full("I\u0307"sv, "en"sv);
+    EXPECT_EQ(result, "i\u0307"sv);
+
+    result = Unicode::to_unicode_lowercase_full("I\u0307"sv, "az"sv);
+    EXPECT_EQ(result, "i"sv);
+
+    result = Unicode::to_unicode_lowercase_full("I\u0307"sv, "tr"sv);
+    EXPECT_EQ(result, "i"sv);
+
+    // LATIN CAPITAL LETTER I followed by combining class 0 and COMBINING DOT ABOVE
+    result = Unicode::to_unicode_lowercase_full("IA\u0307"sv, "en"sv);
+    EXPECT_EQ(result, "ia\u0307"sv);
+
+    result = Unicode::to_unicode_lowercase_full("IA\u0307"sv, "az"sv);
+    EXPECT_EQ(result, "\u0131a\u0307"sv);
+
+    result = Unicode::to_unicode_lowercase_full("IA\u0307"sv, "tr"sv);
+    EXPECT_EQ(result, "\u0131a\u0307"sv);
+}
+
+TEST_CASE(to_unicode_lowercase_special_casing_more_above)
+{
+    // LATIN CAPITAL LETTER I
+    auto result = Unicode::to_unicode_lowercase_full("I"sv, "en"sv);
+    EXPECT_EQ(result, "i"sv);
+
+    result = Unicode::to_unicode_lowercase_full("I"sv, "lt"sv);
+    EXPECT_EQ(result, "i"sv);
+
+    // LATIN CAPITAL LETTER J
+    result = Unicode::to_unicode_lowercase_full("J"sv, "en"sv);
+    EXPECT_EQ(result, "j"sv);
+
+    result = Unicode::to_unicode_lowercase_full("J"sv, "lt"sv);
+    EXPECT_EQ(result, "j"sv);
+
+    // LATIN CAPITAL LETTER I WITH OGONEK
+    result = Unicode::to_unicode_lowercase_full("\u012e"sv, "en"sv);
+    EXPECT_EQ(result, "\u012f"sv);
+
+    result = Unicode::to_unicode_lowercase_full("\u012e"sv, "lt"sv);
+    EXPECT_EQ(result, "\u012f"sv);
+
+    // LATIN CAPITAL LETTER I followed by COMBINING GRAVE ACCENT
+    result = Unicode::to_unicode_lowercase_full("I\u0300"sv, "en"sv);
+    EXPECT_EQ(result, "i\u0300"sv);
+
+    result = Unicode::to_unicode_lowercase_full("I\u0300"sv, "lt"sv);
+    EXPECT_EQ(result, "i\u0307\u0300"sv);
+
+    // LATIN CAPITAL LETTER J followed by COMBINING GRAVE ACCENT
+    result = Unicode::to_unicode_lowercase_full("J\u0300"sv, "en"sv);
+    EXPECT_EQ(result, "j\u0300"sv);
+
+    result = Unicode::to_unicode_lowercase_full("J\u0300"sv, "lt"sv);
+    EXPECT_EQ(result, "j\u0307\u0300"sv);
+
+    // LATIN CAPITAL LETTER I WITH OGONEK followed by COMBINING GRAVE ACCENT
+    result = Unicode::to_unicode_lowercase_full("\u012e\u0300"sv, "en"sv);
+    EXPECT_EQ(result, "\u012f\u0300"sv);
+
+    result = Unicode::to_unicode_lowercase_full("\u012e\u0300"sv, "lt"sv);
+    EXPECT_EQ(result, "\u012f\u0307\u0300"sv);
+}
+
+TEST_CASE(to_unicode_lowercase_special_casing_not_before_dot)
+{
+    // LATIN CAPITAL LETTER I
+    auto result = Unicode::to_unicode_lowercase_full("I"sv, "en"sv);
+    EXPECT_EQ(result, "i"sv);
+
+    result = Unicode::to_unicode_lowercase_full("I"sv, "az"sv);
+    EXPECT_EQ(result, "\u0131"sv);
+
+    result = Unicode::to_unicode_lowercase_full("I"sv, "tr"sv);
+    EXPECT_EQ(result, "\u0131"sv);
+
+    // LATIN CAPITAL LETTER I followed by COMBINING DOT ABOVE
+    result = Unicode::to_unicode_lowercase_full("I\u0307"sv, "en"sv);
+    EXPECT_EQ(result, "i\u0307"sv);
+
+    result = Unicode::to_unicode_lowercase_full("I\u0307"sv, "az"sv);
+    EXPECT_EQ(result, "i"sv);
+
+    result = Unicode::to_unicode_lowercase_full("I\u0307"sv, "tr"sv);
+    EXPECT_EQ(result, "i"sv);
+}
+
 TEST_CASE(to_unicode_uppercase_unconditional_special_casing)
 {
     // LATIN SMALL LETTER SHARP S
@@ -212,6 +323,37 @@ TEST_CASE(to_unicode_uppercase_unconditional_special_casing)
     // GREEK SMALL LETTER OMEGA WITH PERISPOMENI AND YPOGEGRAMMENI
     result = Unicode::to_unicode_uppercase_full("\u1FF7"sv);
     EXPECT_EQ(result, "\u03A9\u0342\u0399");
+}
+
+TEST_CASE(to_unicode_uppercase_special_casing_soft_dotted)
+{
+    // LATIN SMALL LETTER I
+    auto result = Unicode::to_unicode_uppercase_full("i"sv, "en"sv);
+    EXPECT_EQ(result, "I"sv);
+
+    result = Unicode::to_unicode_uppercase_full("i"sv, "lt"sv);
+    EXPECT_EQ(result, "I"sv);
+
+    // LATIN SMALL LETTER J
+    result = Unicode::to_unicode_uppercase_full("j"sv, "en"sv);
+    EXPECT_EQ(result, "J"sv);
+
+    result = Unicode::to_unicode_uppercase_full("j"sv, "lt"sv);
+    EXPECT_EQ(result, "J"sv);
+
+    // LATIN SMALL LETTER I followed by COMBINING DOT ABOVE
+    result = Unicode::to_unicode_uppercase_full("i\u0307"sv, "en"sv);
+    EXPECT_EQ(result, "I\u0307"sv);
+
+    result = Unicode::to_unicode_uppercase_full("i\u0307"sv, "lt"sv);
+    EXPECT_EQ(result, "I"sv);
+
+    // LATIN SMALL LETTER J followed by COMBINING DOT ABOVE
+    result = Unicode::to_unicode_uppercase_full("j\u0307"sv, "en"sv);
+    EXPECT_EQ(result, "J\u0307"sv);
+
+    result = Unicode::to_unicode_uppercase_full("j\u0307"sv, "lt"sv);
+    EXPECT_EQ(result, "J"sv);
 }
 
 TEST_CASE(general_category)

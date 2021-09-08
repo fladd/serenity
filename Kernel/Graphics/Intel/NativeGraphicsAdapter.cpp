@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Graphics/Console/ContiguousFramebufferConsole.h>
 #include <Kernel/Graphics/Definitions.h>
 #include <Kernel/Graphics/GraphicsManagement.h>
@@ -189,10 +190,14 @@ IntelNativeGraphicsAdapter::IntelNativeGraphicsAdapter(PCI::Address address)
     VERIFY(bar0_space_size == 0x80000);
     dmesgln("Intel Native Graphics Adapter @ {}, MMIO @ {}, space size is {:x} bytes", address, PhysicalAddress(PCI::get_BAR0(address)), bar0_space_size);
     dmesgln("Intel Native Graphics Adapter @ {}, framebuffer @ {}", address, PhysicalAddress(PCI::get_BAR2(address)));
-    m_registers_region = MM.allocate_kernel_region(PhysicalAddress(PCI::get_BAR0(address)).page_base(), bar0_space_size, "Intel Native Graphics Registers", Memory::Region::Access::ReadWrite);
+    auto region_or_error = MM.allocate_kernel_region(PhysicalAddress(PCI::get_BAR0(address)).page_base(), bar0_space_size, "Intel Native Graphics Registers", Memory::Region::Access::ReadWrite);
+    if (region_or_error.is_error()) {
+        TODO();
+    }
+    m_registers_region = region_or_error.release_value();
     PCI::enable_bus_mastering(address);
     {
-        ScopedSpinLock control_lock(m_control_lock);
+        SpinlockLocker control_lock(m_control_lock);
         set_gmbus_default_rate();
         set_gmbus_pin_pair(GMBusPinPair::DedicatedAnalog);
     }
@@ -277,7 +282,7 @@ void IntelNativeGraphicsAdapter::write_to_register(IntelGraphics::RegisterIndex 
 {
     VERIFY(m_control_lock.is_locked());
     VERIFY(m_registers_region);
-    ScopedSpinLock lock(m_registers_lock);
+    SpinlockLocker lock(m_registers_lock);
     dbgln_if(INTEL_GRAPHICS_DEBUG, "Intel Graphics {}: Write to {} value of {:x}", pci_address(), convert_register_index_to_string(index), value);
     auto* reg = (volatile u32*)m_registers_region->vaddr().offset(index).as_ptr();
     *reg = value;
@@ -286,7 +291,7 @@ u32 IntelNativeGraphicsAdapter::read_from_register(IntelGraphics::RegisterIndex 
 {
     VERIFY(m_control_lock.is_locked());
     VERIFY(m_registers_region);
-    ScopedSpinLock lock(m_registers_lock);
+    SpinlockLocker lock(m_registers_lock);
     auto* reg = (volatile u32*)m_registers_region->vaddr().offset(index).as_ptr();
     u32 value = *reg;
     dbgln_if(INTEL_GRAPHICS_DEBUG, "Intel Graphics {}: Read from {} value of {:x}", pci_address(), convert_register_index_to_string(index), value);
@@ -373,7 +378,7 @@ void IntelNativeGraphicsAdapter::gmbus_read(unsigned address, u8* buf, size_t le
 
 void IntelNativeGraphicsAdapter::gmbus_read_edid()
 {
-    ScopedSpinLock control_lock(m_control_lock);
+    SpinlockLocker control_lock(m_control_lock);
     gmbus_write(DDC2_I2C_ADDRESS, 0);
     gmbus_read(DDC2_I2C_ADDRESS, (u8*)&m_crt_edid, sizeof(Graphics::VideoInfoBlock));
 }
@@ -409,8 +414,8 @@ void IntelNativeGraphicsAdapter::enable_output(PhysicalAddress fb_address, size_
 
 bool IntelNativeGraphicsAdapter::set_crt_resolution(size_t width, size_t height)
 {
-    ScopedSpinLock control_lock(m_control_lock);
-    ScopedSpinLock modeset_lock(m_modeset_lock);
+    SpinlockLocker control_lock(m_control_lock);
+    SpinlockLocker modeset_lock(m_modeset_lock);
     if (!is_resolution_valid(width, height)) {
         return false;
     }

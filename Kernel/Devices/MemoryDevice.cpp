@@ -27,17 +27,17 @@ UNMAP_AFTER_INIT MemoryDevice::~MemoryDevice()
 {
 }
 
-KResultOr<size_t> MemoryDevice::read(FileDescription&, u64, UserOrKernelBuffer&, size_t)
+KResultOr<size_t> MemoryDevice::read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t)
 {
     TODO();
 }
 
-void MemoryDevice::did_seek(FileDescription&, off_t)
+void MemoryDevice::did_seek(OpenFileDescription&, off_t)
 {
     TODO();
 }
 
-KResultOr<Memory::Region*> MemoryDevice::mmap(Process& process, FileDescription&, Memory::VirtualRange const& range, u64 offset, int prot, bool shared)
+KResultOr<Memory::Region*> MemoryDevice::mmap(Process& process, OpenFileDescription&, Memory::VirtualRange const& range, u64 offset, int prot, bool shared)
 {
     auto viewed_address = PhysicalAddress(offset);
 
@@ -47,14 +47,12 @@ KResultOr<Memory::Region*> MemoryDevice::mmap(Process& process, FileDescription&
         return EINVAL;
     }
 
-    auto maybe_vmobject = Memory::AnonymousVMObject::try_create_for_physical_range(viewed_address, range.size());
-    if (maybe_vmobject.is_error())
-        return maybe_vmobject.error();
+    auto vmobject = TRY(Memory::AnonymousVMObject::try_create_for_physical_range(viewed_address, range.size()));
 
     dbgln("MemoryDevice: Mapped physical memory at {} for range of {} bytes", viewed_address, range.size());
     return process.address_space().allocate_region_with_vmobject(
         range,
-        maybe_vmobject.release_value(),
+        move(vmobject),
         0,
         "Mapped Physical Memory",
         prot,

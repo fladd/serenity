@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2020-2021, the SerenityOS developers.
- * Copyright (c) 2021, Sam Atkins <atkinssj@gmail.com>
+ * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -168,7 +168,8 @@ private:
     static Optional<Length> parse_length(ParsingContext const&, StyleComponentValueRule const&);
     static Optional<URL> parse_url_function(ParsingContext const&, StyleComponentValueRule const&);
 
-    static RefPtr<StyleValue> parse_builtin_or_dynamic_value(ParsingContext const&, StyleComponentValueRule const&);
+    static RefPtr<StyleValue> parse_builtin_value(ParsingContext const&, StyleComponentValueRule const&);
+    static RefPtr<StyleValue> parse_dynamic_value(ParsingContext const&, StyleComponentValueRule const&);
     static RefPtr<StyleValue> parse_length_value(ParsingContext const&, StyleComponentValueRule const&);
     static RefPtr<StyleValue> parse_numeric_value(ParsingContext const&, StyleComponentValueRule const&);
     static RefPtr<StyleValue> parse_identifier_value(ParsingContext const&, StyleComponentValueRule const&);

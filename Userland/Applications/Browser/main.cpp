@@ -10,8 +10,8 @@
 #include "Tab.h"
 #include "WindowActions.h"
 #include <AK/StringBuilder.h>
+#include <LibConfig/Client.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/ConfigFile.h>
 #include <LibCore/File.h>
 #include <LibCore/StandardPaths.h>
 #include <LibDesktop/Launcher.h>
@@ -29,7 +29,6 @@ namespace Browser {
 
 String g_search_engine;
 String g_home_url;
-bool g_single_process = false;
 
 }
 
@@ -48,17 +47,12 @@ int main(int argc, char** argv)
     const char* specified_url = nullptr;
 
     Core::ArgsParser args_parser;
-    args_parser.add_option(Browser::g_single_process, "Single-process mode", "single-process", 's');
     args_parser.add_positional_argument(specified_url, "URL to open", "url", Core::ArgsParser::Required::No);
     args_parser.parse(argc, argv);
 
     auto app = GUI::Application::construct(argc, argv);
 
-    if (Browser::g_single_process) {
-        // Connect to the RequestServer and the WebSocket service immediately so we don't need to unveil their portals.
-        Web::ResourceLoader::the();
-        Web::HTML::WebSocketClientManager::the();
-    }
+    Config::pledge_domains("Browser");
 
     // Connect to LaunchServer immediately and let it know that we won't ask for anything other than opening
     // the user's downloads directory.
@@ -103,9 +97,8 @@ int main(int argc, char** argv)
 
     auto app_icon = GUI::Icon::default_icon("app-browser");
 
-    auto m_config = Core::ConfigFile::get_for_app("Browser");
-    Browser::g_home_url = m_config->read_entry("Preferences", "Home", "about:blank");
-    Browser::g_search_engine = m_config->read_entry("Preferences", "SearchEngine", {});
+    Browser::g_home_url = Config::read_string("Browser", "Preferences", "Home", "about:blank");
+    Browser::g_search_engine = Config::read_string("Browser", "Preferences", "SearchEngine", {});
 
     auto ad_filter_list_or_error = Core::File::open(String::formatted("{}/BrowserContentFilters.txt", Core::StandardPaths::config_directory()), Core::OpenMode::ReadOnly);
     if (!ad_filter_list_or_error.is_error()) {

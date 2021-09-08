@@ -8,6 +8,7 @@
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
 #include <AK/Types.h>
+#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Storage/AHCIController.h>
 #include <Kernel/Storage/SATADiskDevice.h>
@@ -80,7 +81,7 @@ volatile AHCI::HBA& AHCIController::hba() const
 
 AHCIController::AHCIController(PCI::Address address)
     : StorageController()
-    , PCI::DeviceController(address)
+    , PCI::Device(address)
     , m_hba_region(default_hba_region())
     , m_capabilities(capabilities())
 {
@@ -126,8 +127,7 @@ AHCI::HBADefinedCapabilities AHCIController::capabilities() const
 
 NonnullOwnPtr<Memory::Region> AHCIController::default_hba_region() const
 {
-    auto region = MM.allocate_kernel_region(PhysicalAddress(PCI::get_BAR5(pci_address())).page_base(), Memory::page_round_up(sizeof(AHCI::HBA)), "AHCI HBA", Memory::Region::Access::ReadWrite);
-    return region.release_nonnull();
+    return MM.allocate_kernel_region(PhysicalAddress(PCI::get_BAR5(pci_address())).page_base(), Memory::page_round_up(sizeof(AHCI::HBA)), "AHCI HBA", Memory::Region::Access::ReadWrite).release_value();
 }
 
 AHCIController::~AHCIController()

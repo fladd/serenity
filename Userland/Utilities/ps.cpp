@@ -50,10 +50,12 @@ int main(int argc, char** argv)
 
     bool every_process_flag = false;
     bool full_format_flag = false;
+    String pid_list;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(every_process_flag, "Show every process", nullptr, 'e');
     args_parser.add_option(full_format_flag, "Full format", nullptr, 'f');
+    args_parser.add_option(pid_list, "A comma-separated list of PIDs. Only processes matching those PIDs will be selected", nullptr, 'q', "pid-list");
     args_parser.parse(argc, argv);
 
     Vector<Column> columns;
@@ -88,7 +90,34 @@ int main(int argc, char** argv)
         return 1;
 
     auto& processes = all_processes.value().processes;
-    quick_sort(processes, [](auto& a, auto& b) { return a.pid < b.pid; });
+
+    if (!pid_list.is_empty()) {
+        every_process_flag = true;
+        auto string_parts = pid_list.split_view(',');
+        Vector<pid_t> selected_pids;
+        selected_pids.ensure_capacity(string_parts.size());
+
+        for (size_t i = 0; i < string_parts.size(); i++) {
+            auto pid = string_parts[i].to_int();
+
+            if (!pid.has_value()) {
+                warnln("Invalid value for -q: {}", pid_list);
+                warnln("Could not parse '{}' as a PID.", string_parts[i]);
+                return 1;
+            }
+
+            selected_pids.append(pid.value());
+        }
+
+        processes.remove_all_matching([&](auto& a) { return selected_pids.find(a.pid) == selected_pids.end(); });
+
+        auto processes_sort_predicate = [&selected_pids](auto& a, auto& b) {
+            return selected_pids.find_first_index(a.pid).value() < selected_pids.find_first_index(b.pid).value();
+        };
+        quick_sort(processes, processes_sort_predicate);
+    } else {
+        quick_sort(processes, [](auto& a, auto& b) { return a.pid < b.pid; });
+    }
 
     Vector<Vector<String>> rows;
     rows.ensure_capacity(1 + processes.size());

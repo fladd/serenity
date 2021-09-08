@@ -1,17 +1,17 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Mustafa Quraish <mustafa@cs.toronto.edu>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "SnakeGame.h"
-#include <LibCore/ConfigFile.h>
+#include <AK/Random.h>
+#include <LibConfig/Client.h>
 #include <LibGUI/Painter.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Font.h>
 #include <LibGfx/FontDatabase.h>
-#include <stdlib.h>
-#include <time.h>
 
 SnakeGame::SnakeGame()
 {
@@ -20,11 +20,9 @@ SnakeGame::SnakeGame()
     m_fruit_bitmaps.append(*Gfx::Bitmap::try_load_from_file("/res/icons/snake/eggplant.png"));
     m_fruit_bitmaps.append(*Gfx::Bitmap::try_load_from_file("/res/icons/snake/cauliflower.png"));
     m_fruit_bitmaps.append(*Gfx::Bitmap::try_load_from_file("/res/icons/snake/tomato.png"));
-    srand(time(nullptr));
     reset();
 
-    auto config = Core::ConfigFile::get_for_app("Snake");
-    m_high_score = config->read_num_entry("Snake", "HighScore", 0);
+    m_high_score = Config::read_i32("Snake", "Snake", "HighScore", 0);
     m_high_score_text = String::formatted("Best: {}", m_high_score);
 }
 
@@ -63,13 +61,13 @@ void SnakeGame::spawn_fruit()
 {
     Coordinate coord;
     for (;;) {
-        coord.row = rand() % m_rows;
-        coord.column = rand() % m_columns;
+        coord.row = get_random_uniform(m_rows);
+        coord.column = get_random_uniform(m_columns);
         if (is_available(coord))
             break;
     }
     m_fruit = coord;
-    m_fruit_type = rand() % m_fruit_bitmaps.size();
+    m_fruit_type = get_random_uniform(m_fruit_bitmaps.size());
 }
 
 Gfx::IntRect SnakeGame::score_rect() const
@@ -131,8 +129,7 @@ void SnakeGame::timer_event(Core::TimerEvent&)
             m_high_score = m_score;
             m_high_score_text = String::formatted("Best: {}", m_high_score);
             update(high_score_rect());
-            auto config = Core::ConfigFile::get_for_app("Snake");
-            config->write_num_entry("Snake", "HighScore", m_high_score);
+            Config::write_i32("Snake", "Snake", "HighScore", m_high_score);
         }
         update(score_rect());
         dirty_cells.append(m_fruit);

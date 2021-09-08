@@ -20,37 +20,23 @@ KResultOr<FlatPtr> Process::sys$pipe(int pipefd[2], int flags)
         return EINVAL;
 
     u32 fd_flags = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
-    auto fifo = FIFO::try_create(uid());
-    if (!fifo)
-        return ENOMEM;
+    auto fifo = TRY(FIFO::try_create(uid()));
 
-    auto open_reader_result = fifo->open_direction(FIFO::Direction::Reader);
-    if (open_reader_result.is_error())
-        return open_reader_result.error();
-    auto open_writer_result = fifo->open_direction(FIFO::Direction::Writer);
-    if (open_writer_result.is_error())
-        return open_writer_result.error();
+    auto reader_fd_allocation = TRY(m_fds.allocate());
+    auto writer_fd_allocation = TRY(m_fds.allocate());
 
-    auto reader_fd_or_error = m_fds.allocate();
-    if (reader_fd_or_error.is_error())
-        return reader_fd_or_error.error();
-    auto reader_fd = reader_fd_or_error.release_value();
-    m_fds[reader_fd.fd].set(open_reader_result.release_value(), fd_flags);
-    m_fds[reader_fd.fd].description()->set_readable(true);
-    if (!copy_to_user(&pipefd[0], &reader_fd.fd))
-        return EFAULT;
+    auto reader_description = TRY(fifo->open_direction(FIFO::Direction::Reader));
+    auto writer_description = TRY(fifo->open_direction(FIFO::Direction::Writer));
 
-    auto writer_fd_or_error = m_fds.allocate();
-    if (writer_fd_or_error.is_error())
-        return writer_fd_or_error.error();
-    auto writer_fd = writer_fd_or_error.release_value();
-    m_fds[writer_fd.fd].set(open_writer_result.release_value(), fd_flags);
-    m_fds[writer_fd.fd].description()->set_writable(true);
+    reader_description->set_readable(true);
+    writer_description->set_writable(true);
 
-    if (!copy_to_user(&pipefd[1], &writer_fd.fd))
-        return EFAULT;
+    m_fds[reader_fd_allocation.fd].set(move(reader_description), fd_flags);
+    m_fds[writer_fd_allocation.fd].set(move(writer_description), fd_flags);
 
-    return 0;
+    TRY(copy_to_user(&pipefd[0], &reader_fd_allocation.fd));
+    TRY(copy_to_user(&pipefd[1], &writer_fd_allocation.fd));
+    return KSuccess;
 }
 
 }

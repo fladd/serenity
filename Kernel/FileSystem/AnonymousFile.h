@@ -13,22 +13,22 @@ namespace Kernel {
 
 class AnonymousFile final : public File {
 public:
-    static RefPtr<AnonymousFile> create(NonnullRefPtr<Memory::AnonymousVMObject> vmobject)
+    static KResultOr<NonnullRefPtr<AnonymousFile>> try_create(NonnullRefPtr<Memory::AnonymousVMObject> vmobject)
     {
-        return adopt_ref_if_nonnull(new (nothrow) AnonymousFile(move(vmobject)));
+        return adopt_nonnull_ref_or_enomem(new (nothrow) AnonymousFile(move(vmobject)));
     }
 
     virtual ~AnonymousFile() override;
 
-    virtual KResultOr<Memory::Region*> mmap(Process&, FileDescription&, Memory::VirtualRange const&, u64 offset, int prot, bool shared) override;
+    virtual KResultOr<Memory::Region*> mmap(Process&, OpenFileDescription&, Memory::VirtualRange const&, u64 offset, int prot, bool shared) override;
 
 private:
     virtual StringView class_name() const override { return "AnonymousFile"; }
-    virtual String absolute_path(const FileDescription&) const override { return ":anonymous-file:"; }
-    virtual bool can_read(const FileDescription&, size_t) const override { return false; }
-    virtual bool can_write(const FileDescription&, size_t) const override { return false; }
-    virtual KResultOr<size_t> read(FileDescription&, u64, UserOrKernelBuffer&, size_t) override { return ENOTSUP; }
-    virtual KResultOr<size_t> write(FileDescription&, u64, const UserOrKernelBuffer&, size_t) override { return ENOTSUP; }
+    virtual String absolute_path(const OpenFileDescription&) const override { return ":anonymous-file:"; }
+    virtual bool can_read(const OpenFileDescription&, size_t) const override { return false; }
+    virtual bool can_write(const OpenFileDescription&, size_t) const override { return false; }
+    virtual KResultOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override { return ENOTSUP; }
+    virtual KResultOr<size_t> write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t) override { return ENOTSUP; }
 
     explicit AnonymousFile(NonnullRefPtr<Memory::AnonymousVMObject>);
 

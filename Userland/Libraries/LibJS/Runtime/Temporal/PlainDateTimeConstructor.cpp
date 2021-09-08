@@ -5,6 +5,7 @@
  */
 
 #include <AK/Checked.h>
+#include <AK/TypeCasts.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Temporal/AbstractOperations.h>
 #include <LibJS/Runtime/Temporal/Calendar.h>
@@ -27,6 +28,10 @@ void PlainDateTimeConstructor::initialize(GlobalObject& global_object)
 
     // 5.2.1 Temporal.PlainDateTime.prototype, https://tc39.es/proposal-temporal/#sec-temporal-plaindatetime-prototype
     define_direct_property(vm.names.prototype, global_object.temporal_plain_date_time_prototype(), 0);
+
+    u8 attr = Attribute::Writable | Attribute::Configurable;
+    define_native_function(vm.names.from, from, 1, attr);
+    define_native_function(vm.names.compare, compare, 2, attr);
 
     define_direct_property(vm.names.length, Value(3), Attribute::Configurable);
 }
@@ -98,7 +103,7 @@ Value PlainDateTimeConstructor::construct(FunctionObject& new_target)
         return {};
 
     // IMPLEMENTATION DEFINED: This is an optimization that allows us to treat these doubles as normal integers from this point onwards.
-    // This does not change the exposed behaviour as the call to CreateTemporalDateTime will immediately check that these values are valid
+    // This does not change the exposed behavior as the call to CreateTemporalDateTime will immediately check that these values are valid
     // ISO values (for years: -273975 - 273975, for months: 1 - 12, for days: 1 - 31, for hours: 0 - 23, for minutes and seconds: 0 - 59,
     // milliseconds, microseconds, and nanoseconds: 0 - 999) all of which are subsets of this check.
     if (!AK::is_within_range<i32>(iso_year) || !AK::is_within_range<u8>(iso_month) || !AK::is_within_range<u8>(iso_day) || !AK::is_within_range<u8>(hour) || !AK::is_within_range<u8>(minute) || !AK::is_within_range<u8>(second) || !AK::is_within_range<u16>(millisecond) || !AK::is_within_range<u16>(microsecond) || !AK::is_within_range<u16>(nanosecond)) {
@@ -108,6 +113,50 @@ Value PlainDateTimeConstructor::construct(FunctionObject& new_target)
 
     // 12. Return ? CreateTemporalDateTime(isoYear, isoMonth, isoDay, hour, minute, second, millisecond, microsecond, nanosecond, calendar, NewTarget).
     return create_temporal_date_time(global_object, iso_year, iso_month, iso_day, hour, minute, second, millisecond, microsecond, nanosecond, *calendar, &new_target);
+}
+
+// 5.2.2 Temporal.PlainDateTime.from ( item [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal.plaindatetime.from
+JS_DEFINE_NATIVE_FUNCTION(PlainDateTimeConstructor::from)
+{
+    auto item = vm.argument(0);
+
+    // 1. Set options to ? GetOptionsObject(options).
+    auto* options = get_options_object(global_object, vm.argument(1));
+    if (vm.exception())
+        return {};
+
+    // 2. If Type(item) is Object and item has an [[InitializedTemporalDateTime]] internal slot, then
+    if (item.is_object() && is<PlainDateTime>(item.as_object())) {
+        auto& plain_date_time = static_cast<PlainDateTime&>(item.as_object());
+
+        // a. Perform ? ToTemporalOverflow(options).
+        (void)to_temporal_overflow(global_object, *options);
+        if (vm.exception())
+            return {};
+
+        // b. Return ? CreateTemporalDateTime(item.[[ISOYear]], item.[[ISOMonth]], item.[[ISODay]], item.[[ISOHour]], item.[[ISOMinute]], item.[[ISOSecond]], item.[[ISOMillisecond]], item.[[ISOMicrosecond]], item.[[ISONanosecond]], item.[[Calendar]]).
+        return create_temporal_date_time(global_object, plain_date_time.iso_year(), plain_date_time.iso_month(), plain_date_time.iso_day(), plain_date_time.iso_hour(), plain_date_time.iso_minute(), plain_date_time.iso_second(), plain_date_time.iso_millisecond(), plain_date_time.iso_microsecond(), plain_date_time.iso_nanosecond(), plain_date_time.calendar());
+    }
+
+    // 3. Return ? ToTemporalDateTime(item, options).
+    return to_temporal_date_time(global_object, item, options);
+}
+
+// 5.2.3 Temporal.PlainDateTime.compare ( one, two ), https://tc39.es/proposal-temporal/#sec-temporal.plaindatetime.compare
+JS_DEFINE_NATIVE_FUNCTION(PlainDateTimeConstructor::compare)
+{
+    // 1. Set one to ? ToTemporalDateTime(one).
+    auto* one = to_temporal_date_time(global_object, vm.argument(0));
+    if (vm.exception())
+        return {};
+
+    // 2. Set two to ? ToTemporalDateTime(two).
+    auto two = to_temporal_date_time(global_object, vm.argument(1));
+    if (vm.exception())
+        return {};
+
+    // 3. Return 𝔽(! CompareISODateTime(one.[[ISOYear]], one.[[ISOMonth]], one.[[ISODay]], one.[[ISOHour]], one.[[ISOMinute]], one.[[ISOSecond]], one.[[ISOMillisecond]], one.[[ISOMicrosecond]], one.[[ISONanosecond]], two.[[ISOYear]], two.[[ISOMonth]], two.[[ISODay]], two.[[ISOHour]], two.[[ISOMinute]], two.[[ISOSecond]], two.[[ISOMillisecond]], two.[[ISOMicrosecond]], two.[[ISONanosecond]])).
+    return Value(compare_iso_date_time(one->iso_year(), one->iso_month(), one->iso_day(), one->iso_hour(), one->iso_minute(), one->iso_second(), one->iso_millisecond(), one->iso_microsecond(), one->iso_nanosecond(), two->iso_year(), two->iso_month(), two->iso_day(), two->iso_hour(), two->iso_minute(), two->iso_second(), two->iso_millisecond(), two->iso_microsecond(), two->iso_nanosecond()));
 }
 
 }

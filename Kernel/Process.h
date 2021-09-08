@@ -14,17 +14,18 @@
 #include <AK/OwnPtr.h>
 #include <AK/String.h>
 #include <AK/Userspace.h>
+#include <AK/Variant.h>
 #include <AK/WeakPtr.h>
 #include <AK/Weakable.h>
 #include <Kernel/API/Syscall.h>
 #include <Kernel/AtomicEdgeAction.h>
-#include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/FileSystem/InodeMetadata.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/UnveilNode.h>
 #include <Kernel/Forward.h>
 #include <Kernel/FutexQueue.h>
 #include <Kernel/Locking/Mutex.h>
-#include <Kernel/Locking/ProtectedValue.h>
+#include <Kernel/Locking/MutexProtected.h>
 #include <Kernel/Memory/AddressSpace.h>
 #include <Kernel/PerformanceEventBuffer.h>
 #include <Kernel/ProcessExposed.h>
@@ -37,7 +38,7 @@
 
 namespace Kernel {
 
-ProtectedValue<String>& hostname();
+MutexProtected<String>& hostname();
 Time kgettimeofday();
 
 #define ENUMERATE_PLEDGE_PROMISES         \
@@ -79,7 +80,7 @@ enum class VeilState {
     Locked,
 };
 
-typedef HashMap<FlatPtr, RefPtr<FutexQueue>> FutexQueues;
+using FutexQueues = HashMap<FlatPtr, RefPtr<FutexQueue>>;
 
 struct LoadResult;
 
@@ -92,13 +93,13 @@ class Process final
         ProcessID pid { 0 };
         ProcessID ppid { 0 };
         SessionID sid { 0 };
-        uid_t euid { 0 };
-        gid_t egid { 0 };
-        uid_t uid { 0 };
-        gid_t gid { 0 };
-        uid_t suid { 0 };
-        gid_t sgid { 0 };
-        Vector<gid_t> extra_gids;
+        UserID euid { 0 };
+        GroupID egid { 0 };
+        UserID uid { 0 };
+        GroupID gid { 0 };
+        UserID suid { 0 };
+        GroupID sgid { 0 };
+        Vector<GroupID> extra_gids;
         bool dumpable { false };
         Atomic<bool> has_promises { false };
         Atomic<u32> promises { 0 };
@@ -118,8 +119,8 @@ public:
     MAKE_ALIGNED_ALLOCATED(Process, PAGE_SIZE);
 
     friend class Thread;
-    friend class CoreDump;
-    friend class ProcFSProcessFileDescriptions;
+    friend class Coredump;
+    friend class ProcFSProcessOpenFileDescriptions;
 
     // Helper class to temporarily unprotect a process's protected data so you can write to it.
     class ProtectedDataMutationScope {
@@ -145,10 +146,16 @@ public:
 public:
     class ProcessProcFSTraits;
 
-    inline static Process* current()
+    inline static Process& current()
     {
         auto current_thread = Processor::current_thread();
-        return current_thread ? &current_thread->process() : nullptr;
+        VERIFY(current_thread);
+        return current_thread->process();
+    }
+
+    inline static bool has_current()
+    {
+        return Processor::current_thread();
     }
 
     template<typename EntryFunction>
@@ -165,14 +172,14 @@ public:
     };
 
     template<typename EntryFunction>
-    static RefPtr<Process> create_kernel_process(RefPtr<Thread>& first_thread, String&& name, EntryFunction entry, u32 affinity = THREAD_AFFINITY_DEFAULT, RegisterProcess do_register = RegisterProcess::Yes)
+    static RefPtr<Process> create_kernel_process(RefPtr<Thread>& first_thread, NonnullOwnPtr<KString> name, EntryFunction entry, u32 affinity = THREAD_AFFINITY_DEFAULT, RegisterProcess do_register = RegisterProcess::Yes)
     {
         auto* entry_func = new EntryFunction(move(entry));
         return create_kernel_process(first_thread, move(name), &Process::kernel_process_trampoline<EntryFunction>, entry_func, affinity, do_register);
     }
 
-    static RefPtr<Process> create_kernel_process(RefPtr<Thread>& first_thread, String&& name, void (*entry)(void*), void* entry_data = nullptr, u32 affinity = THREAD_AFFINITY_DEFAULT, RegisterProcess do_register = RegisterProcess::Yes);
-    static RefPtr<Process> create_user_process(RefPtr<Thread>& first_thread, const String& path, uid_t, gid_t, ProcessID ppid, int& error, Vector<String>&& arguments = Vector<String>(), Vector<String>&& environment = Vector<String>(), TTY* = nullptr);
+    static RefPtr<Process> create_kernel_process(RefPtr<Thread>& first_thread, NonnullOwnPtr<KString> name, void (*entry)(void*), void* entry_data = nullptr, u32 affinity = THREAD_AFFINITY_DEFAULT, RegisterProcess do_register = RegisterProcess::Yes);
+    static KResultOr<NonnullRefPtr<Process>> try_create_user_process(RefPtr<Thread>& first_thread, StringView path, UserID, GroupID, Vector<String> arguments, Vector<String> environment, TTY*);
     static void register_new(Process&);
 
     bool unref() const;
@@ -180,12 +187,13 @@ public:
 
     static NonnullRefPtrVector<Process> all_processes();
 
-    RefPtr<Thread> create_kernel_thread(void (*entry)(void*), void* entry_data, u32 priority, OwnPtr<KString> name, u32 affinity = THREAD_AFFINITY_DEFAULT, bool joinable = true);
+    RefPtr<Thread> create_kernel_thread(void (*entry)(void*), void* entry_data, u32 priority, NonnullOwnPtr<KString> name, u32 affinity = THREAD_AFFINITY_DEFAULT, bool joinable = true);
 
     bool is_profiling() const { return m_profiling; }
     void set_profiling(bool profiling) { m_profiling = profiling; }
-    bool should_core_dump() const { return m_should_dump_core; }
-    void set_dump_core(bool dump_core) { m_should_dump_core = dump_core; }
+
+    bool should_generate_coredump() const { return m_should_generate_coredump; }
+    void set_should_generate_coredump(bool b) { m_should_generate_coredump = b; }
 
     bool is_dying() const { return m_state.load(AK::MemoryOrder::memory_order_acquire) != State::Running; }
     bool is_dead() const { return m_state.load(AK::MemoryOrder::memory_order_acquire) == State::Dead; }
@@ -199,19 +207,19 @@ public:
     static RefPtr<Process> from_pid(ProcessID);
     static SessionID get_sid_from_pgid(ProcessGroupID pgid);
 
-    const String& name() const { return m_name; }
+    StringView name() const { return m_name->view(); }
     ProcessID pid() const { return m_protected_values.pid; }
     SessionID sid() const { return m_protected_values.sid; }
     bool is_session_leader() const { return sid().value() == pid().value(); }
     ProcessGroupID pgid() const { return m_pg ? m_pg->pgid() : 0; }
     bool is_group_leader() const { return pgid().value() == pid().value(); }
-    const Vector<gid_t>& extra_gids() const { return m_protected_values.extra_gids; }
-    uid_t euid() const { return m_protected_values.euid; }
-    gid_t egid() const { return m_protected_values.egid; }
-    uid_t uid() const { return m_protected_values.uid; }
-    gid_t gid() const { return m_protected_values.gid; }
-    uid_t suid() const { return m_protected_values.suid; }
-    gid_t sgid() const { return m_protected_values.sgid; }
+    Vector<GroupID> const& extra_gids() const { return m_protected_values.extra_gids; }
+    UserID euid() const { return m_protected_values.euid; }
+    GroupID egid() const { return m_protected_values.egid; }
+    UserID uid() const { return m_protected_values.uid; }
+    GroupID gid() const { return m_protected_values.gid; }
+    UserID suid() const { return m_protected_values.suid; }
+    GroupID sgid() const { return m_protected_values.sgid; }
     ProcessID ppid() const { return m_protected_values.ppid; }
 
     bool is_dumpable() const { return m_protected_values.dumpable; }
@@ -219,7 +227,7 @@ public:
 
     mode_t umask() const { return m_protected_values.umask; }
 
-    bool in_group(gid_t) const;
+    bool in_group(GroupID) const;
 
     // Breakable iteration functions
     template<IteratorFunction<Process&> Callback>
@@ -280,8 +288,8 @@ public:
     KResultOr<FlatPtr> sys$getegid();
     KResultOr<FlatPtr> sys$getpid();
     KResultOr<FlatPtr> sys$getppid();
-    KResultOr<FlatPtr> sys$getresuid(Userspace<uid_t*>, Userspace<uid_t*>, Userspace<uid_t*>);
-    KResultOr<FlatPtr> sys$getresgid(Userspace<gid_t*>, Userspace<gid_t*>, Userspace<gid_t*>);
+    KResultOr<FlatPtr> sys$getresuid(Userspace<UserID*>, Userspace<UserID*>, Userspace<UserID*>);
+    KResultOr<FlatPtr> sys$getresgid(Userspace<GroupID*>, Userspace<GroupID*>, Userspace<GroupID*>);
     KResultOr<FlatPtr> sys$umask(mode_t);
     KResultOr<FlatPtr> sys$open(Userspace<const Syscall::SC_open_params*>);
     KResultOr<FlatPtr> sys$close(int fd);
@@ -331,13 +339,13 @@ public:
     KResultOr<FlatPtr> sys$setgroups(size_t, Userspace<const gid_t*>);
     KResultOr<FlatPtr> sys$pipe(int pipefd[2], int flags);
     KResultOr<FlatPtr> sys$killpg(pid_t pgrp, int sig);
-    KResultOr<FlatPtr> sys$seteuid(uid_t);
-    KResultOr<FlatPtr> sys$setegid(gid_t);
-    KResultOr<FlatPtr> sys$setuid(uid_t);
-    KResultOr<FlatPtr> sys$setgid(gid_t);
-    KResultOr<FlatPtr> sys$setreuid(uid_t, uid_t);
-    KResultOr<FlatPtr> sys$setresuid(uid_t, uid_t, uid_t);
-    KResultOr<FlatPtr> sys$setresgid(gid_t, gid_t, gid_t);
+    KResultOr<FlatPtr> sys$seteuid(UserID);
+    KResultOr<FlatPtr> sys$setegid(GroupID);
+    KResultOr<FlatPtr> sys$setuid(UserID);
+    KResultOr<FlatPtr> sys$setgid(GroupID);
+    KResultOr<FlatPtr> sys$setreuid(UserID, UserID);
+    KResultOr<FlatPtr> sys$setresuid(UserID, UserID, UserID);
+    KResultOr<FlatPtr> sys$setresgid(GroupID, GroupID, GroupID);
     KResultOr<FlatPtr> sys$alarm(unsigned seconds);
     KResultOr<FlatPtr> sys$access(Userspace<const char*> pathname, size_t path_length, int mode);
     KResultOr<FlatPtr> sys$fcntl(int fd, int cmd, u32 extra_arg);
@@ -354,7 +362,7 @@ public:
     KResultOr<FlatPtr> sys$chmod(Userspace<const char*> pathname, size_t path_length, mode_t);
     KResultOr<FlatPtr> sys$fchmod(int fd, mode_t);
     KResultOr<FlatPtr> sys$chown(Userspace<const Syscall::SC_chown_params*>);
-    KResultOr<FlatPtr> sys$fchown(int fd, uid_t, gid_t);
+    KResultOr<FlatPtr> sys$fchown(int fd, UserID, GroupID);
     KResultOr<FlatPtr> sys$socket(int domain, int type, int protocol);
     KResultOr<FlatPtr> sys$bind(int sockfd, Userspace<const sockaddr*> addr, socklen_t);
     KResultOr<FlatPtr> sys$listen(int sockfd, int backlog);
@@ -410,7 +418,7 @@ public:
     KResultOr<FlatPtr> sys$map_time_page();
 
     template<bool sockname, typename Params>
-    int get_sock_or_peer_name(const Params&);
+    KResult get_sock_or_peer_name(Params const&);
 
     static void initialize();
 
@@ -433,9 +441,9 @@ public:
     const Vector<String>& arguments() const { return m_arguments; };
     const Vector<String>& environment() const { return m_environment; };
 
-    KResult exec(String path, Vector<String> arguments, Vector<String> environment, int recusion_depth = 0);
+    KResult exec(NonnullOwnPtr<KString> path, Vector<String> arguments, Vector<String> environment, int recusion_depth = 0);
 
-    KResultOr<LoadResult> load(NonnullRefPtr<FileDescription> main_program_description, RefPtr<FileDescription> interpreter_description, const ElfW(Ehdr) & main_program_header);
+    KResultOr<LoadResult> load(NonnullRefPtr<OpenFileDescription> main_program_description, RefPtr<OpenFileDescription> interpreter_description, const ElfW(Ehdr) & main_program_header);
 
     bool is_superuser() const { return euid() == 0; }
 
@@ -478,7 +486,7 @@ public:
 
     void disowned_by_waiter(Process& process);
     void unblock_waiters(Thread::WaitBlocker::UnblockFlags, u8 signal = 0);
-    Thread::WaitBlockCondition& wait_block_condition() { return m_wait_block_condition; }
+    Thread::WaitBlockerSet& wait_blocker_set() { return m_wait_blocker_set; }
 
     template<typename Callback>
     void for_each_coredump_property(Callback callback) const
@@ -492,14 +500,18 @@ public:
     KResult set_coredump_property(NonnullOwnPtr<KString> key, NonnullOwnPtr<KString> value);
     KResult try_set_coredump_property(StringView key, StringView value);
 
-    const NonnullRefPtrVector<Thread>& threads_for_coredump(Badge<CoreDump>) const { return m_threads_for_coredump; }
+    const NonnullRefPtrVector<Thread>& threads_for_coredump(Badge<Coredump>) const { return m_threads_for_coredump; }
 
     PerformanceEventBuffer* perf_events() { return m_perf_event_buffer; }
+    PerformanceEventBuffer const* perf_events() const { return m_perf_event_buffer; }
 
     Memory::AddressSpace& address_space() { return *m_space; }
     Memory::AddressSpace const& address_space() const { return *m_space; }
 
     VirtualAddress signal_trampoline() const { return m_protected_values.signal_trampoline; }
+
+    void require_promise(Pledge);
+    void require_no_promises();
 
 private:
     friend class MemoryManager;
@@ -510,8 +522,8 @@ private:
     bool add_thread(Thread&);
     bool remove_thread(Thread&);
 
-    Process(const String& name, uid_t uid, gid_t gid, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd, RefPtr<Custody> executable, TTY* tty);
-    static RefPtr<Process> create(RefPtr<Thread>& first_thread, const String& name, uid_t, gid_t, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd = nullptr, RefPtr<Custody> executable = nullptr, TTY* = nullptr, Process* fork_parent = nullptr);
+    Process(NonnullOwnPtr<KString> name, UserID, GroupID, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd, RefPtr<Custody> executable, TTY* tty);
+    static KResultOr<NonnullRefPtr<Process>> try_create(RefPtr<Thread>& first_thread, NonnullOwnPtr<KString> name, UserID, GroupID, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd = nullptr, RefPtr<Custody> executable = nullptr, TTY* = nullptr, Process* fork_parent = nullptr);
     KResult attach_resources(NonnullOwnPtr<Memory::AddressSpace>&&, RefPtr<Thread>& first_thread, Process* fork_parent);
     static ProcessID allocate_pid();
 
@@ -522,19 +534,19 @@ private:
     bool create_perf_events_buffer_if_needed();
     void delete_perf_events_buffer();
 
-    KResult do_exec(NonnullRefPtr<FileDescription> main_program_description, Vector<String> arguments, Vector<String> environment, RefPtr<FileDescription> interpreter_description, Thread*& new_main_thread, u32& prev_flags, const ElfW(Ehdr) & main_program_header);
-    KResultOr<FlatPtr> do_write(FileDescription&, const UserOrKernelBuffer&, size_t);
+    KResult do_exec(NonnullRefPtr<OpenFileDescription> main_program_description, Vector<String> arguments, Vector<String> environment, RefPtr<OpenFileDescription> interpreter_description, Thread*& new_main_thread, u32& prev_flags, const ElfW(Ehdr) & main_program_header);
+    KResultOr<FlatPtr> do_write(OpenFileDescription&, const UserOrKernelBuffer&, size_t);
 
-    KResultOr<FlatPtr> do_statvfs(String path, statvfs* buf);
+    KResultOr<FlatPtr> do_statvfs(StringView path, statvfs* buf);
 
-    KResultOr<RefPtr<FileDescription>> find_elf_interpreter_for_executable(const String& path, const ElfW(Ehdr) & elf_header, int nread, size_t file_size);
+    KResultOr<RefPtr<OpenFileDescription>> find_elf_interpreter_for_executable(StringView path, ElfW(Ehdr) const& main_executable_header, size_t main_executable_header_size, size_t file_size);
 
     KResult do_kill(Process&, int signal);
     KResult do_killpg(ProcessGroupID pgrp, int signal);
     KResult do_killall(int signal);
     KResult do_killself(int signal);
 
-    KResultOr<siginfo_t> do_waitid(idtype_t idtype, int id, int options);
+    KResultOr<siginfo_t> do_waitid(Variant<Empty, NonnullRefPtr<Process>, NonnullRefPtr<ProcessGroup>> waitee, int options);
 
     KResultOr<NonnullOwnPtr<KString>> get_syscall_path_argument(Userspace<const char*> user_path, size_t path_length) const;
     KResultOr<NonnullOwnPtr<KString>> get_syscall_path_argument(const Syscall::StringArgument&) const;
@@ -543,7 +555,7 @@ private:
 
     void clear_futex_queues_on_exec();
 
-    void setup_socket_fd(int fd, NonnullRefPtr<FileDescription> description, int type);
+    void setup_socket_fd(int fd, NonnullRefPtr<OpenFileDescription> description, int type);
 
 public:
     NonnullRefPtr<ProcessProcFSTraits> procfs_traits() const { return *m_procfs_traits; }
@@ -575,7 +587,7 @@ private:
 
     mutable IntrusiveListNode<Process> m_list_node;
 
-    String m_name;
+    NonnullOwnPtr<KString> m_name;
 
     OwnPtr<Memory::AddressSpace> m_space;
 
@@ -588,7 +600,7 @@ private:
     OwnPtr<ThreadTracer> m_tracer;
 
 public:
-    class FileDescriptionAndFlags {
+    class OpenFileDescriptionAndFlags {
     public:
         bool is_valid() const { return !m_description.is_null(); }
         bool is_allocated() const { return m_is_allocated; }
@@ -605,32 +617,32 @@ public:
             m_is_allocated = false;
         }
 
-        FileDescription* description() { return m_description; }
-        const FileDescription* description() const { return m_description; }
+        OpenFileDescription* description() { return m_description; }
+        const OpenFileDescription* description() const { return m_description; }
         u32 flags() const { return m_flags; }
         void set_flags(u32 flags) { m_flags = flags; }
 
         void clear();
-        void set(NonnullRefPtr<FileDescription>&&, u32 flags = 0);
+        void set(NonnullRefPtr<OpenFileDescription>&&, u32 flags = 0);
 
     private:
-        RefPtr<FileDescription> m_description;
+        RefPtr<OpenFileDescription> m_description;
         bool m_is_allocated { false };
         u32 m_flags { 0 };
     };
 
     class ScopedDescriptionAllocation;
-    class FileDescriptions {
-        AK_MAKE_NONCOPYABLE(FileDescriptions);
+    class OpenFileDescriptions {
+        AK_MAKE_NONCOPYABLE(OpenFileDescriptions);
         friend class Process;
 
     public:
-        ALWAYS_INLINE const FileDescriptionAndFlags& operator[](size_t i) const { return at(i); }
-        ALWAYS_INLINE FileDescriptionAndFlags& operator[](size_t i) { return at(i); }
+        ALWAYS_INLINE const OpenFileDescriptionAndFlags& operator[](size_t i) const { return at(i); }
+        ALWAYS_INLINE OpenFileDescriptionAndFlags& operator[](size_t i) { return at(i); }
 
-        KResult try_clone(const Kernel::Process::FileDescriptions& other)
+        KResult try_clone(const Kernel::Process::OpenFileDescriptions& other)
         {
-            ScopedSpinLock lock_other(other.m_fds_lock);
+            SpinlockLocker lock_other(other.m_fds_lock);
             if (!try_resize(other.m_fds_metadatas.size()))
                 return ENOMEM;
 
@@ -640,14 +652,14 @@ public:
             return KSuccess;
         }
 
-        const FileDescriptionAndFlags& at(size_t i) const;
-        FileDescriptionAndFlags& at(size_t i);
+        const OpenFileDescriptionAndFlags& at(size_t i) const;
+        OpenFileDescriptionAndFlags& at(size_t i);
 
-        FileDescriptionAndFlags const* get_if_valid(size_t i) const;
-        FileDescriptionAndFlags* get_if_valid(size_t i);
+        OpenFileDescriptionAndFlags const* get_if_valid(size_t i) const;
+        OpenFileDescriptionAndFlags* get_if_valid(size_t i);
 
-        void enumerate(Function<void(const FileDescriptionAndFlags&)>) const;
-        void change_each(Function<void(FileDescriptionAndFlags&)>);
+        void enumerate(Function<void(const OpenFileDescriptionAndFlags&)>) const;
+        void change_each(Function<void(OpenFileDescriptionAndFlags&)>);
 
         KResultOr<ScopedDescriptionAllocation> allocate(int first_candidate_fd = 0);
         size_t open_count() const;
@@ -661,18 +673,17 @@ public:
 
         void clear()
         {
-            ScopedSpinLock lock(m_fds_lock);
+            SpinlockLocker lock(m_fds_lock);
             m_fds_metadatas.clear();
         }
 
-        // FIXME: Consider to remove this somehow
-        RefPtr<FileDescription> file_description(int fd) const;
+        KResultOr<NonnullRefPtr<OpenFileDescription>> open_file_description(int fd) const;
 
     private:
-        FileDescriptions() = default;
+        OpenFileDescriptions() = default;
         static constexpr size_t m_max_open_file_descriptors { FD_SETSIZE };
-        mutable SpinLock<u8> m_fds_lock;
-        Vector<FileDescriptionAndFlags> m_fds_metadatas;
+        mutable Spinlock m_fds_lock;
+        Vector<OpenFileDescriptionAndFlags> m_fds_metadatas;
     };
 
     class ScopedDescriptionAllocation {
@@ -680,7 +691,7 @@ public:
 
     public:
         ScopedDescriptionAllocation() = default;
-        ScopedDescriptionAllocation(int tracked_fd, FileDescriptionAndFlags* description)
+        ScopedDescriptionAllocation(int tracked_fd, OpenFileDescriptionAndFlags* description)
             : fd(tracked_fd)
             , m_description(description)
         {
@@ -703,12 +714,12 @@ public:
         const int fd { -1 };
 
     private:
-        FileDescriptionAndFlags* m_description { nullptr };
+        OpenFileDescriptionAndFlags* m_description { nullptr };
     };
 
     class ProcessProcFSTraits : public ProcFSExposedComponent {
     public:
-        static KResultOr<NonnullRefPtr<ProcessProcFSTraits>> try_create(Badge<Process>, WeakPtr<Process> process)
+        static KResultOr<NonnullRefPtr<ProcessProcFSTraits>> try_create(Badge<Process>, Process& process)
         {
             return adopt_nonnull_ref_or_enomem(new (nothrow) ProcessProcFSTraits(process));
         }
@@ -718,13 +729,12 @@ public:
         virtual KResult traverse_as_directory(unsigned, Function<bool(FileSystem::DirectoryEntryView const&)>) const override;
         virtual mode_t required_mode() const override { return 0555; }
 
-        virtual uid_t owner_user() const override;
-
-        virtual gid_t owner_group() const override;
+        virtual UserID owner_user() const override;
+        virtual GroupID owner_group() const override;
 
     private:
-        ProcessProcFSTraits(WeakPtr<Process> process)
-            : m_process(process)
+        explicit ProcessProcFSTraits(Process& process)
+            : m_process(process.make_weak_ptr())
         {
         }
 
@@ -733,22 +743,22 @@ public:
         WeakPtr<Process> m_process;
     };
 
-    FileDescriptions& fds() { return m_fds; }
-    const FileDescriptions& fds() const { return m_fds; }
+    OpenFileDescriptions& fds() { return m_fds; }
+    const OpenFileDescriptions& fds() const { return m_fds; }
 
 private:
-    SpinLockProtectedValue<Thread::ListInProcess>& thread_list() { return m_thread_list; }
-    SpinLockProtectedValue<Thread::ListInProcess> const& thread_list() const { return m_thread_list; }
+    SpinlockProtected<Thread::ListInProcess>& thread_list() { return m_thread_list; }
+    SpinlockProtected<Thread::ListInProcess> const& thread_list() const { return m_thread_list; }
 
-    SpinLockProtectedValue<Thread::ListInProcess> m_thread_list;
+    SpinlockProtected<Thread::ListInProcess> m_thread_list;
 
-    FileDescriptions m_fds;
+    OpenFileDescriptions m_fds;
 
     const bool m_is_kernel_process;
     Atomic<State> m_state { State::Running };
     bool m_profiling { false };
     Atomic<bool, AK::MemoryOrder::memory_order_relaxed> m_is_stopped { false };
-    bool m_should_dump_core { false };
+    bool m_should_generate_coredump { false };
 
     RefPtr<Custody> m_executable;
     RefPtr<Custody> m_cwd;
@@ -773,14 +783,14 @@ private:
     OwnPtr<PerformanceEventBuffer> m_perf_event_buffer;
 
     FutexQueues m_futex_queues;
-    SpinLock<u8> m_futex_lock;
+    Spinlock m_futex_lock;
 
     // This member is used in the implementation of ptrace's PT_TRACEME flag.
     // If it is set to true, the process will stop at the next execve syscall
     // and wait for a tracer to attach.
     bool m_wait_for_tracer_at_next_execve { false };
 
-    Thread::WaitBlockCondition m_wait_block_condition;
+    Thread::WaitBlockerSet m_wait_blocker_set;
 
     struct CoredumpProperty {
         OwnPtr<KString> key;
@@ -804,17 +814,17 @@ public:
 // It's not expected that the Process object will expand further because the first
 // page is used for all unprotected values (which should be plenty of space for them).
 // The second page is being used exclusively for write-protected values.
-static_assert(sizeof(Process) == (PAGE_SIZE * 2));
+static_assert(AssertSize<Process, (PAGE_SIZE * 2)>());
 
-extern RecursiveSpinLock g_profiling_lock;
+extern RecursiveSpinlock g_profiling_lock;
 
-ProtectedValue<Process::List>& processes();
+SpinlockProtected<Process::List>& processes();
 
 template<IteratorFunction<Process&> Callback>
 inline void Process::for_each(Callback callback)
 {
     VERIFY_INTERRUPTS_DISABLED();
-    processes().with_shared([&](const auto& list) {
+    processes().with([&](const auto& list) {
         for (auto it = list.begin(); it != list.end();) {
             auto& process = *it;
             ++it;
@@ -828,7 +838,7 @@ template<IteratorFunction<Process&> Callback>
 inline void Process::for_each_child(Callback callback)
 {
     ProcessID my_pid = pid();
-    processes().with_shared([&](const auto& list) {
+    processes().with([&](const auto& list) {
         for (auto it = list.begin(); it != list.end();) {
             auto& process = *it;
             ++it;
@@ -869,7 +879,7 @@ inline IterationDecision Process::for_each_thread(Callback callback)
 template<IteratorFunction<Process&> Callback>
 inline void Process::for_each_in_pgrp(ProcessGroupID pgid, Callback callback)
 {
-    processes().with_shared([&](const auto& list) {
+    processes().with([&](const auto& list) {
         for (auto it = list.begin(); it != list.end();) {
             auto& process = *it;
             ++it;
@@ -948,33 +958,23 @@ inline ProcessID Thread::pid() const
     return m_process->pid();
 }
 
-#define REQUIRE_NO_PROMISES                        \
-    do {                                           \
-        if (Process::current()->has_promises()) {  \
-            dbgln("Has made a promise");           \
-            Process::current()->crash(SIGABRT, 0); \
-            VERIFY_NOT_REACHED();                  \
-        }                                          \
+#define REQUIRE_PROMISE(promise)                             \
+    do {                                                     \
+        Process::current().require_promise(Pledge::promise); \
     } while (0)
 
-#define REQUIRE_PROMISE(promise)                                     \
-    do {                                                             \
-        if (Process::current()->has_promises()                       \
-            && !Process::current()->has_promised(Pledge::promise)) { \
-            dbgln("Has not pledged {}", #promise);                   \
-            (void)Process::current()->try_set_coredump_property(     \
-                "pledge_violation"sv, #promise);                     \
-            Process::current()->crash(SIGABRT, 0);                   \
-            VERIFY_NOT_REACHED();                                    \
-        }                                                            \
+#define REQUIRE_NO_PROMISES                       \
+    do {                                          \
+        Process::current().require_no_promises(); \
     } while (0)
+
 }
 
 #define VERIFY_PROCESS_BIG_LOCK_ACQUIRED(process) \
-    VERIFY(process->big_lock().own_lock());
+    VERIFY(process->big_lock().is_locked_by_current_thread());
 
 #define VERIFY_NO_PROCESS_BIG_LOCK(process) \
-    VERIFY(!process->big_lock().own_lock());
+    VERIFY(!process->big_lock().is_locked_by_current_thread());
 
 inline static KResultOr<NonnullOwnPtr<KString>> try_copy_kstring_from_user(const Kernel::Syscall::StringArgument& string)
 {

@@ -5,6 +5,7 @@ Graphical Unix-like operating system for x86 computers.
 [![GitHub Actions Status](https://github.com/SerenityOS/serenity/workflows/Build,%20lint,%20and%20test/badge.svg)](https://github.com/SerenityOS/serenity/actions?query=workflow%3A"Build%2C%20lint%2C%20and%20test")
 [![Azure DevOps Status](https://dev.azure.com/SerenityOS/SerenityOS/_apis/build/status/CI?branchName=master)](https://dev.azure.com/SerenityOS/SerenityOS/_build/latest?definitionId=1&branchName=master)
 [![Fuzzing Status](https://oss-fuzz-build-logs.storage.googleapis.com/badges/serenity.svg)](https://bugs.chromium.org/p/oss-fuzz/issues/list?sort=-opened&can=1&q=proj:serenity)
+[![Sonar Cube Static Analysis](https://sonarcloud.io/api/project_badges/measure?project=SerenityOS_serenity&metric=ncloc)](https://sonarcloud.io/dashboard?id=SerenityOS_serenity)
 [![Discord](https://img.shields.io/discord/830522505605283862.svg?logo=discord&logoColor=white&logoWidth=20&labelColor=7289DA&label=Discord&color=17cf48)](https://discord.gg/serenityos)
 
 ## About
@@ -63,6 +64,7 @@ I'm also on [Patreon](https://www.patreon.com/serenityos) and [GitHub Sponsors](
 * JavaScript engine (LibJS)
 * Markdown (LibMarkdown)
 * Audio (LibAudio)
+* Digital Signal Processing/Synthesizer Chains (LibDSP)
 * PCI database (LibPCIDB)
 * Terminal emulation (LibVT)
 * Out-of-process network protocol I/O (LibProtocol)
@@ -81,7 +83,6 @@ I'm also on [Patreon](https://www.patreon.com/serenityos) and [GitHub Sponsors](
 * On-line help system (both terminal and GUI variants)
 * Web browser (Browser)
 * C++ IDE (HackStudio)
-* IRC client
 * Desktop synthesizer (Piano)
 * E-mail client (Mail)
 * Various desktop apps & games
@@ -144,6 +145,9 @@ Join our Discord server: [SerenityOS Discord](https://discord.gg/serenityos)
 * **Tobias Christiansen** - [TobyAsE](https://github.com/TobyAsE)
 * **Lenny Maiorani** - [ldm5180](https://github.com/ldm5180)
 * **sin-ack** - [sin-ack](https://github.com/sin-ack)
+* **Jesse Buhagiar** - [Quaker762](https://github.com/Quaker762)
+* **Peter Elliott** - [Petelliott](https://github.com/Petelliott)
+* **Karol Kosek** - [krkk](https://github.com/krkk)
 
 (And many more!) The people listed above have landed more than 100 commits in the project. :^)
 

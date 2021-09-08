@@ -16,7 +16,7 @@ SchemaDef::SchemaDef(String name)
 }
 
 SchemaDef::SchemaDef(Key const& key)
-    : Relation(key["schema_name"].to_string().value())
+    : Relation(key["schema_name"].to_string())
 {
 }
 
@@ -46,6 +46,7 @@ ColumnDef::ColumnDef(Relation* parent, size_t column_number, String name, SQLTyp
     : Relation(move(name), parent)
     , m_index(column_number)
     , m_type(sql_type)
+    , m_default(Value(sql_type))
 {
 }
 
@@ -57,6 +58,12 @@ Key ColumnDef::key() const
     key["column_name"] = name();
     key["column_type"] = (int)type();
     return key;
+}
+
+void ColumnDef::set_default_value(const Value& default_value)
+{
+    VERIFY(default_value.type() == type());
+    m_default = default_value;
 }
 
 Key ColumnDef::make_key(TableDef const& table_def)
@@ -102,11 +109,11 @@ void IndexDef::append_column(String name, SQLType sql_type, Order sort_order)
     m_key_definition.append(part);
 }
 
-TupleDescriptor IndexDef::to_tuple_descriptor() const
+NonnullRefPtr<TupleDescriptor> IndexDef::to_tuple_descriptor() const
 {
-    TupleDescriptor ret;
+    NonnullRefPtr<TupleDescriptor> ret = adopt_ref(*new TupleDescriptor);
     for (auto& part : m_key_definition) {
-        ret.append({ part.name(), part.type(), part.sort_order() });
+        ret->append({ part.name(), part.type(), part.sort_order() });
     }
     return ret;
 }
@@ -145,11 +152,11 @@ TableDef::TableDef(SchemaDef* schema, String name)
 {
 }
 
-TupleDescriptor TableDef::to_tuple_descriptor() const
+NonnullRefPtr<TupleDescriptor> TableDef::to_tuple_descriptor() const
 {
-    TupleDescriptor ret;
+    NonnullRefPtr<TupleDescriptor> ret = adopt_ref(*new TupleDescriptor);
     for (auto& part : m_columns) {
-        ret.append({ part.name(), part.type(), Order::Ascending });
+        ret->append({ part.name(), part.type(), Order::Ascending });
     }
     return ret;
 }

@@ -35,6 +35,7 @@ void RegExpPrototype::initialize(GlobalObject& global_object)
     define_native_function(vm.names.toString, to_string, 0, attr);
     define_native_function(vm.names.test, test, 1, attr);
     define_native_function(vm.names.exec, exec, 1, attr);
+    define_native_function(vm.names.compile, compile, 2, attr);
 
     define_native_function(*vm.well_known_symbol_match(), symbol_match, 1, attr);
     define_native_function(*vm.well_known_symbol_match_all(), symbol_match_all, 1, attr);
@@ -141,7 +142,7 @@ static Value get_match_indices_array(GlobalObject& global_object, Utf16View cons
 }
 
 // 1.1.4.1.5 MakeIndicesArray ( S , indices, groupNames, hasGroups ), https://tc39.es/proposal-regexp-match-indices/#sec-makeindicesarray
-static Value make_indices_array(GlobalObject& global_object, Utf16View const& string, Vector<Optional<Match>> const& indices, HashMap<String, Match> const& group_names, bool has_groups)
+static Value make_indices_array(GlobalObject& global_object, Utf16View const& string, Vector<Optional<Match>> const& indices, HashMap<FlyString, Match> const& group_names, bool has_groups)
 {
     // Note: This implementation differs from the spec, but has the same behavior.
     //
@@ -268,7 +269,7 @@ static Value regexp_builtin_exec(GlobalObject& global_object, RegExpObject& rege
         return {};
 
     Vector<Optional<Match>> indices { Match::create(match) };
-    HashMap<String, Match> group_names;
+    HashMap<FlyString, Match> group_names;
 
     bool has_groups = result.n_named_capture_groups != 0;
     Object* groups_object = has_groups ? Object::create(global_object, nullptr) : nullptr;
@@ -285,7 +286,7 @@ static Value regexp_builtin_exec(GlobalObject& global_object, RegExpObject& rege
         array->create_data_property_or_throw(i + 1, capture_value);
 
         if (capture.capture_group_name.has_value()) {
-            auto group_name = capture.capture_group_name->to_string();
+            auto group_name = capture.capture_group_name.release_value();
             groups_object->create_data_property_or_throw(group_name, js_string(vm, capture.view.u16_view()));
             group_names.set(move(group_name), Match::create(capture));
         }
@@ -918,6 +919,36 @@ JS_DEFINE_NATIVE_FUNCTION(RegExpPrototype::symbol_split)
     array->create_data_property_or_throw(array_length, js_string(vm, move(substring)));
 
     return array;
+}
+
+// B.2.4.1 RegExp.prototype.compile ( pattern, flags ), https://tc39.es/ecma262/#sec-regexp.prototype.compile
+JS_DEFINE_NATIVE_FUNCTION(RegExpPrototype::compile)
+{
+    auto* regexp_object = regexp_object_from(vm, global_object);
+    if (!regexp_object)
+        return {};
+
+    auto pattern = vm.argument(0);
+    auto flags = vm.argument(1);
+
+    Value pattern_value;
+    Value flags_value;
+
+    if (pattern.is_object() && is<RegExpObject>(pattern.as_object())) {
+        if (!flags.is_undefined()) {
+            vm.throw_exception<TypeError>(global_object, ErrorType::NotUndefined, flags.to_string_without_side_effects());
+            return {};
+        }
+
+        auto& regexp_pattern = static_cast<RegExpObject&>(pattern.as_object());
+        pattern_value = js_string(vm, regexp_pattern.pattern());
+        flags_value = js_string(vm, regexp_pattern.flags());
+    } else {
+        pattern_value = pattern;
+        flags_value = flags;
+    }
+
+    return regexp_object->regexp_initialize(global_object, pattern_value, flags_value);
 }
 
 }

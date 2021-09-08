@@ -10,6 +10,7 @@
 #include <LibJS/Runtime/Temporal/AbstractOperations.h>
 #include <LibJS/Runtime/Temporal/Duration.h>
 #include <LibJS/Runtime/Temporal/DurationConstructor.h>
+#include <LibJS/Runtime/Temporal/ZonedDateTime.h>
 
 namespace JS::Temporal {
 
@@ -95,35 +96,31 @@ TemporalDuration to_temporal_duration_record(GlobalObject& global_object, Object
         if (vm.exception())
             return {};
 
-        // c. If val is not undefined, then
-        if (!value.is_undefined()) {
+        // c. If val is undefined, then
+        if (value.is_undefined()) {
+            // i. Set result's internal slot whose name is the Internal Slot value of the current row to 0.
+            result.*internal_slot = 0;
+        }
+        // d. Else,
+        else {
             // i. Set any to true.
             any = true;
+
+            // ii. Let val be ? ToNumber(val).
+            value = value.to_number(global_object);
+            if (vm.exception())
+                return {};
+
+            // iii. If ! IsIntegralNumber(val) is false, then
+            if (!value.is_integral_number()) {
+                // 1. Throw a RangeError exception.
+                vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidDurationPropertyValueNonIntegral, property.as_string(), value.to_string_without_side_effects());
+                return {};
+            }
+
+            // iv. Set result's internal slot whose name is the Internal Slot value of the current row to val.
+            result.*internal_slot = value.as_double();
         }
-
-        // TODO: This is not in the spec but it seems to be implied, and is also what the polyfill does.
-        //       I think the steps d, e, and f should be conditional based on c - otherwise we call ToNumber(undefined),
-        //       get NaN and immediately fail the floor(val) ≠ val check, making the `any` flag pointless. See:
-        //       - https://github.com/tc39/proposal-temporal/blob/4b4dbd427d4b0468a3b064ca7082f25b209923bc/polyfill/lib/ecmascript.mjs#L556-L607
-        //       - https://github.com/tc39/proposal-temporal/blob/4b4dbd427d4b0468a3b064ca7082f25b209923bc/polyfill/lib/ecmascript.mjs#L876-L893
-        else {
-            continue;
-        }
-
-        // d. Let val be ? ToNumber(val).
-        value = value.to_number(global_object);
-        if (vm.exception())
-            return {};
-
-        // e. If floor(val) ≠ val, then
-        if (floor(value.as_double()) != value.as_double()) {
-            // i. Throw a RangeError exception.
-            vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidDurationPropertyValueNonIntegral, property.as_string(), value.to_string_without_side_effects());
-            return {};
-        }
-
-        // f. Set result's internal slot whose name is the Internal Slot value of the current row to val.
-        result.*internal_slot = value.as_double();
     }
 
     // 6. If any is false, then
@@ -211,13 +208,20 @@ PartialDuration to_partial_duration(GlobalObject& global_object, Value temporal_
             // i. Set any to true.
             any = true;
 
-            // ii. Set value to ? ToIntegerOrInfinity(value).
-            auto value_number = value.to_integer_or_infinity(global_object);
+            // ii. Set value to ? ToNumber(value).
+            value = value.to_number(global_object);
             if (vm.exception())
                 return {};
 
-            // iii. Set result's internal slot whose name is the Internal Slot value of the current row to value.
-            result.*internal_slot = value_number;
+            // iii. If ! IsIntegralNumber(value) is false, then
+            if (!value.is_integral_number()) {
+                // 1. Throw a RangeError exception.
+                vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidDurationPropertyValueNonIntegral, property.as_string(), value.to_string_without_side_effects());
+                return {};
+            }
+
+            // iv. Set result's internal slot whose name is the Internal Slot value of the current row to value.
+            result.*internal_slot = value.as_double();
         }
     }
 
@@ -266,7 +270,193 @@ Duration* create_temporal_duration(GlobalObject& global_object, double years, do
     return object;
 }
 
-// 7.5.19 ToLimitedTemporalDuration ( temporalDurationLike, disallowedFields ),https://tc39.es/proposal-temporal/#sec-temporal-tolimitedtemporalduration
+// 7.5.8 CreateNegatedTemporalDuration ( duration ), https://tc39.es/proposal-temporal/#sec-temporal-createnegatedtemporalduration
+Duration* create_negated_temporal_duration(GlobalObject& global_object, Duration const& duration)
+{
+    // 1. Assert: Type(duration) is Object.
+    // 2. Assert: duration has an [[InitializedTemporalDuration]] internal slot.
+
+    // 3. Return ! CreateTemporalDuration(−duration.[[Years]], −duration.[[Months]], −duration.[[Weeks]], −duration.[[Days]], −duration.[[Hours]], −duration.[[Minutes]], −duration.[[Seconds]], −duration.[[Milliseconds]], −duration.[[Microseconds]], −duration.[[Nanoseconds]]).
+    return create_temporal_duration(global_object, -duration.years(), -duration.months(), -duration.weeks(), -duration.days(), -duration.hours(), -duration.minutes(), -duration.seconds(), -duration.milliseconds(), -duration.microseconds(), -duration.nanoseconds());
+}
+
+// 7.5.10 TotalDurationNanoseconds ( days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds, offsetShift ), https://tc39.es/proposal-temporal/#sec-temporal-totaldurationnanoseconds
+BigInt* total_duration_nanoseconds(GlobalObject& global_object, double days, double hours, double minutes, double seconds, double milliseconds, double microseconds, BigInt const& nanoseconds, double offset_shift)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: offsetShift is an integer.
+    VERIFY(offset_shift == trunc(offset_shift));
+
+    // 2. Set nanoseconds to ℝ(nanoseconds).
+    auto result_nanoseconds = nanoseconds.big_integer();
+
+    // TODO: Add a way to create SignedBigIntegers from doubles with full precision and remove this restriction
+    VERIFY(AK::is_within_range<i64>(days) && AK::is_within_range<i64>(hours) && AK::is_within_range<i64>(minutes) && AK::is_within_range<i64>(seconds) && AK::is_within_range<i64>(milliseconds) && AK::is_within_range<i64>(microseconds));
+
+    // 3. If days ≠ 0, then
+    if (days != 0) {
+        // a. Set nanoseconds to nanoseconds − offsetShift.
+        result_nanoseconds = result_nanoseconds.minus(Crypto::SignedBigInteger::create_from(offset_shift));
+    }
+    // 4. Set hours to ℝ(hours) + ℝ(days) × 24.
+    auto total_hours = Crypto::SignedBigInteger::create_from(hours).plus(Crypto::SignedBigInteger::create_from(days).multiplied_by(Crypto::UnsignedBigInteger(24)));
+    // 5. Set minutes to ℝ(minutes) + hours × 60.
+    auto total_minutes = Crypto::SignedBigInteger::create_from(minutes).plus(total_hours.multiplied_by(Crypto::UnsignedBigInteger(60)));
+    // 6. Set seconds to ℝ(seconds) + minutes × 60.
+    auto total_seconds = Crypto::SignedBigInteger::create_from(seconds).plus(total_minutes.multiplied_by(Crypto::UnsignedBigInteger(60)));
+    // 7. Set milliseconds to ℝ(milliseconds) + seconds × 1000.
+    auto total_milliseconds = Crypto::SignedBigInteger::create_from(milliseconds).plus(total_seconds.multiplied_by(Crypto::UnsignedBigInteger(1000)));
+    // 8. Set microseconds to ℝ(microseconds) + milliseconds × 1000.
+    auto total_microseconds = Crypto::SignedBigInteger::create_from(microseconds).plus(total_milliseconds.multiplied_by(Crypto::UnsignedBigInteger(1000)));
+    // 9. Return nanoseconds + microseconds × 1000.
+    return js_bigint(vm, result_nanoseconds.plus(total_microseconds.multiplied_by(Crypto::UnsignedBigInteger(1000))));
+}
+
+// 7.5.11 BalanceDuration ( days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds, largestUnit [ , relativeTo ] ), https://tc39.es/proposal-temporal/#sec-temporal-balanceduration
+Optional<BalancedDuration> balance_duration(GlobalObject& global_object, double days, double hours, double minutes, double seconds, double milliseconds, double microseconds, BigInt const& nanoseconds, String const& largest_unit, Object* relative_to)
+{
+    auto& vm = global_object.vm();
+    // 1. If relativeTo is not present, set relativeTo to undefined.
+
+    Crypto::SignedBigInteger total_nanoseconds;
+    // 2. If Type(relativeTo) is Object and relativeTo has an [[InitializedTemporalZonedDateTime]] internal slot, then
+    if (relative_to && is<ZonedDateTime>(*relative_to)) {
+        // a. Let endNs be ? AddZonedDateTime(relativeTo.[[Nanoseconds]], relativeTo.[[TimeZone]], relativeTo.[[Calendar]], 0, 0, 0, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds).
+        TODO();
+        if (vm.exception())
+            return {};
+        // b. Set nanoseconds to endNs − relativeTo.[[Nanoseconds]].
+    }
+    // 3. Else,
+    else {
+        // a. Set nanoseconds to ℤ(! TotalDurationNanoseconds(days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds, 0)).
+        total_nanoseconds = total_duration_nanoseconds(global_object, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds, 0)->big_integer();
+    }
+
+    // 4. If largestUnit is one of "year", "month", "week", or "day", then
+    if (largest_unit.is_one_of("year"sv, "month"sv, "week"sv, "day"sv)) {
+        // a. Let result be ? NanosecondsToDays(nanoseconds, relativeTo).
+        TODO();
+        if (vm.exception())
+            return {};
+
+        // b. Set days to result.[[Days]].
+
+        // c. Set nanoseconds to result.[[Nanoseconds]].
+    }
+    // 5. Else,
+    else {
+        // a. Set days to 0.
+        days = 0;
+    }
+    // 6. Set hours, minutes, seconds, milliseconds, and microseconds to 0.
+    hours = 0;
+    minutes = 0;
+    seconds = 0;
+    milliseconds = 0;
+    microseconds = 0;
+
+    // 7. Set nanoseconds to ℝ(nanoseconds).
+    double result_nanoseconds = total_nanoseconds.to_double();
+
+    // 8. If nanoseconds < 0, let sign be −1; else, let sign be 1.
+    i8 sign = total_nanoseconds.is_negative() ? -1 : 1;
+
+    // 9. Set nanoseconds to abs(nanoseconds).
+    total_nanoseconds = Crypto::SignedBigInteger(total_nanoseconds.unsigned_value());
+    result_nanoseconds = fabs(result_nanoseconds);
+
+    // 10. If largestUnit is "year", "month", "week", "day", or "hour", then
+    if (largest_unit.is_one_of("year"sv, "month"sv, "day"sv, "hour"sv)) {
+        // a. Set microseconds to floor(nanoseconds / 1000).
+        auto nanoseconds_division_result = total_nanoseconds.divided_by(Crypto::UnsignedBigInteger(1000));
+        // b. Set nanoseconds to nanoseconds modulo 1000.
+        result_nanoseconds = nanoseconds_division_result.remainder.to_double();
+        // c. Set milliseconds to floor(microseconds / 1000).
+        auto microseconds_division_result = nanoseconds_division_result.quotient.divided_by(Crypto::UnsignedBigInteger(1000));
+        // d. Set microseconds to microseconds modulo 1000.
+        microseconds = microseconds_division_result.remainder.to_double();
+        // e. Set seconds to floor(milliseconds / 1000).
+        auto milliseconds_division_result = microseconds_division_result.quotient.divided_by(Crypto::UnsignedBigInteger(1000));
+        // f. Set milliseconds to milliseconds modulo 1000.
+        milliseconds = milliseconds_division_result.remainder.to_double();
+        // g. Set minutes to floor(seconds / 60).
+        auto seconds_division_result = milliseconds_division_result.quotient.divided_by(Crypto::UnsignedBigInteger(60));
+        // h. Set seconds to seconds modulo 60.
+        seconds = seconds_division_result.remainder.to_double();
+        // i. Set hours to floor(minutes / 60).
+        auto minutes_division_result = milliseconds_division_result.quotient.divided_by(Crypto::UnsignedBigInteger(60));
+        hours = minutes_division_result.quotient.to_double();
+        // j. Set minutes to minutes modulo 60.
+        minutes = minutes_division_result.remainder.to_double();
+    }
+    // 11. Else if largestUnit is "minute", then
+    else if (largest_unit == "minute"sv) {
+        // a. Set microseconds to floor(nanoseconds / 1000).
+        auto nanoseconds_division_result = total_nanoseconds.divided_by(Crypto::UnsignedBigInteger(1000));
+        // b. Set nanoseconds to nanoseconds modulo 1000.
+        result_nanoseconds = nanoseconds_division_result.remainder.to_double();
+        // c. Set milliseconds to floor(microseconds / 1000).
+        auto microseconds_division_result = nanoseconds_division_result.quotient.divided_by(Crypto::UnsignedBigInteger(1000));
+        // d. Set microseconds to microseconds modulo 1000.
+        microseconds = microseconds_division_result.remainder.to_double();
+        // e. Set seconds to floor(milliseconds / 1000).
+        auto milliseconds_division_result = microseconds_division_result.quotient.divided_by(Crypto::UnsignedBigInteger(1000));
+        // f. Set milliseconds to milliseconds modulo 1000.
+        milliseconds = milliseconds_division_result.remainder.to_double();
+        // g. Set minutes to floor(seconds / 60).
+        auto seconds_division_result = milliseconds_division_result.quotient.divided_by(Crypto::UnsignedBigInteger(60));
+        minutes = seconds_division_result.quotient.to_double();
+        // h. Set seconds to seconds modulo 60.
+        seconds = seconds_division_result.remainder.to_double();
+    }
+    // 12. Else if largestUnit is "second", then
+    else if (largest_unit == "second"sv) {
+        // a. Set microseconds to floor(nanoseconds / 1000).
+        auto nanoseconds_division_result = total_nanoseconds.divided_by(Crypto::UnsignedBigInteger(1000));
+        // b. Set nanoseconds to nanoseconds modulo 1000.
+        result_nanoseconds = nanoseconds_division_result.remainder.to_double();
+        // c. Set milliseconds to floor(microseconds / 1000).
+        auto microseconds_division_result = nanoseconds_division_result.quotient.divided_by(Crypto::UnsignedBigInteger(1000));
+        // d. Set microseconds to microseconds modulo 1000.
+        microseconds = microseconds_division_result.remainder.to_double();
+        // e. Set seconds to floor(milliseconds / 1000).
+        auto milliseconds_division_result = microseconds_division_result.quotient.divided_by(Crypto::UnsignedBigInteger(1000));
+        seconds = milliseconds_division_result.quotient.to_double();
+        // f. Set milliseconds to milliseconds modulo 1000.
+        milliseconds = milliseconds_division_result.remainder.to_double();
+    }
+    // 13. Else if largestUnit is "millisecond", then
+    else if (largest_unit == "millisecond"sv) {
+        // a. Set microseconds to floor(nanoseconds / 1000).
+        auto nanoseconds_division_result = total_nanoseconds.divided_by(Crypto::UnsignedBigInteger(1000));
+        // b. Set nanoseconds to nanoseconds modulo 1000.
+        result_nanoseconds = nanoseconds_division_result.remainder.to_double();
+        // c. Set milliseconds to floor(microseconds / 1000).
+        auto microseconds_division_result = nanoseconds_division_result.quotient.divided_by(Crypto::UnsignedBigInteger(1000));
+        milliseconds = microseconds_division_result.quotient.to_double();
+        // d. Set microseconds to microseconds modulo 1000.
+        microseconds = microseconds_division_result.remainder.to_double();
+    }
+    // 14. Else if largestUnit is "microsecond", then
+    else if (largest_unit == "microsecond"sv) {
+        // a. Set microseconds to floor(nanoseconds / 1000).
+        auto nanoseconds_division_result = total_nanoseconds.divided_by(Crypto::UnsignedBigInteger(1000));
+        microseconds = nanoseconds_division_result.quotient.to_double();
+        // b. Set nanoseconds to nanoseconds modulo 1000.
+        result_nanoseconds = nanoseconds_division_result.remainder.to_double();
+    }
+    // 15. Else,
+    else {
+        // a. Assert: largestUnit is "nanosecond".
+        VERIFY(largest_unit == "nanosecond"sv);
+    }
+    // 16. Return the Record { [[Days]]: 𝔽(days), [[Hours]]: 𝔽(hours × sign), [[Minutes]]: 𝔽(minutes × sign), [[Seconds]]: 𝔽(seconds × sign), [[Milliseconds]]: 𝔽(milliseconds × sign), [[Microseconds]]: 𝔽(microseconds × sign), [[Nanoseconds]]: 𝔽(nanoseconds × sign) }.
+    return BalancedDuration { .days = days, .hours = hours * sign, .minutes = minutes * sign, .seconds = seconds * sign, .milliseconds = milliseconds * sign, .microseconds = microseconds * sign, .nanoseconds = result_nanoseconds * sign };
+}
+
+// 7.5.20 ToLimitedTemporalDuration ( temporalDurationLike, disallowedFields ),https://tc39.es/proposal-temporal/#sec-temporal-tolimitedtemporalduration
 Optional<TemporalDuration> to_limited_temporal_duration(GlobalObject& global_object, Value temporal_duration_like, Vector<StringView> const& disallowed_fields)
 {
     auto& vm = global_object.vm();

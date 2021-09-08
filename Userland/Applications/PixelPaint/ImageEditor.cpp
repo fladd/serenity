@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Tobias Christiansen <tobyase@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -145,8 +146,8 @@ Gfx::FloatPoint ImageEditor::editor_position_to_image_position(Gfx::IntPoint con
 
 void ImageEditor::second_paint_event(GUI::PaintEvent& event)
 {
-    if (m_active_tool && m_active_layer)
-        m_active_tool->on_second_paint(*m_active_layer, event);
+    if (m_active_tool)
+        m_active_tool->on_second_paint(m_active_layer, event);
 }
 
 GUI::MouseEvent ImageEditor::event_with_pan_and_scale_applied(GUI::MouseEvent const& event) const
@@ -194,12 +195,10 @@ void ImageEditor::mousedown_event(GUI::MouseEvent& event)
         }
     }
 
-    if (!m_active_layer)
-        return;
-
-    auto layer_event = event_adjusted_for_layer(event, *m_active_layer);
+    auto layer_event = m_active_layer ? event_adjusted_for_layer(event, *m_active_layer) : event;
     auto image_event = event_with_pan_and_scale_applied(event);
-    m_active_tool->on_mousedown(*m_active_layer, layer_event, image_event);
+    Tool::MouseEvent tool_event(Tool::MouseEvent::Action::MouseDown, layer_event, image_event, event);
+    m_active_tool->on_mousedown(m_active_layer.ptr(), tool_event);
 }
 
 void ImageEditor::mousemove_event(GUI::MouseEvent& event)
@@ -214,27 +213,29 @@ void ImageEditor::mousemove_event(GUI::MouseEvent& event)
         return;
     }
 
-    if (!m_active_layer || !m_active_tool)
-        return;
-    auto layer_event = event_adjusted_for_layer(event, *m_active_layer);
     auto image_event = event_with_pan_and_scale_applied(event);
-
-    m_active_tool->on_mousemove(*m_active_layer, layer_event, image_event);
-
     if (on_image_mouse_position_change) {
         on_image_mouse_position_change(image_event.position());
     }
+
+    if (!m_active_tool)
+        return;
+
+    auto layer_event = m_active_layer ? event_adjusted_for_layer(event, *m_active_layer) : event;
+    Tool::MouseEvent tool_event(Tool::MouseEvent::Action::MouseDown, layer_event, image_event, event);
+    m_active_tool->on_mousemove(m_active_layer.ptr(), tool_event);
 }
 
 void ImageEditor::mouseup_event(GUI::MouseEvent& event)
 {
     set_override_cursor(m_active_cursor);
 
-    if (!m_active_layer || !m_active_tool)
+    if (!m_active_tool)
         return;
-    auto layer_event = event_adjusted_for_layer(event, *m_active_layer);
+    auto layer_event = m_active_layer ? event_adjusted_for_layer(event, *m_active_layer) : event;
     auto image_event = event_with_pan_and_scale_applied(event);
-    m_active_tool->on_mouseup(*m_active_layer, layer_event, image_event);
+    Tool::MouseEvent tool_event(Tool::MouseEvent::Action::MouseDown, layer_event, image_event, event);
+    m_active_tool->on_mouseup(m_active_layer.ptr(), tool_event);
 }
 
 void ImageEditor::mousewheel_event(GUI::MouseEvent& event)
@@ -245,9 +246,9 @@ void ImageEditor::mousewheel_event(GUI::MouseEvent& event)
 
 void ImageEditor::context_menu_event(GUI::ContextMenuEvent& event)
 {
-    if (!m_active_layer || !m_active_tool)
+    if (!m_active_tool)
         return;
-    m_active_tool->on_context_menu(*m_active_layer, event);
+    m_active_tool->on_context_menu(m_active_layer, event);
 }
 
 void ImageEditor::resize_event(GUI::ResizeEvent& event)
@@ -318,6 +319,7 @@ void ImageEditor::set_active_tool(Tool* tool)
         m_active_tool->setup(*this);
         m_active_tool->on_tool_activation();
         m_active_cursor = m_active_tool->cursor();
+        set_override_cursor(m_active_cursor);
     }
 }
 
@@ -390,7 +392,7 @@ Layer* ImageEditor::layer_at_editor_position(Gfx::IntPoint const& editor_positio
 
 void ImageEditor::clamped_scale(float scale_delta)
 {
-    m_scale += scale_delta;
+    m_scale *= AK::exp2(scale_delta);
     if (m_scale < 0.1f)
         m_scale = 0.1f;
     if (m_scale > 100.0f)
@@ -452,6 +454,12 @@ void ImageEditor::image_did_change(Gfx::IntRect const& modified_image_rect)
     update(m_editor_image_rect.intersected(enclosing_int_rect(image_rect_to_editor_rect(modified_image_rect))));
 }
 
+void ImageEditor::image_did_change_rect(Gfx::IntRect const& new_image_rect)
+{
+    m_editor_image_rect = enclosing_int_rect(image_rect_to_editor_rect(new_image_rect));
+    update(m_editor_image_rect);
+}
+
 void ImageEditor::image_did_change_title(String const& path)
 {
     if (on_image_title_change)
@@ -462,4 +470,33 @@ void ImageEditor::image_select_layer(Layer* layer)
 {
     set_active_layer(layer);
 }
+
+Result<void, String> ImageEditor::save_project_to_fd_and_close(int fd) const
+{
+    StringBuilder builder;
+    JsonObjectSerializer json(builder);
+    m_image->serialize_as_json(json);
+    auto json_guides = json.add_array("guides");
+    for (const auto& guide : m_guides) {
+        auto json_guide = json_guides.add_object();
+        json_guide.add("offset"sv, (double)guide.offset());
+        if (guide.orientation() == Guide::Orientation::Vertical)
+            json_guide.add("orientation", "vertical");
+        else if (guide.orientation() == Guide::Orientation::Horizontal)
+            json_guide.add("orientation", "horizontal");
+        json_guide.finish();
+    }
+    json_guides.finish();
+    json.finish();
+
+    auto file = Core::File::construct();
+    file->open(fd, Core::OpenMode::WriteOnly | Core::OpenMode::Truncate, Core::File::ShouldCloseFileDescriptor::Yes);
+    if (file->has_error())
+        return String { file->error_string() };
+
+    if (!file->write(builder.string_view()))
+        return String { file->error_string() };
+    return {};
+}
+
 }

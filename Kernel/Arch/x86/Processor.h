@@ -25,7 +25,6 @@ struct ProcessorMessageEntry;
 
 enum class ProcessorSpecificDataID {
     MemoryManager,
-    Scheduler,
     __Count,
 };
 
@@ -103,9 +102,9 @@ struct DeferredCallEntry {
 };
 
 class Processor;
-// Note: We only support 8 processors at most at the moment,
-// so allocate 8 slots of inline capacity in the container.
-using ProcessorContainer = Array<Processor*, 8>;
+// Note: We only support 64 processors at most at the moment,
+// so allocate 64 slots of inline capacity in the container.
+using ProcessorContainer = Array<Processor*, 64>;
 
 class Processor {
     friend class ProcessorInfo;
@@ -120,8 +119,8 @@ class Processor {
     u32 m_gdt_length;
 
     u32 m_cpu;
-    u32 m_in_irq;
-    volatile u32 m_in_critical {};
+    FlatPtr m_in_irq;
+    volatile u32 m_in_critical;
     static Atomic<u32> s_idle_cpu_mask;
 
     TSS m_tss;
@@ -138,6 +137,7 @@ class Processor {
 
     bool m_invoke_scheduler_async;
     bool m_scheduler_initialized;
+    bool m_in_scheduler;
     Atomic<bool> m_halt_requested;
 
     DeferredCallEntry* m_pending_deferred_calls; // in reverse order
@@ -189,6 +189,8 @@ public:
     {
         s_idle_cpu_mask.fetch_and(~(1u << m_cpu), AK::MemoryOrder::memory_order_relaxed);
     }
+
+    static Processor& by_id(u32);
 
     static u32 count()
     {
@@ -308,7 +310,7 @@ public:
         return (Thread*)read_gs_ptr(__builtin_offsetof(Processor, m_idle_thread));
     }
 
-    ALWAYS_INLINE u32 get_id() const
+    ALWAYS_INLINE u32 id() const
     {
         // NOTE: This variant should only be used when iterating over all
         // Processor instances, or when it's guaranteed that the thread
@@ -318,7 +320,7 @@ public:
         return m_cpu;
     }
 
-    ALWAYS_INLINE static u32 id()
+    ALWAYS_INLINE static u32 current_id()
     {
         // See comment in Processor::current_thread
         return read_gs_ptr(__builtin_offsetof(Processor, m_cpu));
@@ -326,12 +328,12 @@ public:
 
     ALWAYS_INLINE static bool is_bootstrap_processor()
     {
-        return Processor::id() == 0;
+        return Processor::current_id() == 0;
     }
 
-    ALWAYS_INLINE u32& in_irq()
+    ALWAYS_INLINE static FlatPtr current_in_irq()
     {
-        return m_in_irq;
+        return read_gs_ptr(__builtin_offsetof(Processor, m_in_irq));
     }
 
     ALWAYS_INLINE static void restore_in_critical(u32 critical)
@@ -342,6 +344,16 @@ public:
     ALWAYS_INLINE static void enter_critical()
     {
         write_gs_ptr(__builtin_offsetof(Processor, m_in_critical), in_critical() + 1);
+    }
+
+    ALWAYS_INLINE static bool current_in_scheduler()
+    {
+        return read_gs_value<decltype(m_in_scheduler)>(__builtin_offsetof(Processor, m_in_scheduler));
+    }
+
+    ALWAYS_INLINE static void set_current_in_scheduler(bool value)
+    {
+        write_gs_value<decltype(m_in_scheduler)>(__builtin_offsetof(Processor, m_in_scheduler), value);
     }
 
 private:
@@ -392,10 +404,7 @@ public:
         return read_gs_ptr(__builtin_offsetof(Processor, m_in_critical));
     }
 
-    ALWAYS_INLINE const FPUState& clean_fpu_state() const
-    {
-        return s_clean_fpu_state;
-    }
+    ALWAYS_INLINE static FPUState const& clean_fpu_state() { return s_clean_fpu_state; }
 
     static void smp_enable();
     bool smp_process_pending_messages();
@@ -424,7 +433,7 @@ public:
     FlatPtr init_context(Thread& thread, bool leave_crit);
     static Vector<FlatPtr> capture_stack_trace(Thread& thread, size_t max_frames = 0);
 
-    String platform_string() const;
+    static StringView platform_string();
 };
 
 template<typename T>

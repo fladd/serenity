@@ -6,7 +6,7 @@
 
 #include <Kernel/Debug.h>
 #include <Kernel/FileSystem/Custody.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Memory/Region.h>
 #include <Kernel/PerformanceManager.h>
 #include <Kernel/Process.h>
@@ -18,14 +18,12 @@ KResultOr<FlatPtr> Process::sys$fork(RegisterState& regs)
     VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     REQUIRE_PROMISE(proc);
     RefPtr<Thread> child_first_thread;
-    auto child = Process::create(child_first_thread, m_name, uid(), gid(), pid(), m_is_kernel_process, m_cwd, m_executable, m_tty, this);
-    if (!child || !child_first_thread)
-        return ENOMEM;
+    auto child_name = TRY(m_name->try_clone());
+    auto child = TRY(Process::try_create(child_first_thread, move(child_name), uid(), gid(), pid(), m_is_kernel_process, m_cwd, m_executable, m_tty, this));
     child->m_veil_state = m_veil_state;
     child->m_unveiled_paths = m_unveiled_paths.deep_copy();
 
-    if (auto result = child->m_fds.try_clone(m_fds); result.is_error())
-        return result.error();
+    TRY(child->m_fds.try_clone(m_fds));
 
     child->m_pg = m_pg;
 
@@ -93,23 +91,12 @@ KResultOr<FlatPtr> Process::sys$fork(RegisterState& regs)
 #endif
 
     {
-        ScopedSpinLock lock(address_space().get_lock());
+        SpinlockLocker lock(address_space().get_lock());
         for (auto& region : address_space().regions()) {
             dbgln_if(FORK_DEBUG, "fork: cloning Region({}) '{}' @ {}", region, region->name(), region->vaddr());
-            auto maybe_region_clone = region->try_clone();
-            if (maybe_region_clone.is_error()) {
-                dbgln("fork: Cannot clone region, insufficient memory");
-                // TODO: tear down new process?
-                return maybe_region_clone.error();
-            }
-
-            auto* child_region = child->address_space().add_region(maybe_region_clone.release_value());
-            if (!child_region) {
-                dbgln("fork: Cannot add region, insufficient memory");
-                // TODO: tear down new process?
-                return ENOMEM;
-            }
-            child_region->map(child->address_space().page_directory(), Memory::ShouldFlushTLB::No);
+            auto region_clone = TRY(region->try_clone());
+            auto* child_region = TRY(child->address_space().add_region(move(region_clone)));
+            TRY(child_region->map(child->address_space().page_directory(), Memory::ShouldFlushTLB::No));
 
             if (region == m_master_tls_region.unsafe_ptr())
                 child->m_master_tls_region = child_region;
@@ -120,13 +107,13 @@ KResultOr<FlatPtr> Process::sys$fork(RegisterState& regs)
 
     PerformanceManager::add_process_created_event(*child);
 
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     child_first_thread->set_affinity(Thread::current()->affinity());
     child_first_thread->set_state(Thread::State::Runnable);
 
     auto child_pid = child->pid().value();
 
-    // NOTE: All user processes have a leaked ref on them. It's balanced by Thread::WaitBlockCondition::finalize().
+    // NOTE: All user processes have a leaked ref on them. It's balanced by Thread::WaitBlockerSet::finalize().
     (void)child.leak_ref();
 
     return child_pid;

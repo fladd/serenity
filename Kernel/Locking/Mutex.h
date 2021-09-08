@@ -26,7 +26,7 @@ class Mutex {
 public:
     using Mode = LockMode;
 
-    Mutex(const char* name = nullptr)
+    Mutex(StringView name = {})
         : m_name(name)
     {
     }
@@ -39,12 +39,12 @@ public:
     [[nodiscard]] Mode force_unlock_if_locked(u32&);
     [[nodiscard]] bool is_locked() const
     {
-        ScopedSpinLock lock(m_lock);
+        SpinlockLocker lock(m_lock);
         return m_mode != Mode::Unlocked;
     }
-    [[nodiscard]] bool own_lock() const
+    [[nodiscard]] bool is_locked_by_current_thread() const
     {
-        ScopedSpinLock lock(m_lock);
+        SpinlockLocker lock(m_lock);
         if (m_mode == Mode::Exclusive)
             return m_holder == Thread::current();
         if (m_mode == Mode::Shared)
@@ -52,24 +52,24 @@ public:
         return false;
     }
 
-    [[nodiscard]] const char* name() const { return m_name; }
+    [[nodiscard]] StringView name() const { return m_name; }
 
-    static const char* mode_to_string(Mode mode)
+    static StringView mode_to_string(Mode mode)
     {
         switch (mode) {
         case Mode::Unlocked:
-            return "unlocked";
+            return "unlocked"sv;
         case Mode::Exclusive:
-            return "exclusive";
+            return "exclusive"sv;
         case Mode::Shared:
-            return "shared";
+            return "shared"sv;
         default:
-            return "invalid";
+            return "invalid"sv;
         }
     }
 
 private:
-    typedef IntrusiveList<Thread, RawPtr<Thread>, &Thread::m_blocked_threads_list_node> BlockedThreadList;
+    using BlockedThreadList = IntrusiveList<Thread, RawPtr<Thread>, &Thread::m_blocked_threads_list_node>;
 
     ALWAYS_INLINE BlockedThreadList& thread_list_for_mode(Mode mode)
     {
@@ -77,10 +77,10 @@ private:
         return mode == Mode::Exclusive ? m_blocked_threads_list_exclusive : m_blocked_threads_list_shared;
     }
 
-    void block(Thread&, Mode, ScopedSpinLock<SpinLock<u8>>&, u32);
+    void block(Thread&, Mode, SpinlockLocker<Spinlock>&, u32);
     void unblock_waiters(Mode);
 
-    const char* m_name { nullptr };
+    StringView m_name;
     Mode m_mode { Mode::Unlocked };
 
     // When locked exclusively, only the thread already holding the lock can
@@ -98,7 +98,7 @@ private:
     BlockedThreadList m_blocked_threads_list_exclusive;
     BlockedThreadList m_blocked_threads_list_shared;
 
-    mutable SpinLock<u8> m_lock;
+    mutable Spinlock m_lock;
 };
 
 class MutexLocker {
@@ -152,54 +152,6 @@ public:
 private:
     Mutex* m_lock;
     bool m_locked { true };
-};
-
-class ScopedLockRelease {
-    AK_MAKE_NONCOPYABLE(ScopedLockRelease);
-
-public:
-    ScopedLockRelease& operator=(ScopedLockRelease&&) = delete;
-
-    ScopedLockRelease(Mutex& lock)
-        : m_lock(&lock)
-        , m_previous_mode(lock.force_unlock_if_locked(m_previous_recursions))
-    {
-    }
-
-    ScopedLockRelease(ScopedLockRelease&& from)
-        : m_lock(exchange(from.m_lock, nullptr))
-        , m_previous_mode(exchange(from.m_previous_mode, Mutex::Mode::Unlocked))
-        , m_previous_recursions(exchange(from.m_previous_recursions, 0))
-    {
-    }
-
-    ~ScopedLockRelease()
-    {
-        if (m_lock && m_previous_mode != Mutex::Mode::Unlocked)
-            m_lock->restore_lock(m_previous_mode, m_previous_recursions);
-    }
-
-    void restore_lock()
-    {
-        VERIFY(m_lock);
-        if (m_previous_mode != Mutex::Mode::Unlocked) {
-            m_lock->restore_lock(m_previous_mode, m_previous_recursions);
-            m_previous_mode = Mutex::Mode::Unlocked;
-            m_previous_recursions = 0;
-        }
-    }
-
-    void do_not_restore()
-    {
-        VERIFY(m_lock);
-        m_previous_mode = Mutex::Mode::Unlocked;
-        m_previous_recursions = 0;
-    }
-
-private:
-    Mutex* m_lock;
-    Mutex::Mode m_previous_mode;
-    u32 m_previous_recursions;
 };
 
 }

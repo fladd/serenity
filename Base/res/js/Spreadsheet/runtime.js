@@ -1,3 +1,5 @@
+"use strict";
+
 // FIXME: Figure out a way to document non-function entities too.
 class Position {
     constructor(column, row, sheet) {
@@ -82,21 +84,21 @@ function range(start, end, columnStep, rowStep) {
     columnStep = integer(columnStep ?? 1);
     rowStep = integer(rowStep ?? 1);
     if (!(start instanceof Position)) {
-        start = parse_cell_name(start) ?? { column: "A", row: 0 };
+        start = thisSheet.parse_cell_name(start) ?? { column: "A", row: 0 };
     }
     if (!(end instanceof Position)) {
-        end = parse_cell_name(end) ?? start;
+        end = thisSheet.parse_cell_name(end) ?? start;
     }
 
     const cells = [];
 
-    const start_column_index = column_index(start.column);
-    const end_column_index = column_index(end.column);
+    const start_column_index = thisSheet.column_index(start.column);
+    const end_column_index = thisSheet.column_index(end.column);
     const start_column = start_column_index > end_column_index ? end.column : start.column;
     const distance = Math.abs(start_column_index - end_column_index);
 
     for (let col = 0; col <= distance; col += columnStep) {
-        const column = column_arithmetic(start_column, col);
+        const column = thisSheet.column_arithmetic(start_column, col);
         for (
             let row = Math.min(start.row, end.row);
             row <= Math.max(start.row, end.row);
@@ -109,27 +111,11 @@ function range(start, end, columnStep, rowStep) {
     return cells;
 }
 
-// FIXME: Remove this and use String.split() eventually
-function split(str, sep) {
-    const parts = [];
-    let splitIndex = -1;
-    for (;;) {
-        splitIndex = str.indexOf(sep);
-        if (splitIndex == -1) {
-            if (str.length) parts.push(str);
-            break;
-        }
-        parts.push(str.substring(0, splitIndex));
-        str = str.slice(splitIndex + sep.length);
-    }
-    return parts;
-}
-
 function R(fmt, ...args) {
     if (args.length !== 0) throw new TypeError("R`` format must be literal");
 
     fmt = fmt[0];
-    return range(...split(fmt, ":"));
+    return range(...fmt.split(":"));
 }
 
 function select(criteria, t, f) {
@@ -222,10 +208,10 @@ function averageIf(condition, cells) {
 function median(cells) {
     const values = numericResolve(cells);
 
-    if (values.length == 0) return 0;
+    if (values.length === 0) return 0;
 
     function qselect(arr, idx) {
-        if (arr.length == 1) return arr[0];
+        if (arr.length === 1) return arr[0];
 
         const pivot = arr[0];
         const ls = arr.filter(x => x < pivot);
@@ -272,7 +258,7 @@ function column() {
 }
 
 function here() {
-    const position = current_cell_position();
+    const position = thisSheet.current_cell_position();
     return new Position(position.column, position.row, thisSheet);
 }
 

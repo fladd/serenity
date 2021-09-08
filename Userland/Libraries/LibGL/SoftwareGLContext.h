@@ -66,10 +66,13 @@ public:
     virtual void gl_alpha_func(GLenum func, GLclampf ref) override;
     virtual void gl_hint(GLenum target, GLenum mode) override;
     virtual void gl_read_buffer(GLenum mode) override;
+    virtual void gl_draw_buffer(GLenum buffer) override;
     virtual void gl_read_pixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid* pixels) override;
     virtual void gl_tex_image_2d(GLenum target, GLint level, GLint internal_format, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid* data) override;
+    virtual void gl_tex_sub_image_2d(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* data) override;
     virtual void gl_tex_parameter(GLenum target, GLenum pname, GLfloat param) override;
     virtual void gl_tex_coord(GLfloat s, GLfloat t, GLfloat r, GLfloat q) override;
+    virtual void gl_tex_env(GLenum target, GLenum pname, GLfloat param) override;
     virtual void gl_bind_texture(GLenum target, GLuint texture) override;
     virtual void gl_active_texture(GLenum texture) override;
     virtual void gl_get_floatv(GLenum pname, GLfloat* params) override;
@@ -86,6 +89,12 @@ public:
     virtual void gl_get_integerv(GLenum pname, GLint* data) override;
     virtual void gl_depth_range(GLdouble min, GLdouble max) override;
     virtual void gl_depth_func(GLenum func) override;
+    virtual void gl_polygon_mode(GLenum face, GLenum mode) override;
+    virtual void gl_polygon_offset(GLfloat factor, GLfloat units) override;
+    virtual void gl_fogfv(GLenum pname, GLfloat* params) override;
+    virtual void gl_fogf(GLenum pname, GLfloat param) override;
+    virtual void gl_fogi(GLenum pname, GLint param) override;
+    virtual void gl_pixel_store(GLenum pname, GLfloat param) override;
     virtual void present() override;
 
 private:
@@ -146,6 +155,7 @@ private:
     GLclampf m_alpha_test_ref_value = 0;
 
     GLenum m_current_read_buffer = GL_BACK;
+    GLenum m_current_draw_buffer = GL_BACK;
 
     // Client side arrays
     bool m_client_side_vertex_array_enabled = false;
@@ -219,7 +229,8 @@ private:
             decltype(&SoftwareGLContext::gl_depth_mask),
             decltype(&SoftwareGLContext::gl_draw_arrays),
             decltype(&SoftwareGLContext::gl_draw_elements),
-            decltype(&SoftwareGLContext::gl_depth_range)>;
+            decltype(&SoftwareGLContext::gl_depth_range),
+            decltype(&SoftwareGLContext::gl_polygon_offset)>;
 
         using ExtraSavedArguments = Variant<
             FloatMatrix4x4>;
@@ -250,6 +261,8 @@ private:
     VertexAttribPointer m_client_vertex_pointer;
     VertexAttribPointer m_client_color_pointer;
     VertexAttribPointer m_client_tex_coord_pointer;
+
+    size_t m_unpack_row_length { 0 };
 };
 
 }

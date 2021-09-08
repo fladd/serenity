@@ -214,23 +214,23 @@ static void dump(const RegisterState& regs)
 
 void handle_crash(RegisterState const& regs, char const* description, int signal, bool out_of_memory)
 {
-    auto process = Process::current();
-    if (!process) {
+    if (!Process::has_current())
         PANIC("{} with !current", description);
-    }
+
+    auto& process = Process::current();
 
     // If a process crashed while inspecting another process,
     // make sure we switch back to the right page tables.
-    MM.enter_process_paging_scope(*process);
+    MM.enter_process_address_space(process);
 
-    dmesgln("CRASH: CPU #{} {} in ring {}", Processor::id(), description, (regs.cs & 3));
+    dmesgln("CRASH: CPU #{} {} in ring {}", Processor::current_id(), description, (regs.cs & 3));
     dump(regs);
 
     if (!(regs.cs & 3)) {
         PANIC("Crash in ring 0");
     }
 
-    process->crash(signal, regs.ip(), out_of_memory);
+    process.crash(signal, regs.ip(), out_of_memory);
 }
 
 EH_ENTRY_NO_CODE(6, illegal_instruction);
@@ -275,7 +275,7 @@ void page_fault_handler(TrapFrame* trap)
     if constexpr (PAGE_FAULT_DEBUG) {
         u32 fault_page_directory = read_cr3();
         dbgln("CPU #{} ring {} {} page fault in PD={:#x}, {}{} {}",
-            Processor::is_initialized() ? Processor::id() : 0,
+            Processor::is_initialized() ? Processor::current_id() : 0,
             regs.cs & 3,
             regs.exception_code & 1 ? "PV" : "NP",
             fault_page_directory,
@@ -288,7 +288,7 @@ void page_fault_handler(TrapFrame* trap)
 
     bool faulted_in_kernel = !(regs.cs & 3);
 
-    if (faulted_in_kernel && Processor::current().in_irq()) {
+    if (faulted_in_kernel && Processor::current_in_irq()) {
         // If we're faulting in an IRQ handler, first check if we failed
         // due to safe_memcpy, safe_strnlen, or safe_memset. If we did,
         // gracefully continue immediately. Because we're in an IRQ handler
@@ -463,7 +463,7 @@ extern "C" void handle_interrupt(TrapFrame*) __attribute__((used));
 
 extern "C" UNMAP_AFTER_INIT void pre_init_finished(void)
 {
-    VERIFY(g_scheduler_lock.own_lock());
+    VERIFY(g_scheduler_lock.is_locked_by_current_processor());
 
     // Because init_finished() will wait on the other APs, we need
     // to release the scheduler lock so that the other APs can also get

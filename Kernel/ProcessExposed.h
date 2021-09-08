@@ -11,12 +11,12 @@
 #include <AK/RefPtr.h>
 #include <AK/String.h>
 #include <AK/Types.h>
+#include <Kernel/API/KResult.h>
 #include <Kernel/Arch/x86/CPU.h>
 #include <Kernel/FileSystem/File.h>
-#include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/FileSystem/FileSystem.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/KBufferBuilder.h>
-#include <Kernel/KResult.h>
 #include <Kernel/UserOrKernelBuffer.h>
 
 namespace Kernel {
@@ -26,7 +26,7 @@ enum class MainProcessProperty {
     Reserved = 0,
     Unveil = 1,
     Pledge = 2,
-    FileDescriptions = 3,
+    OpenFileDescriptions = 3,
     BinaryLink = 4,
     CurrentWorkDirectoryLink = 5,
     PerformanceEvents = 6,
@@ -35,7 +35,7 @@ enum class MainProcessProperty {
 
 enum class ProcessSubDirectory {
     Reserved = 0,
-    FileDescriptions = 1,
+    OpenFileDescriptions = 1,
     Stacks = 2,
 };
 
@@ -66,19 +66,18 @@ private:
 class ProcFSExposedComponent : public RefCounted<ProcFSExposedComponent> {
 public:
     StringView name() const { return m_name->view(); }
-    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer&, FileDescription*) const { VERIFY_NOT_REACHED(); }
+    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer&, OpenFileDescription*) const { VERIFY_NOT_REACHED(); }
     virtual KResult traverse_as_directory(unsigned, Function<bool(FileSystem::DirectoryEntryView const&)>) const { VERIFY_NOT_REACHED(); }
     virtual KResultOr<NonnullRefPtr<ProcFSExposedComponent>> lookup(StringView) { VERIFY_NOT_REACHED(); };
-    virtual KResultOr<size_t> write_bytes(off_t, size_t, const UserOrKernelBuffer&, FileDescription*) { return KResult(EROFS); }
-    virtual size_t size() const { return 0; }
+    virtual KResultOr<size_t> write_bytes(off_t, size_t, const UserOrKernelBuffer&, OpenFileDescription*) { return KResult(EROFS); }
 
     virtual mode_t required_mode() const { return 0444; }
-    virtual uid_t owner_user() const { return 0; }
-    virtual gid_t owner_group() const { return 0; }
+    virtual UserID owner_user() const { return 0; }
+    virtual GroupID owner_group() const { return 0; }
     time_t modified_time() const { return TimeManagement::now().to_timeval().tv_sec; }
 
     virtual void prepare_for_deletion() { }
-    virtual KResult refresh_data(FileDescription&) const
+    virtual KResult refresh_data(OpenFileDescription&) const
     {
         return KSuccess;
     }
@@ -129,7 +128,7 @@ class ProcFSExposedLink : public ProcFSExposedComponent {
 public:
     virtual KResultOr<NonnullRefPtr<Inode>> to_inode(const ProcFS& procfs_instance) const override final;
 
-    virtual KResultOr<size_t> read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, FileDescription* description) const override;
+    virtual KResultOr<size_t> read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, OpenFileDescription* description) const override;
 
 protected:
     virtual bool acquire_link(KBufferBuilder& builder) = 0;
@@ -150,7 +149,7 @@ private:
     ProcFSRootDirectory();
 };
 
-struct ProcFSInodeData : public FileDescriptionData {
+struct ProcFSInodeData : public OpenFileDescriptionData {
     OwnPtr<KBuffer> buffer;
 };
 
@@ -158,7 +157,7 @@ class ProcFSGlobalInformation : public ProcFSExposedComponent {
 public:
     virtual ~ProcFSGlobalInformation() override {};
 
-    virtual KResultOr<size_t> read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, FileDescription* description) const override;
+    virtual KResultOr<size_t> read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, OpenFileDescription* description) const override;
 
     virtual mode_t required_mode() const override { return 0444; }
 
@@ -167,8 +166,8 @@ protected:
         : ProcFSExposedComponent(name)
     {
     }
-    virtual KResult refresh_data(FileDescription&) const override;
-    virtual bool output(KBufferBuilder& builder) = 0;
+    virtual KResult refresh_data(OpenFileDescription&) const override;
+    virtual KResult try_generate(KBufferBuilder&) = 0;
 
     mutable Mutex m_refresh_lock;
 };
@@ -183,10 +182,9 @@ protected:
         : ProcFSGlobalInformation(name)
     {
     }
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
-        builder.appendff("{}\n", value());
-        return true;
+        return builder.appendff("{}\n", value());
     }
 };
 

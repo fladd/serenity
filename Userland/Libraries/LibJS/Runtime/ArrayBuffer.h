@@ -27,7 +27,7 @@ public:
     static ArrayBuffer* create(GlobalObject&, size_t);
     static ArrayBuffer* create(GlobalObject&, ByteBuffer*);
 
-    ArrayBuffer(size_t, Object& prototype);
+    ArrayBuffer(ByteBuffer buffer, Object& prototype);
     ArrayBuffer(ByteBuffer* buffer, Object& prototype);
     virtual ~ArrayBuffer() override;
 
@@ -125,7 +125,7 @@ template<typename T>
 static ByteBuffer numeric_to_raw_bytes(GlobalObject& global_object, Value value, bool is_little_endian)
 {
     using UnderlyingBufferDataType = Conditional<IsSame<ClampedU8, T>, u8, T>;
-    ByteBuffer raw_bytes = ByteBuffer::create_uninitialized(sizeof(UnderlyingBufferDataType));
+    ByteBuffer raw_bytes = ByteBuffer::create_uninitialized(sizeof(UnderlyingBufferDataType)).release_value(); // FIXME: Handle possible OOM situation.
     auto flip_if_needed = [&]() {
         if (is_little_endian)
             return;

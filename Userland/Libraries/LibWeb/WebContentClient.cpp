@@ -136,14 +136,24 @@ void WebContentClient::did_get_source(URL const& url, String const& source)
     m_view.notify_server_did_get_source(url, source);
 }
 
-void WebContentClient::did_get_dom_tree(const String& dom_tree)
+void WebContentClient::did_get_dom_tree(String const& dom_tree)
 {
     m_view.notify_server_did_get_dom_tree(dom_tree);
 }
 
-void WebContentClient::did_js_console_output(String const& method, String const& line)
+void WebContentClient::did_get_dom_node_properties(i32 node_id, String const& specified_style, String const& computed_style)
 {
-    m_view.notify_server_did_js_console_output(method, line);
+    m_view.notify_server_did_get_dom_node_properties(node_id, specified_style, computed_style);
+}
+
+void WebContentClient::did_output_js_console_message(i32 message_index)
+{
+    m_view.notify_server_did_output_js_console_message(message_index);
+}
+
+void WebContentClient::did_get_js_console_messages(i32 start_index, Vector<String> const& message_types, Vector<String> const& messages)
+{
+    m_view.notify_server_did_get_js_console_messages(start_index, message_types, messages);
 }
 
 void WebContentClient::did_request_alert(String const& message)

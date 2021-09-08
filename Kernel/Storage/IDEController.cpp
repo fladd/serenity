@@ -7,6 +7,7 @@
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
 #include <AK/Types.h>
+#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/FileSystem/ProcFS.h>
 #include <Kernel/Sections.h>
 #include <Kernel/Storage/BMIDEChannel.h>
@@ -52,7 +53,7 @@ void IDEController::complete_current_request(AsyncDeviceRequest::RequestResult)
 
 UNMAP_AFTER_INIT IDEController::IDEController(PCI::Address address, bool force_pio)
     : StorageController()
-    , PCI::DeviceController(address)
+    , PCI::Device(address)
 {
     PCI::enable_io_space(address);
     PCI::enable_memory_space(address);

@@ -33,16 +33,12 @@ KResultOr<FlatPtr> Process::sys$dbgputstr(Userspace<const char*> characters, siz
 
     if (size <= 1024) {
         char buffer[1024];
-        if (!copy_from_user(buffer, characters, size))
-            return EFAULT;
+        TRY(copy_from_user(buffer, characters, size));
         dbgputstr(buffer, size);
         return size;
     }
 
-    auto result = try_copy_kstring_from_user(characters, size);
-    if (result.is_error())
-        return result.error();
-    auto string = result.release_value();
+    auto string = TRY(try_copy_kstring_from_user(characters, size));
     dbgputstr(string->view());
     return string->length();
 }

@@ -24,43 +24,55 @@ PenTool::~PenTool()
 {
 }
 
-void PenTool::on_mousedown(Layer& layer, GUI::MouseEvent& event, GUI::MouseEvent&)
+void PenTool::on_mousedown(Layer* layer, MouseEvent& event)
 {
-    if (event.button() != GUI::MouseButton::Left && event.button() != GUI::MouseButton::Right)
+    if (!layer)
         return;
 
-    GUI::Painter painter(layer.bitmap());
-    painter.draw_line(event.position(), event.position(), m_editor->color_for(event), m_thickness);
-    layer.did_modify_bitmap(Gfx::IntRect::centered_on(event.position(), Gfx::IntSize { m_thickness + 2, m_thickness + 2 }));
-    m_last_drawing_event_position = event.position();
+    auto& layer_event = event.layer_event();
+    if (layer_event.button() != GUI::MouseButton::Left && layer_event.button() != GUI::MouseButton::Right)
+        return;
+
+    GUI::Painter painter(layer->bitmap());
+    painter.draw_line(layer_event.position(), layer_event.position(), m_editor->color_for(layer_event), m_thickness);
+    layer->did_modify_bitmap(Gfx::IntRect::centered_on(layer_event.position(), Gfx::IntSize { m_thickness + 2, m_thickness + 2 }));
+    m_last_drawing_event_position = layer_event.position();
 }
 
-void PenTool::on_mouseup(Layer&, GUI::MouseEvent& event, GUI::MouseEvent&)
+void PenTool::on_mouseup(Layer* layer, MouseEvent& event)
 {
-    if (event.button() == GUI::MouseButton::Left || event.button() == GUI::MouseButton::Right) {
+    if (!layer)
+        return;
+
+    auto& layer_event = event.layer_event();
+    if (layer_event.button() == GUI::MouseButton::Left || layer_event.button() == GUI::MouseButton::Right) {
         m_last_drawing_event_position = { -1, -1 };
         m_editor->did_complete_action();
     }
 }
 
-void PenTool::on_mousemove(Layer& layer, GUI::MouseEvent& event, GUI::MouseEvent&)
+void PenTool::on_mousemove(Layer* layer, MouseEvent& event)
 {
-    if (!(event.buttons() & GUI::MouseButton::Left || event.buttons() & GUI::MouseButton::Right))
+    if (!layer)
         return;
-    GUI::Painter painter(layer.bitmap());
+
+    auto& layer_event = event.layer_event();
+    if (!(layer_event.buttons() & GUI::MouseButton::Left || layer_event.buttons() & GUI::MouseButton::Right))
+        return;
+    GUI::Painter painter(layer->bitmap());
 
     Gfx::IntRect changed_rect;
     if (m_last_drawing_event_position != Gfx::IntPoint(-1, -1)) {
-        painter.draw_line(m_last_drawing_event_position, event.position(), m_editor->color_for(event), m_thickness);
-        changed_rect = Gfx::IntRect::from_two_points(m_last_drawing_event_position, event.position());
+        painter.draw_line(m_last_drawing_event_position, layer_event.position(), m_editor->color_for(layer_event), m_thickness);
+        changed_rect = Gfx::IntRect::from_two_points(m_last_drawing_event_position, layer_event.position());
     } else {
-        painter.draw_line(event.position(), event.position(), m_editor->color_for(event), m_thickness);
-        changed_rect = Gfx::IntRect::from_two_points(event.position(), event.position());
+        painter.draw_line(layer_event.position(), layer_event.position(), m_editor->color_for(layer_event), m_thickness);
+        changed_rect = Gfx::IntRect::from_two_points(layer_event.position(), layer_event.position());
     }
     changed_rect.inflate(m_thickness + 2, m_thickness + 2);
-    layer.did_modify_bitmap(changed_rect);
+    layer->did_modify_bitmap(changed_rect);
 
-    m_last_drawing_event_position = event.position();
+    m_last_drawing_event_position = layer_event.position();
 }
 
 GUI::Widget* PenTool::get_properties_widget()
@@ -84,6 +96,7 @@ GUI::Widget* PenTool::get_properties_widget()
         thickness_slider.on_change = [&](int value) {
             m_thickness = value;
         };
+        set_primary_slider(&thickness_slider);
     }
 
     return m_properties_widget.ptr();

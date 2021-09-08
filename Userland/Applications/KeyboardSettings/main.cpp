@@ -4,10 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "CharacterMapFileListModel.h"
 #include <AK/JsonObject.h>
 #include <AK/QuickSort.h>
-#include <LibCore/ConfigFile.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/File.h>
 #include <LibGUI/Action.h>
@@ -16,6 +14,7 @@
 #include <LibGUI/Button.h>
 #include <LibGUI/CheckBox.h>
 #include <LibGUI/ComboBox.h>
+#include <LibGUI/ItemListModel.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Menu.h>
 #include <LibGUI/Menubar.h>
@@ -23,6 +22,9 @@
 #include <LibGUI/WindowServerConnection.h>
 #include <LibKeyboard/CharacterMap.h>
 #include <spawn.h>
+
+// Including this after to avoid LibIPC errors
+#include <LibConfig/Client.h>
 
 int main(int argc, char** argv)
 {
@@ -32,15 +34,10 @@ int main(int argc, char** argv)
     }
 
     auto app = GUI::Application::construct(argc, argv);
+    Config::pledge_domains("KeyboardSettings");
 
     if (pledge("stdio rpath cpath wpath recvfd sendfd proc exec", nullptr) < 0) {
         perror("pledge");
-        return 1;
-    }
-
-    auto config = Core::ConfigFile::get_for_app("KeyboardSettings");
-    if (unveil(config->filename().characters(), "rwc") < 0) {
-        perror("unveil");
         return 1;
     }
 
@@ -122,11 +119,11 @@ int main(int argc, char** argv)
 
     auto& character_map_file_combo = character_map_file_selection_container.add<GUI::ComboBox>();
     character_map_file_combo.set_only_allow_values_from_model(true);
-    character_map_file_combo.set_model(*CharacterMapFileListModel::create(character_map_files));
+    character_map_file_combo.set_model(*GUI::ItemListModel<String>::create(character_map_files));
     character_map_file_combo.set_selected_index(initial_keymap_index);
 
     auto& num_lock_checkbox = root_widget.add<GUI::CheckBox>("Enable Num Lock on login");
-    num_lock_checkbox.set_checked(config->read_bool_entry("StartupEnable", "NumLock", true));
+    num_lock_checkbox.set_checked(Config::read_bool("KeyboardSettings", "StartupEnable", "NumLock", true));
 
     root_widget.layout()->add_spacer();
 
@@ -143,8 +140,7 @@ int main(int argc, char** argv)
             exit(1);
         }
 
-        config->write_bool_entry("StartupEnable", "NumLock", num_lock_checkbox.is_checked());
-        config->sync();
+        Config::write_bool("KeyboardSettings", "StartupEnable", "NumLock", num_lock_checkbox.is_checked());
 
         if (quit)
             app->quit();

@@ -20,8 +20,6 @@ class WorkQueue {
 public:
     static void initialize();
 
-    WorkQueue(const char*);
-
     void queue(void (*function)(void*), void* data = nullptr, void (*free_data)(void*) = nullptr)
     {
         auto* item = new WorkItem; // TODO: use a pool
@@ -42,6 +40,8 @@ public:
     }
 
 private:
+    explicit WorkQueue(StringView);
+
     struct WorkItem {
         IntrusiveListNode<WorkItem> m_node;
         Function<void()> function;
@@ -52,7 +52,7 @@ private:
     RefPtr<Thread> m_thread;
     WaitQueue m_wait_queue;
     IntrusiveList<WorkItem, RawPtr<WorkItem>, &WorkItem::m_node> m_items;
-    SpinLock<u8> m_lock;
+    Spinlock m_lock;
 };
 
 }

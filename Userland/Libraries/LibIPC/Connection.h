@@ -196,7 +196,7 @@ protected:
             }
             if (nread == 0) {
                 if (bytes.is_empty()) {
-                    deferred_invoke([this](auto&) { shutdown(); });
+                    deferred_invoke([this] { shutdown(); });
                     return false;
                 }
                 break;
@@ -231,17 +231,21 @@ protected:
             // Sometimes we might receive a partial message. That's okay, just stash away
             // the unprocessed bytes and we'll prepend them to the next incoming message
             // in the next run of this function.
-            auto remaining_bytes = ByteBuffer::copy(bytes.data() + index, bytes.size() - index);
+            auto remaining_bytes_result = ByteBuffer::copy(bytes.span().slice(index));
+            if (!remaining_bytes_result.has_value()) {
+                dbgln("{}::drain_messages_from_peer: Failed to allocate buffer", *this);
+                return false;
+            }
             if (!m_unprocessed_bytes.is_empty()) {
                 dbgln("{}::drain_messages_from_peer: Already have unprocessed bytes", *this);
                 shutdown();
                 return false;
             }
-            m_unprocessed_bytes = remaining_bytes;
+            m_unprocessed_bytes = remaining_bytes_result.release_value();
         }
 
         if (!m_unprocessed_messages.is_empty()) {
-            deferred_invoke([this](auto&) {
+            deferred_invoke([this] {
                 handle_messages();
             });
         }

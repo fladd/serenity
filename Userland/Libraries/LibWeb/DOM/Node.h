@@ -99,8 +99,9 @@ public:
 
     virtual FlyString node_name() const = 0;
 
-    virtual String text_content() const;
-    void set_text_content(const String&);
+    String descendant_text_content() const;
+    String text_content() const;
+    void set_text_content(String const&);
 
     Document& document() { return *m_document; }
     const Document& document() const { return *m_document; }
@@ -113,14 +114,14 @@ public:
 
     String child_text_content() const;
 
-    Node* root();
-    const Node* root() const
+    Node& root();
+    const Node& root() const
     {
         return const_cast<Node*>(this)->root();
     }
 
-    Node* shadow_including_root();
-    const Node* shadow_including_root() const
+    Node& shadow_including_root();
+    const Node& shadow_including_root() const
     {
         return const_cast<Node*>(this)->shadow_including_root();
     }
@@ -174,6 +175,17 @@ public:
     // Used for dumping the DOM Tree
     void serialize_tree_as_json(JsonObjectSerializer<StringBuilder>&) const;
 
+    bool is_shadow_including_descendant_of(Node const&) const;
+    bool is_shadow_including_inclusive_descendant_of(Node const&) const;
+    bool is_shadow_including_ancestor_of(Node const&) const;
+    bool is_shadow_including_inclusive_ancestor_of(Node const&) const;
+
+    i32 id() const { return m_id; }
+    static Node* from_id(i32 node_id);
+
+    void replace_all(RefPtr<Node>);
+    void string_replace_all(String const&);
+
 protected:
     Node(Document&, NodeType);
 
@@ -182,6 +194,8 @@ protected:
     NodeType m_type { NodeType::INVALID };
     bool m_needs_style_update { false };
     bool m_child_needs_style_update { false };
+
+    i32 m_id;
 };
 
 }

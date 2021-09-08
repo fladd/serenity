@@ -10,10 +10,13 @@
 #include <AK/Math.h>
 #include <AK/NumericLimits.h>
 #include <LibAudio/Loader.h>
+#include <LibDSP/Music.h>
 #include <math.h>
 
 Track::Track(const u32& time)
     : m_time(time)
+    , m_temporary_transport(make_ref_counted<LibDSP::Transport>(120, 4))
+    , m_delay(make_ref_counted<LibDSP::Effects::Delay>(m_temporary_transport))
 {
     set_volume(volume_max);
     set_sustain_impl(1000);
@@ -96,14 +99,11 @@ void Track::fill_sample(Sample& sample)
         new_sample.right += note_sample.right * m_power[note] * volume_factor * (static_cast<double>(volume()) / volume_max);
     }
 
-    if (m_delay) {
-        new_sample.left += m_delay_buffer[m_delay_index].left * 0.333333;
-        new_sample.right += m_delay_buffer[m_delay_index].right * 0.333333;
-        m_delay_buffer[m_delay_index].left = new_sample.left;
-        m_delay_buffer[m_delay_index].right = new_sample.right;
-        if (++m_delay_index >= m_delay_samples)
-            m_delay_index = 0;
-    }
+    auto new_sample_dsp = LibDSP::Signal(LibDSP::Sample { new_sample.left / NumericLimits<i16>::max(), new_sample.right / NumericLimits<i16>::max() });
+    auto delayed_sample = m_delay->process(new_sample_dsp).get<LibDSP::Sample>();
+
+    new_sample.left = delayed_sample.left * NumericLimits<i16>::max();
+    new_sample.right = delayed_sample.right * NumericLimits<i16>::max();
 
     sample.left += new_sample.left;
     sample.right += new_sample.right;
@@ -111,8 +111,6 @@ void Track::fill_sample(Sample& sample)
 
 void Track::reset()
 {
-    memset(m_delay_buffer.data(), 0, m_delay_buffer.size() * sizeof(Sample));
-    m_delay_index = 0;
 
     memset(m_note_on, 0, sizeof(m_note_on));
     memset(m_power, 0, sizeof(m_power));
@@ -127,7 +125,12 @@ String Track::set_recorded_sample(const StringView& path)
     NonnullRefPtr<Audio::Loader> loader = Audio::Loader::create(path);
     if (loader->has_error())
         return String(loader->error_string());
-    auto buffer = loader->get_more_samples(60 * sample_rate * sizeof(Sample)); // 1 minute maximum
+    auto buffer = loader->get_more_samples(60 * loader->sample_rate()); // 1 minute maximum
+    if (loader->has_error())
+        return String(loader->error_string());
+    // Resample to Piano's internal sample rate
+    auto resampler = Audio::ResampleHelper<double>(loader->sample_rate(), sample_rate);
+    buffer = Audio::resample_buffer(resampler, *buffer);
 
     if (!m_recorded_sample.is_empty())
         m_recorded_sample.clear();
@@ -267,7 +270,7 @@ void Track::sync_roll(int note)
 
 void Track::set_roll_note(int note, u32 on_sample, u32 off_sample)
 {
-    RollNote new_roll_note = { on_sample, off_sample };
+    RollNote new_roll_note = { on_sample, off_sample, (u8)note, 0 };
 
     VERIFY(note >= 0 && note < note_count);
     VERIFY(new_roll_note.off_sample < roll_length);
@@ -354,14 +357,4 @@ void Track::set_release(int release)
 {
     VERIFY(release >= 0);
     m_release = release;
-}
-
-void Track::set_delay(int delay)
-{
-    VERIFY(delay >= 0);
-    m_delay = delay;
-    m_delay_samples = m_delay == 0 ? 0 : (sample_rate / (beats_per_minute / 60)) / m_delay;
-    m_delay_buffer.resize(m_delay_samples);
-    memset(m_delay_buffer.data(), 0, m_delay_buffer.size() * sizeof(Sample));
-    m_delay_index = 0;
 }

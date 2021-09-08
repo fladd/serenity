@@ -28,10 +28,10 @@ class ACPISysFSComponent : public SysFSComponent {
 public:
     static NonnullRefPtr<ACPISysFSComponent> create(String name, PhysicalAddress, size_t table_size);
 
-    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer&, FileDescription*) const override;
+    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer&, OpenFileDescription*) const override;
 
 protected:
-    OwnPtr<KBuffer> try_to_generate_buffer() const;
+    KResultOr<NonnullOwnPtr<KBuffer>> try_to_generate_buffer() const;
     ACPISysFSComponent(String name, PhysicalAddress, size_t table_size);
 
     PhysicalAddress m_paddr;
@@ -48,7 +48,7 @@ public:
         set_the(*new ParserType(rsdp));
     }
 
-    virtual PhysicalAddress find_table(const StringView& signature);
+    virtual Optional<PhysicalAddress> find_table(const StringView& signature);
 
     virtual void try_acpi_reboot();
     virtual bool can_reboot();

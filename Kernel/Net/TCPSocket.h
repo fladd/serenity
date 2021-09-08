@@ -10,8 +10,8 @@
 #include <AK/HashMap.h>
 #include <AK/SinglyLinkedList.h>
 #include <AK/WeakPtr.h>
-#include <Kernel/KResult.h>
-#include <Kernel/Locking/ProtectedValue.h>
+#include <Kernel/API/KResult.h>
+#include <Kernel/Locking/MutexProtected.h>
 #include <Kernel/Net/IPv4Socket.h>
 
 namespace Kernel {
@@ -19,7 +19,7 @@ namespace Kernel {
 class TCPSocket final : public IPv4Socket {
 public:
     static void for_each(Function<void(const TCPSocket&)>);
-    static KResultOr<NonnullRefPtr<TCPSocket>> create(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer);
+    static KResultOr<NonnullRefPtr<TCPSocket>> try_create(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer);
     virtual ~TCPSocket() override;
 
     enum class Direction {
@@ -142,12 +142,12 @@ public:
 
     bool should_delay_next_ack() const;
 
-    static ProtectedValue<HashMap<IPv4SocketTuple, TCPSocket*>>& sockets_by_tuple();
+    static MutexProtected<HashMap<IPv4SocketTuple, TCPSocket*>>& sockets_by_tuple();
     static RefPtr<TCPSocket> from_tuple(const IPv4SocketTuple& tuple);
 
-    static ProtectedValue<HashMap<IPv4SocketTuple, RefPtr<TCPSocket>>>& closing_sockets();
+    static MutexProtected<HashMap<IPv4SocketTuple, RefPtr<TCPSocket>>>& closing_sockets();
 
-    RefPtr<TCPSocket> create_client(const IPv4Address& local_address, u16 local_port, const IPv4Address& peer_address, u16 peer_port);
+    KResultOr<NonnullRefPtr<TCPSocket>> try_create_client(IPv4Address const& local_address, u16 local_port, IPv4Address const& peer_address, u16 peer_port);
     void set_originator(TCPSocket& originator) { m_originator = originator; }
     bool has_originator() { return !!m_originator; }
     void release_to_originator();
@@ -157,7 +157,7 @@ public:
 
     virtual KResult close() override;
 
-    virtual bool can_write(const FileDescription&, size_t) const override;
+    virtual bool can_write(const OpenFileDescription&, size_t) const override;
 
     static NetworkOrdered<u16> compute_tcp_checksum(IPv4Address const& source, IPv4Address const& destination, TCPPacket const&, u16 payload_size);
 
@@ -165,14 +165,14 @@ protected:
     void set_direction(Direction direction) { m_direction = direction; }
 
 private:
-    explicit TCPSocket(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer, OwnPtr<KBuffer> scratch_buffer);
+    explicit TCPSocket(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer, NonnullOwnPtr<KBuffer> scratch_buffer);
     virtual StringView class_name() const override { return "TCPSocket"; }
 
     virtual void shut_down_for_writing() override;
 
     virtual KResultOr<size_t> protocol_receive(ReadonlyBytes raw_ipv4_packet, UserOrKernelBuffer& buffer, size_t buffer_size, int flags) override;
     virtual KResultOr<size_t> protocol_send(const UserOrKernelBuffer&, size_t) override;
-    virtual KResult protocol_connect(FileDescription&, ShouldBlock) override;
+    virtual KResult protocol_connect(OpenFileDescription&, ShouldBlock) override;
     virtual KResultOr<u16> protocol_allocate_local_port() override;
     virtual bool protocol_is_disconnected() const override;
     virtual KResult protocol_bind() override;
@@ -207,7 +207,7 @@ private:
         size_t size { 0 };
     };
 
-    ProtectedValue<UnackedPackets> m_unacked_packets;
+    MutexProtected<UnackedPackets> m_unacked_packets;
 
     u32 m_duplicate_acks { 0 };
 
@@ -226,7 +226,7 @@ private:
 
 public:
     using RetransmitList = IntrusiveList<TCPSocket, RawPtr<TCPSocket>, &TCPSocket::m_retransmit_list_node>;
-    static ProtectedValue<TCPSocket::RetransmitList>& sockets_for_retransmit();
+    static MutexProtected<TCPSocket::RetransmitList>& sockets_for_retransmit();
 };
 
 }

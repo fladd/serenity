@@ -7,7 +7,7 @@
 #include <AK/Memory.h>
 #include <AK/StringView.h>
 #include <Kernel/Debug.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Storage/StorageDevice.h>
 #include <Kernel/Storage/StorageManagement.h>
 
@@ -37,7 +37,7 @@ NonnullRefPtr<StorageController> StorageDevice::controller() const
     return m_storage_controller;
 }
 
-KResultOr<size_t> StorageDevice::read(FileDescription&, u64 offset, UserOrKernelBuffer& outbuf, size_t len)
+KResultOr<size_t> StorageDevice::read(OpenFileDescription&, u64 offset, UserOrKernelBuffer& outbuf, size_t len)
 {
     unsigned index = offset / block_size();
     u16 whole_blocks = len / block_size();
@@ -55,7 +55,7 @@ KResultOr<size_t> StorageDevice::read(FileDescription&, u64 offset, UserOrKernel
     dbgln_if(STORAGE_DEVICE_DEBUG, "StorageDevice::read() index={}, whole_blocks={}, remaining={}", index, whole_blocks, remaining);
 
     if (whole_blocks > 0) {
-        auto read_request = make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Read, index, whole_blocks, outbuf, whole_blocks * block_size());
+        auto read_request = TRY(try_make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Read, index, whole_blocks, outbuf, whole_blocks * block_size()));
         auto result = read_request->wait();
         if (result.wait_result().was_interrupted())
             return EINTR;
@@ -73,9 +73,12 @@ KResultOr<size_t> StorageDevice::read(FileDescription&, u64 offset, UserOrKernel
     off_t pos = whole_blocks * block_size();
 
     if (remaining > 0) {
-        auto data = ByteBuffer::create_uninitialized(block_size());
+        auto data_result = ByteBuffer::create_uninitialized(block_size());
+        if (!data_result.has_value())
+            return ENOMEM;
+        auto data = data_result.release_value();
         auto data_buffer = UserOrKernelBuffer::for_kernel_buffer(data.data());
-        auto read_request = make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Read, index + whole_blocks, 1, data_buffer, block_size());
+        auto read_request = TRY(try_make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Read, index + whole_blocks, 1, data_buffer, block_size()));
         auto result = read_request->wait();
         if (result.wait_result().was_interrupted())
             return EINTR;
@@ -90,19 +93,18 @@ KResultOr<size_t> StorageDevice::read(FileDescription&, u64 offset, UserOrKernel
         default:
             break;
         }
-        if (!outbuf.write(data.data(), pos, remaining))
-            return EFAULT;
+        TRY(outbuf.write(data.data(), pos, remaining));
     }
 
     return pos + remaining;
 }
 
-bool StorageDevice::can_read(const FileDescription&, size_t offset) const
+bool StorageDevice::can_read(const OpenFileDescription&, size_t offset) const
 {
     return offset < (max_addressable_block() * block_size());
 }
 
-KResultOr<size_t> StorageDevice::write(FileDescription&, u64 offset, const UserOrKernelBuffer& inbuf, size_t len)
+KResultOr<size_t> StorageDevice::write(OpenFileDescription&, u64 offset, const UserOrKernelBuffer& inbuf, size_t len)
 {
     unsigned index = offset / block_size();
     u16 whole_blocks = len / block_size();
@@ -120,7 +122,7 @@ KResultOr<size_t> StorageDevice::write(FileDescription&, u64 offset, const UserO
     dbgln_if(STORAGE_DEVICE_DEBUG, "StorageDevice::write() index={}, whole_blocks={}, remaining={}", index, whole_blocks, remaining);
 
     if (whole_blocks > 0) {
-        auto write_request = make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Write, index, whole_blocks, inbuf, whole_blocks * block_size());
+        auto write_request = TRY(try_make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Write, index, whole_blocks, inbuf, whole_blocks * block_size()));
         auto result = write_request->wait();
         if (result.wait_result().was_interrupted())
             return EINTR;
@@ -141,11 +143,12 @@ KResultOr<size_t> StorageDevice::write(FileDescription&, u64 offset, const UserO
     // partial write, we have to read the block's content first, modify it,
     // then write the whole block back to the disk.
     if (remaining > 0) {
-        auto data = ByteBuffer::create_zeroed(block_size());
+        // FIXME: Do something sensible with this OOM scenario.
+        auto data = ByteBuffer::create_zeroed(block_size()).release_value();
         auto data_buffer = UserOrKernelBuffer::for_kernel_buffer(data.data());
 
         {
-            auto read_request = make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Read, index + whole_blocks, 1, data_buffer, block_size());
+            auto read_request = TRY(try_make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Read, index + whole_blocks, 1, data_buffer, block_size()));
             auto result = read_request->wait();
             if (result.wait_result().was_interrupted())
                 return EINTR;
@@ -162,11 +165,10 @@ KResultOr<size_t> StorageDevice::write(FileDescription&, u64 offset, const UserO
             }
         }
 
-        if (!inbuf.read(data.data(), pos, remaining))
-            return EFAULT;
+        TRY(inbuf.read(data.data(), pos, remaining));
 
         {
-            auto write_request = make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Write, index + whole_blocks, 1, data_buffer, block_size());
+            auto write_request = TRY(try_make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Write, index + whole_blocks, 1, data_buffer, block_size()));
             auto result = write_request->wait();
             if (result.wait_result().was_interrupted())
                 return EINTR;
@@ -187,7 +189,7 @@ KResultOr<size_t> StorageDevice::write(FileDescription&, u64 offset, const UserO
     return pos + remaining;
 }
 
-bool StorageDevice::can_write(const FileDescription&, size_t offset) const
+bool StorageDevice::can_write(const OpenFileDescription&, size_t offset) const
 {
     return offset < (max_addressable_block() * block_size());
 }

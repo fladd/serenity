@@ -19,10 +19,10 @@ public:
     virtual ~SerialDevice() override;
 
     // ^CharacterDevice
-    virtual bool can_read(const FileDescription&, size_t) const override;
-    virtual KResultOr<size_t> read(FileDescription&, u64, UserOrKernelBuffer&, size_t) override;
-    virtual bool can_write(const FileDescription&, size_t) const override;
-    virtual KResultOr<size_t> write(FileDescription&, u64, const UserOrKernelBuffer&, size_t) override;
+    virtual bool can_read(const OpenFileDescription&, size_t) const override;
+    virtual KResultOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override;
+    virtual bool can_write(const OpenFileDescription&, size_t) const override;
+    virtual KResultOr<size_t> write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t) override;
 
     void put_char(char);
 
@@ -102,10 +102,6 @@ public:
         DataReady = 0x01 << 0
     };
 
-    // ^Device
-    virtual mode_t required_mode() const override { return 0620; }
-    virtual String device_name() const override;
-
 private:
     friend class PCISerialDevice;
 
@@ -133,7 +129,7 @@ private:
     bool m_break_enable { false };
     u8 m_modem_control { 0 };
     bool m_last_put_char_was_carriage_return { false };
-    SpinLock<u8> m_serial_lock;
+    Spinlock m_serial_lock;
 };
 
 }

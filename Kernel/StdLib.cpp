@@ -26,47 +26,42 @@ Kernel::KResultOr<NonnullOwnPtr<Kernel::KString>> try_copy_kstring_from_user(Use
         return EFAULT;
     }
     char* buffer;
-    auto new_string = Kernel::KString::try_create_uninitialized(length, buffer);
-    if (!new_string)
-        return ENOMEM;
+    auto new_string = TRY(Kernel::KString::try_create_uninitialized(length, buffer));
 
     buffer[length] = '\0';
 
     if (length == 0)
-        return new_string.release_nonnull();
+        return new_string;
 
     if (!Kernel::safe_memcpy(buffer, user_str.unsafe_userspace_ptr(), (size_t)length, fault_at)) {
         dbgln("copy_kstring_from_user({:p}, {}) failed at {} (memcpy)", static_cast<const void*>(user_str.unsafe_userspace_ptr()), user_str_size, VirtualAddress { fault_at });
         return EFAULT;
     }
-    return new_string.release_nonnull();
+    return new_string;
 }
 
-[[nodiscard]] Optional<Time> copy_time_from_user(const timespec* ts_user)
+KResultOr<Time> copy_time_from_user(timespec const* ts_user)
 {
-    timespec ts;
-    if (!copy_from_user(&ts, ts_user, sizeof(timespec))) {
-        return {};
-    }
+    timespec ts {};
+    TRY(copy_from_user(&ts, ts_user, sizeof(timespec)));
     return Time::from_timespec(ts);
 }
-[[nodiscard]] Optional<Time> copy_time_from_user(const timeval* tv_user)
+
+KResultOr<Time> copy_time_from_user(timeval const* tv_user)
 {
-    timeval tv;
-    if (!copy_from_user(&tv, tv_user, sizeof(timeval))) {
-        return {};
-    }
+    timeval tv {};
+    TRY(copy_from_user(&tv, tv_user, sizeof(timeval)));
     return Time::from_timeval(tv);
 }
 
 template<>
-[[nodiscard]] Optional<Time> copy_time_from_user<const timeval>(Userspace<const timeval*> src) { return copy_time_from_user(src.unsafe_userspace_ptr()); }
+KResultOr<Time> copy_time_from_user<const timeval>(Userspace<timeval const*> src) { return copy_time_from_user(src.unsafe_userspace_ptr()); }
 template<>
-[[nodiscard]] Optional<Time> copy_time_from_user<timeval>(Userspace<timeval*> src) { return copy_time_from_user(src.unsafe_userspace_ptr()); }
+KResultOr<Time> copy_time_from_user<timeval>(Userspace<timeval*> src) { return copy_time_from_user(src.unsafe_userspace_ptr()); }
 template<>
-[[nodiscard]] Optional<Time> copy_time_from_user<const timespec>(Userspace<const timespec*> src) { return copy_time_from_user(src.unsafe_userspace_ptr()); }
+KResultOr<Time> copy_time_from_user<const timespec>(Userspace<timespec const*> src) { return copy_time_from_user(src.unsafe_userspace_ptr()); }
 template<>
-[[nodiscard]] Optional<Time> copy_time_from_user<timespec>(Userspace<timespec*> src) { return copy_time_from_user(src.unsafe_userspace_ptr()); }
+KResultOr<Time> copy_time_from_user<timespec>(Userspace<timespec*> src) { return copy_time_from_user(src.unsafe_userspace_ptr()); }
 
 Optional<u32> user_atomic_fetch_add_relaxed(volatile u32* var, u32 val)
 {
@@ -168,57 +163,55 @@ Optional<u32> user_atomic_fetch_xor_relaxed(volatile u32* var, u32 val)
     return Kernel::safe_atomic_fetch_xor_relaxed(var, val);
 }
 
-extern "C" {
-
-bool copy_to_user(void* dest_ptr, const void* src_ptr, size_t n)
+KResult copy_to_user(void* dest_ptr, void const* src_ptr, size_t n)
 {
-    bool is_user = Kernel::Memory::is_user_range(VirtualAddress(dest_ptr), n);
-    if (!is_user)
-        return false;
+    if (!Kernel::Memory::is_user_range(VirtualAddress(dest_ptr), n))
+        return EFAULT;
     VERIFY(!Kernel::Memory::is_user_range(VirtualAddress(src_ptr), n));
     Kernel::SmapDisabler disabler;
     void* fault_at;
     if (!Kernel::safe_memcpy(dest_ptr, src_ptr, n, fault_at)) {
         VERIFY(VirtualAddress(fault_at) >= VirtualAddress(dest_ptr) && VirtualAddress(fault_at) <= VirtualAddress((FlatPtr)dest_ptr + n));
         dbgln("copy_to_user({:p}, {:p}, {}) failed at {}", dest_ptr, src_ptr, n, VirtualAddress { fault_at });
-        return false;
+        return EFAULT;
     }
-    return true;
+    return KSuccess;
 }
 
-bool copy_from_user(void* dest_ptr, const void* src_ptr, size_t n)
+KResult copy_from_user(void* dest_ptr, void const* src_ptr, size_t n)
 {
-    bool is_user = Kernel::Memory::is_user_range(VirtualAddress(src_ptr), n);
-    if (!is_user)
-        return false;
+    if (!Kernel::Memory::is_user_range(VirtualAddress(src_ptr), n))
+        return EFAULT;
     VERIFY(!Kernel::Memory::is_user_range(VirtualAddress(dest_ptr), n));
     Kernel::SmapDisabler disabler;
     void* fault_at;
     if (!Kernel::safe_memcpy(dest_ptr, src_ptr, n, fault_at)) {
         VERIFY(VirtualAddress(fault_at) >= VirtualAddress(src_ptr) && VirtualAddress(fault_at) <= VirtualAddress((FlatPtr)src_ptr + n));
         dbgln("copy_from_user({:p}, {:p}, {}) failed at {}", dest_ptr, src_ptr, n, VirtualAddress { fault_at });
-        return false;
+        return EFAULT;
     }
-    return true;
+    return KSuccess;
 }
 
-const void* memmem(const void* haystack, size_t haystack_length, const void* needle, size_t needle_length)
-{
-    return AK::memmem(haystack, haystack_length, needle, needle_length);
-}
-
-[[nodiscard]] bool memset_user(void* dest_ptr, int c, size_t n)
+KResult memset_user(void* dest_ptr, int c, size_t n)
 {
     bool is_user = Kernel::Memory::is_user_range(VirtualAddress(dest_ptr), n);
     if (!is_user)
-        return false;
+        return EFAULT;
     Kernel::SmapDisabler disabler;
     void* fault_at;
     if (!Kernel::safe_memset(dest_ptr, c, n, fault_at)) {
         dbgln("memset_user({:p}, {}, {}) failed at {}", dest_ptr, c, n, VirtualAddress { fault_at });
-        return false;
+        return EFAULT;
     }
-    return true;
+    return KSuccess;
+}
+
+extern "C" {
+
+const void* memmem(const void* haystack, size_t haystack_length, const void* needle, size_t needle_length)
+{
+    return AK::memmem(haystack, haystack_length, needle, needle_length);
 }
 
 size_t strnlen(const char* str, size_t maxlen)

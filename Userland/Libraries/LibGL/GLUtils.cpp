@@ -85,6 +85,11 @@ void glReadBuffer(GLenum mode)
     g_gl_context->gl_read_buffer(mode);
 }
 
+void glDrawBuffer(GLenum buffer)
+{
+    g_gl_context->gl_draw_buffer(buffer);
+}
+
 void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid* pixels)
 {
     g_gl_context->gl_read_pixels(x, y, width, height, format, type, pixels);
@@ -128,4 +133,19 @@ void glDepthRange(GLdouble min, GLdouble max)
 void glDepthFunc(GLenum func)
 {
     g_gl_context->gl_depth_func(func);
+}
+
+void glPolygonMode(GLenum face, GLenum mode)
+{
+    g_gl_context->gl_polygon_mode(face, mode);
+}
+
+void glPolygonOffset(GLfloat factor, GLfloat units)
+{
+    g_gl_context->gl_polygon_offset(factor, units);
+}
+
+void glPixelStorei(GLenum pname, GLint param)
+{
+    g_gl_context->gl_pixel_store(pname, param);
 }

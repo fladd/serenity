@@ -27,6 +27,7 @@
 #include <LibGfx/FontDatabase.h>
 #include <LibGfx/Palette.h>
 #include <string.h>
+#include <unistd.h>
 
 namespace GUI {
 
@@ -97,7 +98,7 @@ FilePicker::FilePicker(Window* parent_window, Mode mode, const StringView& filen
     m_view->set_model(SortingProxyModel::create(*m_model));
     m_view->set_model_column(FileSystemModel::Column::Name);
     m_view->set_key_column_and_sort_order(GUI::FileSystemModel::Column::Name, GUI::SortOrder::Ascending);
-    m_view->set_column_visible(FileSystemModel::Column::Owner, true);
+    m_view->set_column_visible(FileSystemModel::Column::User, true);
     m_view->set_column_visible(FileSystemModel::Column::Group, true);
     m_view->set_column_visible(FileSystemModel::Column::Permissions, true);
     m_view->set_column_visible(FileSystemModel::Column::Inode, true);
@@ -252,6 +253,7 @@ FilePicker::FilePicker(Window* parent_window, Mode mode, const StringView& filen
     }
 
     m_location_textbox->set_icon(FileIconProvider::icon_for_path(path).bitmap_for_size(16));
+    m_model->on_complete();
 }
 
 FilePicker::~FilePicker()
@@ -290,6 +292,13 @@ void FilePicker::on_file_return()
 
 void FilePicker::set_path(const String& path)
 {
+    if (access(path.characters(), R_OK | X_OK) == -1) {
+        GUI::MessageBox::show(this, String::formatted("Could not open '{}':\n{}", path, strerror(errno)), "Error", GUI::MessageBox::Type::Error);
+        for (auto location_button : m_common_location_buttons)
+            location_button.button.set_checked(m_model->root_path() == location_button.path);
+        return;
+    }
+
     auto new_path = LexicalPath(path).string();
     m_location_textbox->set_icon(FileIconProvider::icon_for_path(new_path).bitmap_for_size(16));
     m_model->set_root_path(new_path);

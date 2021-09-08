@@ -116,7 +116,7 @@ void TaskbarWindow::create_quick_launch_bar()
     quick_launch_bar.layout()->set_spacing(0);
     quick_launch_bar.set_frame_thickness(0);
 
-    auto config = Core::ConfigFile::get_for_app("Taskbar");
+    auto config = Core::ConfigFile::open_for_app("Taskbar");
     constexpr const char* quick_launch = "QuickLaunch";
 
     // FIXME: Core::ConfigFile does not keep the order of the entries.
@@ -173,8 +173,7 @@ void TaskbarWindow::update_applet_area()
     if (!main_widget())
         return;
     main_widget()->do_layout();
-    Gfx::IntRect new_rect { {}, m_applet_area_size };
-    new_rect.center_within(m_applet_area_container->screen_relative_rect());
+    auto new_rect = Gfx::IntRect({}, m_applet_area_size).centered_within(m_applet_area_container->screen_relative_rect());
     GUI::WindowManagerServerConnection::the().async_set_applet_area_position(new_rect.location());
 }
 

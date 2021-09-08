@@ -62,6 +62,11 @@ static HashTable<Notifier*>* s_notifiers;
 int EventLoop::s_wake_pipe_fds[2];
 static RefPtr<InspectorServerConnection> s_inspector_server_connection;
 
+bool EventLoop::has_been_instantiated()
+{
+    return s_main_event_loop;
+}
+
 class SignalHandlers : public RefCounted<SignalHandlers> {
     AK_MAKE_NONCOPYABLE(SignalHandlers);
     AK_MAKE_NONMOVABLE(SignalHandlers);
@@ -389,7 +394,7 @@ void EventLoop::pump(WaitMode mode)
             }
         } else if (event.type() == Event::Type::DeferredInvoke) {
             dbgln_if(DEFERRED_INVOKE_DEBUG, "DeferredInvoke: receiver = {}", *receiver);
-            static_cast<DeferredInvocationEvent&>(event).m_invokee(*receiver);
+            static_cast<DeferredInvocationEvent&>(event).m_invokee();
         } else {
             NonnullRefPtr<Object> protector(*receiver);
             receiver->dispatch_event(event);

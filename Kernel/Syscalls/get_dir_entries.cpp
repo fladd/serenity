@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Process.h>
 
 namespace Kernel {
@@ -15,9 +15,7 @@ KResultOr<FlatPtr> Process::sys$get_dir_entries(int fd, Userspace<void*> user_bu
     REQUIRE_PROMISE(stdio);
     if (user_size > NumericLimits<ssize_t>::max())
         return EINVAL;
-    auto description = fds().file_description(fd);
-    if (!description)
-        return EBADF;
+    auto description = TRY(fds().open_file_description(fd));
     auto buffer = UserOrKernelBuffer::for_user_buffer(user_buffer, static_cast<size_t>(user_size));
     if (!buffer.has_value())
         return EFAULT;

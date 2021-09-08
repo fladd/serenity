@@ -26,6 +26,21 @@
 
 namespace AK {
 
+class FormatParser : public GenericLexer {
+public:
+    struct FormatSpecifier {
+        StringView flags;
+        size_t index;
+    };
+
+    explicit FormatParser(StringView input);
+
+    StringView consume_literal();
+    bool consume_number(size_t& value);
+    bool consume_specifier(FormatSpecifier& specifier);
+    bool consume_replacement_field(size_t& index);
+};
+
 namespace {
 
 static constexpr size_t use_next_index = NumericLimits<size_t>::max();
@@ -237,7 +252,7 @@ void FormatBuilder::put_u64(
     size_t used_by_prefix = 0;
     if (align == Align::Right && zero_pad) {
         // We want String::formatted("{:#08x}", 32) to produce '0x00000020' instead of '0x000020'. This
-        // behaviour differs from both fmtlib and printf, but is more intuitive.
+        // behavior differs from both fmtlib and printf, but is more intuitive.
         used_by_prefix = 0;
     } else {
         if (is_negative || sign_mode != SignMode::OnlyIfNeeded)
@@ -485,7 +500,7 @@ void FormatBuilder::put_hexdump(ReadonlyBytes bytes, size_t width, char fill)
         put_char_view(bytes.size());
 }
 
-void vformat(StringBuilder& builder, StringView fmtstr, TypeErasedFormatParams params)
+void vformat(StringBuilder& builder, StringView fmtstr, TypeErasedFormatParams& params)
 {
     FormatBuilder fmtbuilder { builder };
     FormatParser parser { fmtstr };
@@ -593,7 +608,7 @@ void Formatter<StringView>::format(FormatBuilder& builder, StringView value)
         builder.put_string(value, m_align, m_width.value(), m_precision.value(), m_fill);
 }
 
-void Formatter<FormatString>::vformat(FormatBuilder& builder, StringView fmtstr, TypeErasedFormatParams params)
+void Formatter<FormatString>::vformat(FormatBuilder& builder, StringView fmtstr, TypeErasedFormatParams& params)
 {
     return Formatter<String>::format(builder, String::vformatted(fmtstr, params));
 }
@@ -739,7 +754,7 @@ void Formatter<float>::format(FormatBuilder& builder, float value)
 #endif
 
 #ifndef KERNEL
-void vout(FILE* file, StringView fmtstr, TypeErasedFormatParams params, bool newline)
+void vout(FILE* file, StringView fmtstr, TypeErasedFormatParams& params, bool newline)
 {
     StringBuilder builder;
     vformat(builder, fmtstr, params);
@@ -763,7 +778,7 @@ void set_debug_enabled(bool value)
     is_debug_enabled = value;
 }
 
-void vdbgln(StringView fmtstr, TypeErasedFormatParams params)
+void vdbgln(StringView fmtstr, TypeErasedFormatParams& params)
 {
     if (!is_debug_enabled)
         return;
@@ -774,9 +789,9 @@ void vdbgln(StringView fmtstr, TypeErasedFormatParams params)
 #    ifdef KERNEL
     if (Kernel::Processor::is_initialized() && Kernel::Thread::current()) {
         auto& thread = *Kernel::Thread::current();
-        builder.appendff("\033[34;1m[#{} {}({}:{})]\033[0m: ", Kernel::Processor::id(), thread.process().name(), thread.pid().value(), thread.tid().value());
+        builder.appendff("\033[34;1m[#{} {}({}:{})]\033[0m: ", Kernel::Processor::current_id(), thread.process().name(), thread.pid().value(), thread.tid().value());
     } else {
-        builder.appendff("\033[34;1m[#{} Kernel]\033[0m: ", Kernel::Processor::id());
+        builder.appendff("\033[34;1m[#{} Kernel]\033[0m: ", Kernel::Processor::current_id());
     }
 #    else
     static TriState got_process_name = TriState::Unknown;
@@ -802,7 +817,7 @@ void vdbgln(StringView fmtstr, TypeErasedFormatParams params)
 }
 
 #ifdef KERNEL
-void vdmesgln(StringView fmtstr, TypeErasedFormatParams params)
+void vdmesgln(StringView fmtstr, TypeErasedFormatParams& params)
 {
     StringBuilder builder;
 
@@ -822,7 +837,7 @@ void vdmesgln(StringView fmtstr, TypeErasedFormatParams params)
     kernelputstr(string.characters_without_null_termination(), string.length());
 }
 
-void v_critical_dmesgln(StringView fmtstr, TypeErasedFormatParams params)
+void v_critical_dmesgln(StringView fmtstr, TypeErasedFormatParams& params)
 {
     // FIXME: Try to avoid memory allocations further to prevent faulting
     // at OOM conditions.

@@ -23,6 +23,7 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(date_from_fields);
     JS_DECLARE_NATIVE_FUNCTION(year_month_from_fields);
     JS_DECLARE_NATIVE_FUNCTION(month_day_from_fields);
+    JS_DECLARE_NATIVE_FUNCTION(date_add);
     JS_DECLARE_NATIVE_FUNCTION(year);
     JS_DECLARE_NATIVE_FUNCTION(month);
     JS_DECLARE_NATIVE_FUNCTION(month_code);
@@ -39,6 +40,8 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(merge_fields);
     JS_DECLARE_NATIVE_FUNCTION(to_string);
     JS_DECLARE_NATIVE_FUNCTION(to_json);
+    JS_DECLARE_NATIVE_FUNCTION(era);
+    JS_DECLARE_NATIVE_FUNCTION(era_year);
 };
 
 }

@@ -49,45 +49,45 @@ UNMAP_AFTER_INIT SerialDevice::~SerialDevice()
 {
 }
 
-bool SerialDevice::can_read(const FileDescription&, size_t) const
+bool SerialDevice::can_read(const OpenFileDescription&, size_t) const
 {
     return (get_line_status() & DataReady) != 0;
 }
 
-KResultOr<size_t> SerialDevice::read(FileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
+KResultOr<size_t> SerialDevice::read(OpenFileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
 {
     if (!size)
         return 0;
 
-    ScopedSpinLock lock(m_serial_lock);
+    SpinlockLocker lock(m_serial_lock);
     if (!(get_line_status() & DataReady))
         return 0;
 
-    return buffer.write_buffered<128>(size, [&](u8* data, size_t data_size) {
-        for (size_t i = 0; i < data_size; i++)
-            data[i] = m_base_addr.in<u8>();
-        return data_size;
+    return buffer.write_buffered<128>(size, [&](Bytes bytes) {
+        for (auto& byte : bytes)
+            byte = m_base_addr.in<u8>();
+        return bytes.size();
     });
 }
 
-bool SerialDevice::can_write(const FileDescription&, size_t) const
+bool SerialDevice::can_write(const OpenFileDescription&, size_t) const
 {
     return (get_line_status() & EmptyTransmitterHoldingRegister) != 0;
 }
 
-KResultOr<size_t> SerialDevice::write(FileDescription& description, u64, const UserOrKernelBuffer& buffer, size_t size)
+KResultOr<size_t> SerialDevice::write(OpenFileDescription& description, u64, const UserOrKernelBuffer& buffer, size_t size)
 {
     if (!size)
         return 0;
 
-    ScopedSpinLock lock(m_serial_lock);
+    SpinlockLocker lock(m_serial_lock);
     if (!can_write(description, size))
         return EAGAIN;
 
-    return buffer.read_buffered<128>(size, [&](u8 const* data, size_t data_size) {
-        for (size_t i = 0; i < data_size; i++)
-            put_char(data[i]);
-        return data_size;
+    return buffer.read_buffered<128>(size, [&](ReadonlyBytes bytes) {
+        for (const auto& byte : bytes)
+            put_char(byte);
+        return bytes.size();
     });
 }
 
@@ -102,11 +102,6 @@ void SerialDevice::put_char(char ch)
     m_base_addr.out<u8>(ch);
 
     m_last_put_char_was_carriage_return = (ch == '\r');
-}
-
-String SerialDevice::device_name() const
-{
-    return String::formatted("ttyS{}", minor() - 64);
 }
 
 UNMAP_AFTER_INIT void SerialDevice::initialize()

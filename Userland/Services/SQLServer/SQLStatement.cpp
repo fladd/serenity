@@ -60,13 +60,15 @@ void SQLStatement::execute()
         return;
     }
 
-    deferred_invoke([&](Object&) {
+    deferred_invoke([&] {
         auto maybe_error = parse();
         if (maybe_error.has_value()) {
             report_error(maybe_error.value());
             return;
         }
-        m_result = m_statement->execute(*connection()->database());
+        VERIFY(!connection()->database().is_null());
+        SQL::AST::ExecutionContext context { connection()->database().release_nonnull() };
+        m_result = m_statement->execute(context);
         if (m_result->error().code != SQL::SQLErrorCode::NoError) {
             report_error(m_result->error());
             return;
@@ -105,7 +107,7 @@ void SQLStatement::next()
     if (m_index < m_result->results().size()) {
         auto& tuple = m_result->results()[m_index++];
         client_connection->async_next_result(statement_id(), tuple.to_string_vector());
-        deferred_invoke([&](Object&) {
+        deferred_invoke([&] {
             next();
         });
     } else {

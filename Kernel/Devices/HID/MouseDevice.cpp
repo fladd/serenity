@@ -18,18 +18,18 @@ MouseDevice::~MouseDevice()
 {
 }
 
-bool MouseDevice::can_read(const FileDescription&, size_t) const
+bool MouseDevice::can_read(const OpenFileDescription&, size_t) const
 {
-    ScopedSpinLock lock(m_queue_lock);
+    SpinlockLocker lock(m_queue_lock);
     return !m_queue.is_empty();
 }
 
-KResultOr<size_t> MouseDevice::read(FileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
+KResultOr<size_t> MouseDevice::read(OpenFileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
 {
     VERIFY(size > 0);
     size_t nread = 0;
     size_t remaining_space_in_buffer = static_cast<size_t>(size) - nread;
-    ScopedSpinLock lock(m_queue_lock);
+    SpinlockLocker lock(m_queue_lock);
     while (!m_queue.is_empty() && remaining_space_in_buffer) {
         auto packet = m_queue.dequeue();
         lock.unlock();
@@ -39,8 +39,7 @@ KResultOr<size_t> MouseDevice::read(FileDescription&, u64, UserOrKernelBuffer& b
         dbgln_if(MOUSE_DEBUG, "PS2 Mouse Read: Filter packets");
 
         size_t bytes_read_from_packet = min(remaining_space_in_buffer, sizeof(MousePacket));
-        if (!buffer.write(&packet, nread, bytes_read_from_packet))
-            return EFAULT;
+        TRY(buffer.write(&packet, nread, bytes_read_from_packet));
         nread += bytes_read_from_packet;
         remaining_space_in_buffer -= bytes_read_from_packet;
 
@@ -49,7 +48,7 @@ KResultOr<size_t> MouseDevice::read(FileDescription&, u64, UserOrKernelBuffer& b
     return nread;
 }
 
-KResultOr<size_t> MouseDevice::write(FileDescription&, u64, const UserOrKernelBuffer&, size_t)
+KResultOr<size_t> MouseDevice::write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t)
 {
     return 0;
 }

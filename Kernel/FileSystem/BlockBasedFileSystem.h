@@ -7,7 +7,7 @@
 #pragma once
 
 #include <Kernel/FileSystem/FileBackedFileSystem.h>
-#include <Kernel/Locking/ProtectedValue.h>
+#include <Kernel/Locking/MutexProtected.h>
 
 namespace Kernel {
 
@@ -24,7 +24,7 @@ public:
     void flush_writes_impl();
 
 protected:
-    explicit BlockBasedFileSystem(FileDescription&);
+    explicit BlockBasedFileSystem(OpenFileDescription&);
 
     KResult read_block(BlockIndex, UserOrKernelBuffer*, size_t count, size_t offset = 0, bool allow_cache = true) const;
     KResult read_blocks(BlockIndex, unsigned count, UserOrKernelBuffer&, bool allow_cache = true) const;
@@ -44,7 +44,7 @@ private:
     DiskCache& cache() const;
     void flush_specific_block_if_needed(BlockIndex index);
 
-    mutable ProtectedValue<OwnPtr<DiskCache>> m_cache;
+    mutable MutexProtected<OwnPtr<DiskCache>> m_cache;
 };
 
 }

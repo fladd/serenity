@@ -72,9 +72,7 @@ PNGChunk::PNGChunk(String type)
 
 void PNGChunk::store_type()
 {
-    for (auto character : type()) {
-        m_data.append(&character, sizeof(character));
-    }
+    m_data.append(type().bytes());
 }
 
 void PNGChunk::store_data_length()
@@ -223,7 +221,8 @@ ByteBuffer PNGWriter::encode(Gfx::Bitmap const& bitmap)
     writer.add_IHDR_chunk(bitmap.width(), bitmap.height(), 8, 6, 0, 0, 0);
     writer.add_IDAT_chunk(bitmap);
     writer.add_IEND_chunk();
-    return ByteBuffer::copy(writer.m_data);
+    // FIXME: Handle OOM failure.
+    return ByteBuffer::copy(writer.m_data).release_value();
 }
 
 }

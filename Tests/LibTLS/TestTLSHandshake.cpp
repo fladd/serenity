@@ -18,7 +18,7 @@ constexpr const char* DEFAULT_SERVER { "www.google.com" };
 
 static ByteBuffer operator""_b(const char* string, size_t length)
 {
-    return ByteBuffer::copy(string, length);
+    return ByteBuffer::copy(string, length).release_value();
 }
 
 Vector<Certificate> load_certificates();
@@ -69,7 +69,7 @@ TEST_CASE(test_TLS_hello_handshake)
     RefPtr<TLS::TLSv12> tls = TLS::TLSv12::construct(nullptr);
     tls->set_root_certificates(s_root_ca_certificates);
     bool sent_request = false;
-    ByteBuffer contents = ByteBuffer::create_uninitialized(0);
+    ByteBuffer contents;
     tls->on_tls_ready_to_write = [&](TLS::TLSv12& tls) {
         if (sent_request)
             return;
@@ -95,7 +95,10 @@ TEST_CASE(test_TLS_hello_handshake)
             loop.quit(1);
         } else {
             //            print_buffer(data.value(), 16);
-            contents.append(data.value().data(), data.value().size());
+            if (!contents.try_append(data.value().data(), data.value().size())) {
+                FAIL("Allocation failure");
+                loop.quit(1);
+            }
         }
     };
     tls->on_tls_finished = [&] {

@@ -33,8 +33,12 @@ void NetworkAdapter::send_packet(ReadonlyBytes packet)
 void NetworkAdapter::send(const MACAddress& destination, const ARPPacket& packet)
 {
     size_t size_in_bytes = sizeof(EthernetFrameHeader) + sizeof(ARPPacket);
-    auto buffer = NetworkByteBuffer::create_zeroed(size_in_bytes);
-    auto* eth = (EthernetFrameHeader*)buffer.data();
+    auto buffer_result = NetworkByteBuffer::create_zeroed(size_in_bytes);
+    if (!buffer_result.has_value()) {
+        dbgln("Dropping ARP packet targeted at {} as there is not enough memory to buffer it", packet.target_hardware_address().to_string());
+        return;
+    }
+    auto* eth = (EthernetFrameHeader*)buffer_result->data();
     eth->set_source(mac_address());
     eth->set_destination(destination);
     eth->set_ether_type(EtherType::ARP);
@@ -112,10 +116,11 @@ RefPtr<PacketWithTimestamp> NetworkAdapter::acquire_packet_buffer(size_t size)
 {
     InterruptDisabler disabler;
     if (m_unused_packets.is_empty()) {
-        auto buffer = KBuffer::try_create_with_size(size, Memory::Region::Access::ReadWrite, "Packet Buffer", AllocationStrategy::AllocateNow);
-        if (!buffer)
+        auto buffer_or_error = KBuffer::try_create_with_size(size, Memory::Region::Access::ReadWrite, "Packet Buffer", AllocationStrategy::AllocateNow);
+        if (buffer_or_error.is_error())
             return {};
-        auto packet = adopt_ref_if_nonnull(new (nothrow) PacketWithTimestamp { buffer.release_nonnull(), kgettimeofday() });
+        auto buffer = buffer_or_error.release_value();
+        auto packet = adopt_ref_if_nonnull(new (nothrow) PacketWithTimestamp { move(buffer), kgettimeofday() });
         if (!packet)
             return {};
         packet->buffer->set_size(size);
@@ -129,10 +134,10 @@ RefPtr<PacketWithTimestamp> NetworkAdapter::acquire_packet_buffer(size_t size)
         return packet;
     }
 
-    auto buffer = KBuffer::try_create_with_size(size, Memory::Region::Access::ReadWrite, "Packet Buffer", AllocationStrategy::AllocateNow);
-    if (!buffer)
+    auto buffer_or_error = KBuffer::try_create_with_size(size, Memory::Region::Access::ReadWrite, "Packet Buffer", AllocationStrategy::AllocateNow);
+    if (buffer_or_error.is_error())
         return {};
-    packet = adopt_ref_if_nonnull(new (nothrow) PacketWithTimestamp { buffer.release_nonnull(), kgettimeofday() });
+    packet = adopt_ref_if_nonnull(new (nothrow) PacketWithTimestamp { buffer_or_error.release_value(), kgettimeofday() });
     if (!packet)
         return {};
     packet->buffer->set_size(size);

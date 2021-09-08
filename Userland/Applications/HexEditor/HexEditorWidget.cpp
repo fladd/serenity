@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Mustafa Quraish <mustafa@cs.toronto.edu>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,8 +12,9 @@
 #include <AK/Optional.h>
 #include <AK/StringBuilder.h>
 #include <Applications/HexEditor/HexEditorWindowGML.h>
-#include <LibCore/ConfigFile.h>
+#include <LibConfig/Client.h>
 #include <LibCore/File.h>
+#include <LibFileSystemAccessClient/Client.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
@@ -34,8 +36,6 @@ REGISTER_WIDGET(HexEditor, HexEditor);
 HexEditorWidget::HexEditorWidget()
 {
     load_from_gml(hex_editor_window_gml);
-
-    m_config = Core::ConfigFile::get_for_app("HexEditor");
 
     m_toolbar = *find_descendant_of_type_named<GUI::Toolbar>("toolbar");
     m_toolbar_container = *find_descendant_of_type_named<GUI::ToolbarContainer>("toolbar_container");
@@ -75,7 +75,12 @@ HexEditorWidget::HexEditorWidget()
             auto file_size = value.to_int();
             if (file_size.has_value() && file_size.value() > 0) {
                 m_document_dirty = false;
-                m_editor->set_buffer(ByteBuffer::create_zeroed(file_size.value()));
+                auto buffer_result = ByteBuffer::create_zeroed(file_size.value());
+                if (!buffer_result.has_value()) {
+                    GUI::MessageBox::show(window(), "Entered file size is too large.", "Error", GUI::MessageBox::Type::Error);
+                    return;
+                }
+                m_editor->set_buffer(buffer_result.release_value());
                 set_path({});
                 update_title();
             } else {
@@ -85,10 +90,13 @@ HexEditorWidget::HexEditorWidget()
     });
 
     m_open_action = GUI::CommonActions::make_open_action([this](auto&) {
-        Optional<String> open_path = GUI::FilePicker::get_open_filepath(window());
+        auto response = FileSystemAccessClient::Client::the().open_file(window()->window_id());
 
-        if (!open_path.has_value())
+        if (response.error != 0) {
+            if (response.error != -1)
+                GUI::MessageBox::show_error(window(), String::formatted("Opening \"{}\" failed: {}", *response.chosen_file, strerror(response.error)));
             return;
+        }
 
         if (m_document_dirty) {
             auto save_document_first_result = GUI::MessageBox::show(window(), "Save changes to current document first?", "Warning", GUI::MessageBox::Type::Warning, GUI::MessageBox::InputType::YesNoCancel);
@@ -98,38 +106,47 @@ HexEditorWidget::HexEditorWidget()
                 return;
         }
 
-        open_file(open_path.value());
+        open_file(*response.fd, *response.chosen_file);
     });
 
     m_save_action = GUI::CommonActions::make_save_action([&](auto&) {
-        if (!m_path.is_empty()) {
-            if (!m_editor->write_to_file(m_path)) {
-                GUI::MessageBox::show(window(), "Unable to save file.\n", "Error", GUI::MessageBox::Type::Error);
-            } else {
-                m_document_dirty = false;
-                update_title();
-            }
+        if (m_path.is_empty())
+            return m_save_as_action->activate();
+
+        auto response = FileSystemAccessClient::Client::the().request_file(window()->window_id(), m_path, Core::OpenMode::Truncate | Core::OpenMode::WriteOnly);
+
+        if (response.error != 0) {
+            if (response.error != -1)
+                GUI::MessageBox::show_error(window(), String::formatted("Unable to save file: {}", strerror(response.error)));
             return;
         }
 
-        m_save_as_action->activate();
+        if (!m_editor->write_to_file(*response.fd)) {
+            GUI::MessageBox::show(window(), "Unable to save file.\n", "Error", GUI::MessageBox::Type::Error);
+        } else {
+            m_document_dirty = false;
+            update_title();
+        }
+        return;
     });
 
     m_save_as_action = GUI::CommonActions::make_save_as_action([&](auto&) {
-        Optional<String> save_path = GUI::FilePicker::get_save_filepath(window(), m_name.is_null() ? "Untitled" : m_name, m_extension.is_null() ? "bin" : m_extension);
-        if (!save_path.has_value()) {
-            dbgln("GUI::FilePicker: Cancel button clicked");
+        auto response = FileSystemAccessClient::Client::the().save_file(window()->window_id(), m_name, m_extension);
+
+        if (response.error != 0) {
+            if (response.error != -1)
+                GUI::MessageBox::show_error(window(), String::formatted("Saving \"{}\" failed: {}", *response.chosen_file, strerror(response.error)));
             return;
         }
 
-        if (!m_editor->write_to_file(save_path.value())) {
+        if (!m_editor->write_to_file(*response.fd)) {
             GUI::MessageBox::show(window(), "Unable to save file.\n", "Error", GUI::MessageBox::Type::Error);
             return;
         }
 
         m_document_dirty = false;
-        set_path(save_path.value());
-        dbgln("Wrote document to {}", save_path.value());
+        set_path(*response.chosen_file);
+        dbgln("Wrote document to {}", *response.chosen_file);
     });
 
     m_find_action = GUI::Action::create("&Find", { Mod_Ctrl, Key_F }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/find.png"), [&](const GUI::Action&) {
@@ -185,8 +202,7 @@ HexEditorWidget::HexEditorWidget()
 
     m_layout_toolbar_action = GUI::Action::create_checkable("&Toolbar", [&](auto& action) {
         m_toolbar_container->set_visible(action.is_checked());
-        m_config->write_bool_entry("Layout", "ShowToolbar", action.is_checked());
-        m_config->sync();
+        Config::write_bool("HexEditor", "Layout", "ShowToolbar", action.is_checked());
     });
 
     m_layout_search_results_action = GUI::Action::create_checkable("&Search Results", [&](auto& action) {
@@ -279,14 +295,14 @@ void HexEditorWidget::initialize_menubar(GUI::Window& window)
 
     auto& view_menu = window.add_menu("&View");
 
-    auto show_toolbar = m_config->read_bool_entry("Layout", "ShowToolbar", true);
+    auto show_toolbar = Config::read_bool("HexEditor", "Layout", "ShowToolbar", true);
     m_layout_toolbar_action->set_checked(show_toolbar);
     m_toolbar_container->set_visible(show_toolbar);
     view_menu.add_action(*m_layout_toolbar_action);
     view_menu.add_action(*m_layout_search_results_action);
     view_menu.add_separator();
 
-    auto bytes_per_row = m_config->read_num_entry("Layout", "BytesPerRow", 16);
+    auto bytes_per_row = Config::read_i32("HexEditor", "Layout", "BytesPerRow", 16);
     m_editor->set_bytes_per_row(bytes_per_row);
     m_editor->update();
 
@@ -296,8 +312,7 @@ void HexEditorWidget::initialize_menubar(GUI::Window& window)
         auto action = GUI::Action::create_checkable(String::number(i), [this, i](auto&) {
             m_editor->set_bytes_per_row(i);
             m_editor->update();
-            m_config->write_num_entry("Layout", "BytesPerRow", i);
-            m_config->sync();
+            Config::write_i32("HexEditor", "Layout", "BytesPerRow", i);
         });
         m_bytes_per_row_actions.add_action(action);
         bytes_per_row_menu.add_action(action);
@@ -337,11 +352,23 @@ void HexEditorWidget::update_title()
     window()->set_title(builder.to_string());
 }
 
-void HexEditorWidget::open_file(const String& path)
+void HexEditorWidget::open_file(int fd, String const& path)
 {
-    auto file = Core::File::construct(path);
-    if (!file->open(Core::OpenMode::ReadOnly)) {
+    VERIFY(path.starts_with("/"sv));
+    auto file = Core::File::construct();
+
+    if (!file->open(fd, Core::OpenMode::ReadOnly, Core::File::ShouldCloseFileDescriptor::Yes) && file->error() != ENOENT) {
         GUI::MessageBox::show(window(), String::formatted("Opening \"{}\" failed: {}", path, strerror(errno)), "Error", GUI::MessageBox::Type::Error);
+        return;
+    }
+
+    if (file->is_device()) {
+        GUI::MessageBox::show(window(), String::formatted("Opening \"{}\" failed: Can't open device files", path), "Error", GUI::MessageBox::Type::Error);
+        return;
+    }
+
+    if (file->is_directory()) {
+        GUI::MessageBox::show(window(), String::formatted("Opening \"{}\" failed: Can't open directories", path), "Error", GUI::MessageBox::Type::Error);
         return;
     }
 
@@ -380,6 +407,13 @@ void HexEditorWidget::drop_event(GUI::DropEvent& event)
         if (urls.is_empty())
             return;
         window()->move_to_front();
-        open_file(urls.first().path());
+
+        // TODO: A drop event should be considered user consent for opening a file
+        auto file_response = FileSystemAccessClient::Client::the().request_file(window()->window_id(), urls.first().path(), Core::OpenMode::ReadOnly);
+
+        if (file_response.error != 0)
+            return;
+
+        open_file(*file_response.fd, urls.first().path());
     }
 }

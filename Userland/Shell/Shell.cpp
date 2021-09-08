@@ -10,6 +10,7 @@
 #include <AK/CharacterTypes.h>
 #include <AK/Debug.h>
 #include <AK/Function.h>
+#include <AK/GenericLexer.h>
 #include <AK/LexicalPath.h>
 #include <AK/QuickSort.h>
 #include <AK/ScopeGuard.h>
@@ -957,7 +958,7 @@ void Shell::run_tail(const AST::Command& invoking_command, const AST::NodeWithAc
 void Shell::run_tail(RefPtr<Job> job)
 {
     if (auto cmd = job->command_ptr()) {
-        deferred_invoke([=, this](auto&) {
+        deferred_invoke([=, this] {
             for (auto& next_in_chain : cmd->next_chain) {
                 run_tail(*cmd, next_in_chain, job->exit_code());
             }
@@ -1997,6 +1998,9 @@ void Shell::possibly_print_error() const
         break;
     case ShellError::OpenFailure:
         warnln("Shell: Open failed for {}", m_error_description);
+        break;
+    case ShellError::OutOfMemory:
+        warnln("Shell: Hit an OOM situation");
         break;
     case ShellError::InternalControlFlowBreak:
     case ShellError::InternalControlFlowContinue:

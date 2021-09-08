@@ -150,6 +150,8 @@ public:
     Cursor const& move_cursor() const { return *m_move_cursor; }
     Cursor const& drag_cursor() const { return *m_drag_cursor; }
     Cursor const& wait_cursor() const { return *m_wait_cursor; }
+    Cursor const& eyedropper_cursor() const { return *m_eyedropper_cursor; }
+    Cursor const& zoom_cursor() const { return *m_zoom_cursor; }
 
     Gfx::Font const& font() const;
     Gfx::Font const& window_title_font() const;
@@ -315,9 +317,9 @@ public:
 
     MultiScaleBitmaps const* overlay_rect_shadow() const { return m_overlay_rect_shadow.ptr(); }
 
-private:
-    RefPtr<Cursor> get_cursor(String const& name);
+    void apply_cursor_theme(String const& name);
 
+private:
     void notify_new_active_window(Window&);
     void notify_new_active_input_window(Window&);
     void notify_previous_active_window(Window&);
@@ -364,6 +366,8 @@ private:
     RefPtr<Cursor> m_drag_cursor;
     RefPtr<Cursor> m_wait_cursor;
     RefPtr<Cursor> m_crosshair_cursor;
+    RefPtr<Cursor> m_eyedropper_cursor;
+    RefPtr<Cursor> m_zoom_cursor;
 
     RefPtr<MultiScaleBitmaps> m_overlay_rect_shadow;
 

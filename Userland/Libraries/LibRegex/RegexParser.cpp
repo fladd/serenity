@@ -8,9 +8,11 @@
 #include "RegexParser.h"
 #include "RegexDebug.h"
 #include <AK/CharacterTypes.h>
+#include <AK/GenericLexer.h>
 #include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringUtils.h>
+#include <AK/TemporaryChange.h>
 #include <AK/Utf16View.h>
 #include <LibUnicode/CharacterTypes.h>
 
@@ -91,6 +93,29 @@ ALWAYS_INLINE bool Parser::consume(String const& str)
     return true;
 }
 
+ALWAYS_INLINE Optional<u32> Parser::consume_escaped_code_point(bool unicode)
+{
+    if (match(TokenType::LeftCurly) && !unicode) {
+        // In non-Unicode mode, this should be parsed as a repetition symbol (repeating the 'u').
+        return static_cast<u32>('u');
+    }
+
+    m_parser_state.lexer.retreat(2 + !done()); // Go back to just before '\u' (+1 char, because we will have consumed an extra character)
+
+    if (auto code_point_or_error = m_parser_state.lexer.consume_escaped_code_point(unicode); !code_point_or_error.is_error()) {
+        m_parser_state.current_token = m_parser_state.lexer.next();
+        return code_point_or_error.value();
+    }
+
+    if (!unicode) {
+        // '\u' is allowed in non-unicode mode, just matches 'u'.
+        return static_cast<u32>('u');
+    }
+
+    set_error(Error::InvalidPattern);
+    return {};
+}
+
 ALWAYS_INLINE bool Parser::try_skip(StringView str)
 {
     if (str.starts_with(m_parser_state.current_token.value()))
@@ -100,7 +125,7 @@ ALWAYS_INLINE bool Parser::try_skip(StringView str)
 
     size_t potentially_go_back { 0 };
     for (auto ch : str) {
-        if (!m_parser_state.lexer.try_skip(ch)) {
+        if (!m_parser_state.lexer.consume_specific(ch)) {
             m_parser_state.lexer.back(potentially_go_back);
             return false;
         }
@@ -121,14 +146,14 @@ ALWAYS_INLINE bool Parser::lookahead_any(StringView str)
     return false;
 }
 
-ALWAYS_INLINE char Parser::skip()
+ALWAYS_INLINE unsigned char Parser::skip()
 {
-    char ch;
+    unsigned char ch;
     if (m_parser_state.current_token.value().length() == 1) {
         ch = m_parser_state.current_token.value()[0];
     } else {
         m_parser_state.lexer.back(m_parser_state.current_token.value().length());
-        ch = m_parser_state.lexer.skip();
+        ch = m_parser_state.lexer.consume();
     }
 
     m_parser_state.current_token = m_parser_state.lexer.next();
@@ -171,7 +196,8 @@ Parser::Result Parser::parse(Optional<AllOptions> regex_options)
         move(m_parser_state.named_capture_groups_count),
         move(m_parser_state.match_length_minimum),
         move(m_parser_state.error),
-        move(m_parser_state.error_token)
+        move(m_parser_state.error_token),
+        m_parser_state.named_capture_groups.keys()
     };
 }
 
@@ -420,8 +446,9 @@ bool PosixBasicParser::parse_simple_re(ByteCode& bytecode, size_t& match_length_
         if (min_limit > s_maximum_repetition_count || (max_limit.has_value() && *max_limit > s_maximum_repetition_count))
             return set_error(Error::InvalidBraceContent);
 
-        auto repetition_mark_id = m_parser_state.repetition_mark_count++;
-        ByteCode::transform_bytecode_repetition_min_max(simple_re_bytecode, min_limit, max_limit, repetition_mark_id, true);
+        auto min_repetition_mark_id = m_parser_state.repetition_mark_count++;
+        auto max_repetition_mark_id = m_parser_state.repetition_mark_count++;
+        ByteCode::transform_bytecode_repetition_min_max(simple_re_bytecode, min_limit, max_limit, min_repetition_mark_id, max_repetition_mark_id, true);
         match_length_minimum += re_match_length_minimum * min_limit;
     } else {
         match_length_minimum += re_match_length_minimum;
@@ -435,6 +462,11 @@ bool PosixBasicParser::parse_nonduplicating_re(ByteCode& bytecode, size_t& match
 {
     // nondupl_RE : one_char_or_coll_elem_RE | Back_open_paren RE_expression Back_close_paren | BACKREF
     if (try_skip("\\(")) {
+        TemporaryChange change { m_current_capture_group_depth, m_current_capture_group_depth + 1 };
+        // Max number of addressable capture groups is 10, let's just be lenient
+        // and accept 20; anything past that is probably a silly pattern anyway.
+        if (m_current_capture_group_depth > 20)
+            return set_error(Error::InvalidPattern);
         ByteCode capture_bytecode;
         size_t capture_length_minimum = 0;
         auto capture_group_index = ++m_parser_state.capture_groups_count;
@@ -589,8 +621,9 @@ ALWAYS_INLINE bool PosixExtendedParser::parse_repetition_symbol(ByteCode& byteco
             maybe_maximum = value.value();
         }
 
-        auto repetition_mark_id = m_parser_state.repetition_mark_count++;
-        ByteCode::transform_bytecode_repetition_min_max(bytecode_to_repeat, minimum, maybe_maximum, repetition_mark_id);
+        auto min_repetition_mark_id = m_parser_state.repetition_mark_count++;
+        auto max_repetition_mark_id = m_parser_state.repetition_mark_count++;
+        ByteCode::transform_bytecode_repetition_min_max(bytecode_to_repeat, minimum, maybe_maximum, min_repetition_mark_id, max_repetition_mark_id);
 
         consume(TokenType::RightCurly, Error::MismatchingBrace);
         return !has_error();
@@ -766,6 +799,7 @@ ALWAYS_INLINE bool PosixExtendedParser::parse_sub_expression(ByteCode& stack, si
                         last_token = consume();
                     }
                     capture_group_name = StringView(start_token.value().characters_without_null_termination(), capture_group_name_length);
+                    ++m_parser_state.named_capture_groups_count;
 
                 } else if (match(TokenType::EqualSign)) { // positive lookahead
                     consume();
@@ -784,8 +818,11 @@ ALWAYS_INLINE bool PosixExtendedParser::parse_sub_expression(ByteCode& stack, si
                 }
             }
 
-            if (!(m_parser_state.regex_options & AllFlags::SkipSubExprResults || prevent_capture_group))
-                bytecode.insert_bytecode_group_capture_left(m_parser_state.capture_groups_count);
+            auto current_capture_group = m_parser_state.capture_groups_count;
+            if (!(m_parser_state.regex_options & AllFlags::SkipSubExprResults || prevent_capture_group)) {
+                bytecode.insert_bytecode_group_capture_left(current_capture_group);
+                m_parser_state.capture_groups_count++;
+            }
 
             ByteCode capture_group_bytecode;
 
@@ -813,13 +850,10 @@ ALWAYS_INLINE bool PosixExtendedParser::parse_sub_expression(ByteCode& stack, si
             consume(TokenType::RightParen, Error::MismatchingParen);
 
             if (!(m_parser_state.regex_options & AllFlags::SkipSubExprResults || prevent_capture_group)) {
-                if (capture_group_name.has_value()) {
-                    bytecode.insert_bytecode_group_capture_right(m_parser_state.capture_groups_count, capture_group_name.value());
-                    ++m_parser_state.named_capture_groups_count;
-                } else {
-                    bytecode.insert_bytecode_group_capture_right(m_parser_state.capture_groups_count);
-                }
-                ++m_parser_state.capture_groups_count;
+                if (capture_group_name.has_value())
+                    bytecode.insert_bytecode_group_capture_right(current_capture_group, capture_group_name.value());
+                else
+                    bytecode.insert_bytecode_group_capture_right(current_capture_group);
             }
             should_parse_repetition_symbol = true;
             break;
@@ -1188,8 +1222,9 @@ bool ECMA262Parser::parse_quantifier(ByteCode& stack, size_t& match_length_minim
         match_length_minimum = 0;
         break;
     case Repetition::Explicit: {
-        auto repetition_mark_id = m_parser_state.repetition_mark_count++;
-        ByteCode::transform_bytecode_repetition_min_max(stack, repeat_min.value(), repeat_max, repetition_mark_id, !ungreedy);
+        auto min_repetition_mark_id = m_parser_state.repetition_mark_count++;
+        auto max_repetition_mark_id = m_parser_state.repetition_mark_count++;
+        ByteCode::transform_bytecode_repetition_min_max(stack, repeat_min.value(), repeat_max, min_repetition_mark_id, max_repetition_mark_id, !ungreedy);
         match_length_minimum *= repeat_min.value();
         break;
     }
@@ -1262,7 +1297,7 @@ bool ECMA262Parser::parse_atom(ByteCode& stack, size_t& match_length_minimum, bo
         // Also part of AtomEscape.
         auto token = consume();
         match_length_minimum += 1;
-        stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (ByteCodeValueType)token.value()[1] } });
+        stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (u8)token.value()[1] } });
         return true;
     }
     if (try_skip("\\")) {
@@ -1301,7 +1336,7 @@ bool ECMA262Parser::parse_atom(ByteCode& stack, size_t& match_length_minimum, bo
         if (m_should_use_browser_extended_grammar) {
             auto token = consume();
             match_length_minimum += 1;
-            stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (ByteCodeValueType)token.value()[0] } });
+            stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (u8)token.value()[0] } });
             return true;
         } else {
             return false;
@@ -1311,7 +1346,7 @@ bool ECMA262Parser::parse_atom(ByteCode& stack, size_t& match_length_minimum, bo
     if (match_ordinary_characters()) {
         auto token = consume().value();
         match_length_minimum += 1;
-        stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (ByteCodeValueType)token[0] } });
+        stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (u8)token[0] } });
         return true;
     }
 
@@ -1488,64 +1523,13 @@ bool ECMA262Parser::parse_atom_escape(ByteCode& stack, size_t& match_length_mini
     }
 
     if (try_skip("u")) {
-        if (match(TokenType::LeftCurly)) {
-            if (!unicode) {
-                // In non-Unicode mode, this should be parsed as a repetition symbol (repeating the 'u').
-                match_length_minimum += 1;
-                stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (ByteCodeValueType)'u' } });
-                return true;
-            }
-
-            consume();
-
-            auto code_point = read_digits(ReadDigitsInitialZeroState::Allow, true, 6);
-            if (code_point.has_value() && is_unicode(*code_point) && match(TokenType::RightCurly)) {
-                consume();
-                match_length_minimum += 1;
-                stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (ByteCodeValueType)code_point.value() } });
-                return true;
-            }
-
-            set_error(Error::InvalidPattern);
-            return false;
-        }
-
-        if (auto code_point = read_digits(ReadDigitsInitialZeroState::Allow, true, 4, 4); code_point.has_value()) {
-            // In Unicode mode, we need to combine surrogate pairs into a single code point. But we also need to be
-            // rather forgiving if the surrogate pairs are invalid. So if a second code unit follows this code unit,
-            // but doesn't form a valid surrogate pair, insert bytecode for both code units individually.
-            Optional<u32> low_surrogate;
-            if (unicode && Utf16View::is_high_surrogate(*code_point) && try_skip("\\u")) {
-                low_surrogate = read_digits(ReadDigitsInitialZeroState::Allow, true, 4);
-                if (!low_surrogate.has_value()) {
-                    set_error(Error::InvalidPattern);
-                    return false;
-                }
-
-                if (Utf16View::is_low_surrogate(*low_surrogate)) {
-                    *code_point = Utf16View::decode_surrogate_pair(*code_point, *low_surrogate);
-                    low_surrogate.clear();
-                }
-            }
-
+        if (auto code_point = consume_escaped_code_point(unicode); code_point.has_value()) {
             match_length_minimum += 1;
             stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (ByteCodeValueType)code_point.value() } });
-
-            if (low_surrogate.has_value()) {
-                match_length_minimum += 1;
-                stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (ByteCodeValueType)low_surrogate.value() } });
-            }
-
             return true;
-        } else if (!unicode) {
-            // '\u' is allowed in non-unicode mode, just matches 'u'.
-            match_length_minimum += 1;
-            stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (ByteCodeValueType)'u' } });
-            return true;
-        } else {
-            set_error(Error::InvalidPattern);
-            return false;
         }
+
+        return false;
     }
 
     // IdentityEscape
@@ -1620,7 +1604,7 @@ bool ECMA262Parser::parse_atom_escape(ByteCode& stack, size_t& match_length_mini
             // Allow all SourceCharacter's as escapes here.
             auto token = consume();
             match_length_minimum += 1;
-            stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (ByteCodeValueType)token.value()[0] } });
+            stack.insert_bytecode_compare_values({ { CharacterCompareType::Char, (u8)token.value()[0] } });
             return true;
         }
 
@@ -1846,16 +1830,11 @@ bool ECMA262Parser::parse_nonempty_class_ranges(Vector<CompareTypeAndValuePair>&
             }
 
             if (try_skip("u")) {
-                if (auto code_point = read_digits(ReadDigitsInitialZeroState::Allow, true, 4, 4); code_point.has_value()) {
+                if (auto code_point = consume_escaped_code_point(unicode); code_point.has_value()) {
                     // FIXME: While code point ranges are supported, code point matches as "Char" are not!
                     return { CharClassRangeElement { .code_point = code_point.value(), .is_character_class = false } };
-                } else if (!unicode) {
-                    // '\u' is allowed in non-unicode mode, just matches 'u'.
-                    return { CharClassRangeElement { .code_point = 'u', .is_character_class = false } };
-                } else {
-                    set_error(Error::InvalidPattern);
-                    return {};
                 }
+                return {};
             }
 
             // IdentityEscape
@@ -2041,21 +2020,30 @@ bool ECMA262Parser::parse_unicode_property_escape(PropertyEscape& property, bool
         [](Empty&) -> bool { VERIFY_NOT_REACHED(); });
 }
 
-StringView ECMA262Parser::read_capture_group_specifier(bool take_starting_angle_bracket)
+FlyString ECMA262Parser::read_capture_group_specifier(bool take_starting_angle_bracket)
 {
     if (take_starting_angle_bracket && !consume("<"))
         return {};
 
-    auto start_token = m_parser_state.current_token;
-    size_t offset = 0;
-    while (match(TokenType::Char) || match(TokenType::Dollar)) {
+    StringBuilder builder;
+    while (match(TokenType::Char) || match(TokenType::Dollar) || match(TokenType::LeftCurly) || match(TokenType::RightCurly)) {
         auto c = m_parser_state.current_token.value();
         if (c == ">")
             break;
-        offset += consume().value().length();
+
+        if (try_skip("\\u"sv)) {
+            if (auto code_point = consume_escaped_code_point(true); code_point.has_value()) {
+                builder.append_code_point(*code_point);
+            } else {
+                set_error(Error::InvalidNameForCaptureGroup);
+                return {};
+            }
+        } else {
+            builder.append(consume().value());
+        }
     }
 
-    StringView name { start_token.value().characters_without_null_termination(), offset };
+    FlyString name = builder.build();
     if (!consume(">") || name.is_empty())
         set_error(Error::InvalidNameForCaptureGroup);
 
@@ -2178,7 +2166,7 @@ bool ECMA262Parser::parse_capture_group(ByteCode& stack, size_t& match_length_mi
 
             stack.insert_bytecode_group_capture_left(group_index);
             stack.extend(move(capture_group_bytecode));
-            stack.insert_bytecode_group_capture_right(group_index, name);
+            stack.insert_bytecode_group_capture_right(group_index, name.view());
 
             match_length_minimum += length;
 

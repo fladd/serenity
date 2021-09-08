@@ -12,7 +12,7 @@ LLVM_ARCH=
 [ "$ARCH" = "i686" ] && LLVM_ARCH="i386" || LLVM_ARCH="$ARCH"
 LLVM_TARGET="$LLVM_ARCH-pc-serenity"
 PREFIX="$DIR/Local/clang/$ARCH"
-BUILD="$DIR/../Build/$ARCH"
+BUILD="$DIR/../Build/clang/$ARCH"
 SYSROOT="$BUILD/Root"
 
 MD5SUM="md5sum"
@@ -76,7 +76,18 @@ BINUTILS_BASE_URL="https://ftp.gnu.org/gnu/binutils"
 buildstep() {
     NAME=$1
     shift
-    "$@" 2>&1 | sed $'s|^|\x1b[34m['"${NAME}"$']\x1b[39m |'
+    "$@" 2>&1 | sed $'s|^|\e[34m['"${NAME}"$']\e[39m |'
+}
+
+buildstep_ninja() {
+    # When ninja writes to a pipe, it strips ANSI escape codes and prints one line per buildstep.
+    # Instead, use NINJA_STATUS so that we get colored output from LLVM's build and fewer lines of output when running in a tty.
+    # ANSI escape codes in NINJA_STATUS are slightly janky (ninja thinks that "\e[34m" needs 5 output characters instead of 5, so
+    # it's middle elision is slightly off; also it would happily elide the "\e39m" which messes up the output if the terminal is too
+    # narrow), but it's still working better than the alternative.
+    NAME=$1
+    shift
+    env NINJA_STATUS=$'\e[34m['"${NAME}"$']\e[39m [%f/%t] ' "$@"
 }
 
 # === DEPENDENCIES ===
@@ -253,18 +264,17 @@ pushd "$DIR/Build/clang/$ARCH"
             -DCMAKE_BUILD_TYPE="MinSizeRel" \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DLLVM_DEFAULT_TARGET_TRIPLE="$LLVM_TARGET" \
-            -DLLVM_TARGETS_TO_BUILD=X86 \
+            '-DLLVM_TARGETS_TO_BUILD=X86;AArch64' \
             -DLLVM_ENABLE_BINDINGS=OFF \
             -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
             -DLLVM_ENABLE_PROJECTS="clang;lld" \
             -DLLVM_INCLUDE_BENCHMARKS=OFF \
             -DLLVM_INCLUDE_TESTS=OFF \
-            -DLLVM_LLVM_BUILD_LLVM_DYLIB=ON \
             -DLLVM_LINK_LLVM_DYLIB=ON \
             -DLLVM_INSTALL_UTILS=OFF \
             ${dev:+"-DLLVM_CCACHE_BUILD=ON"} || exit 1
 
-        buildstep "llvm+clang/build" ninja -j "$MAKEJOBS" || exit 1
+        buildstep_ninja "llvm+clang/build" ninja -j "$MAKEJOBS" || exit 1
         buildstep "llvm+clang/install" ninja install || exit 1
     popd
 
@@ -299,7 +309,7 @@ pushd "$DIR/Build/clang/$ARCH"
             -DCOMPILER_RT_BUILD_SANITIZERS=OFF \
             -DCOMPILER_RT_BUILD_XRAY=OFF || exit 1
 
-        buildstep "compiler-rt/build" ninja -j "$MAKEJOBS" || exit 1
+        buildstep_ninja "compiler-rt/build" ninja -j "$MAKEJOBS" || exit 1
         buildstep "compiler-rt/install" ninja install || exit 1
     popd
 
@@ -320,7 +330,7 @@ pushd "$DIR/Build/clang/$ARCH"
             -DLIBUNWIND_TARGET_TRIPLE="$LLVM_TARGET" \
             -DLIBUNWIND_SYSROOT="$SYSROOT" || exit 1
 
-        buildstep "libunwind/build" ninja -j "$MAKEJOBS" || exit 1
+        buildstep_ninja "libunwind/build" ninja -j "$MAKEJOBS" || exit 1
         buildstep "libunwind/install" ninja install || exit 1
     popd
 
@@ -344,7 +354,7 @@ pushd "$DIR/Build/clang/$ARCH"
             -DLIBCXXABI_ENABLE_ASSERTIONS=OFF \
             -DLIBCXXABI_BAREMETAL=ON || exit 1
 
-        buildstep "libcxxabi/build" ninja -j "$MAKEJOBS" || exit 1
+        buildstep_ninja "libcxxabi/build" ninja -j "$MAKEJOBS" || exit 1
         buildstep "libcxxabi/install" ninja install || exit 1
     popd
 

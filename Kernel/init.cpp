@@ -14,7 +14,7 @@
 #include <Kernel/Bus/PCI/Access.h>
 #include <Kernel/Bus/PCI/Initializer.h>
 #include <Kernel/Bus/USB/USBManagement.h>
-#include <Kernel/Bus/VirtIO/VirtIO.h>
+#include <Kernel/Bus/VirtIO/Device.h>
 #include <Kernel/CMOS.h>
 #include <Kernel/CommandLine.h>
 #include <Kernel/Devices/FullDevice.h>
@@ -182,6 +182,7 @@ extern "C" [[noreturn]] UNMAP_AFTER_INIT void init(BootInfo const& boot_info)
 
     load_kernel_symbol_table();
 
+    SysFSComponentRegistry::initialize();
     ConsoleDevice::initialize();
     s_bsp_processor.initialize(0);
 
@@ -215,7 +216,7 @@ extern "C" [[noreturn]] UNMAP_AFTER_INIT void init(BootInfo const& boot_info)
 
     {
         RefPtr<Thread> init_stage2_thread;
-        Process::create_kernel_process(init_stage2_thread, "init_stage2", init_stage2, nullptr, THREAD_AFFINITY_DEFAULT, Process::RegisterProcess::No);
+        Process::create_kernel_process(init_stage2_thread, KString::must_create("init_stage2"), init_stage2, nullptr, THREAD_AFFINITY_DEFAULT, Process::RegisterProcess::No);
         // We need to make sure we drop the reference for init_stage2_thread
         // before calling into Scheduler::start, otherwise we will have a
         // dangling Thread that never gets cleaned up
@@ -262,7 +263,7 @@ void init_stage2(void*)
     // This is a little bit of a hack. We can't register our process at the time we're
     // creating it, but we need to be registered otherwise finalization won't be happy.
     // The colonel process gets away without having to do this because it never exits.
-    Process::register_new(*Process::current());
+    Process::register_new(Process::current());
 
     WorkQueue::initialize();
 
@@ -275,7 +276,6 @@ void init_stage2(void*)
     }
 
     // Initialize the PCI Bus as early as possible, for early boot (PCI based) serial logging
-    SysFSComponentRegistry::initialize();
     PCI::initialize();
     PCISerialDevice::detect();
 
@@ -319,8 +319,8 @@ void init_stage2(void*)
     PTYMultiplexer::initialize();
     SB16::detect();
 
-    StorageManagement::initialize(kernel_command_line().root_device(), kernel_command_line().is_force_pio());
-    if (!VirtualFileSystem::the().mount_root(StorageManagement::the().root_filesystem())) {
+    StorageManagement::the().initialize(kernel_command_line().root_device(), kernel_command_line().is_force_pio());
+    if (VirtualFileSystem::the().mount_root(StorageManagement::the().root_filesystem()).is_error()) {
         PANIC("VirtualFileSystem::mount_root failed");
     }
 
@@ -336,30 +336,29 @@ void init_stage2(void*)
     // NOTE: Everything in the .ksyms section becomes inaccessible after this point.
     MM.unmap_ksyms_after_init();
 
-    int error;
-
     // FIXME: It would be nicer to set the mode from userspace.
     // FIXME: It would be smarter to not hardcode that the first tty is the only graphical one
     ConsoleManagement::the().first_tty()->set_graphical(GraphicsManagement::the().framebuffer_devices_exist());
     RefPtr<Thread> thread;
     auto userspace_init = kernel_command_line().userspace_init();
     auto init_args = kernel_command_line().userspace_init_args();
-    Process::create_user_process(thread, userspace_init, (uid_t)0, (gid_t)0, ProcessID(0), error, move(init_args), {}, tty0);
-    if (error != 0) {
-        PANIC("init_stage2: Error spawning SystemServer: {}", error);
-    }
+
+    auto init_or_error = Process::try_create_user_process(thread, userspace_init, UserID(0), GroupID(0), move(init_args), {}, tty0);
+    if (init_or_error.is_error())
+        PANIC("init_stage2: Error spawning init process: {}", init_or_error.error());
+
     thread->set_priority(THREAD_PRIORITY_HIGH);
 
     if (boot_profiling) {
         dbgln("Starting full system boot profiling");
-        MutexLocker mutex_locker(Process::current()->big_lock());
-        auto result = Process::current()->sys$profiling_enable(-1, ~0ull);
+        MutexLocker mutex_locker(Process::current().big_lock());
+        auto result = Process::current().sys$profiling_enable(-1, ~0ull);
         VERIFY(!result.is_error());
     }
 
     NetworkTask::spawn();
 
-    Process::current()->sys$exit(0);
+    Process::current().sys$exit(0);
     VERIFY_NOT_REACHED();
 }
 

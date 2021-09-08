@@ -123,7 +123,6 @@ private:
     RefPtr<GUI::Action> m_sql_highlight;
 
     RefPtr<Web::OutOfProcessWebView> m_page_view;
-    RefPtr<Core::ConfigFile> m_config;
 
     bool m_auto_detect_preview_mode { false };
     bool m_use_regex { false };

@@ -22,6 +22,8 @@ class WebViewHooks;
 namespace Browser {
 
 class BrowserWindow;
+class InspectorWidget;
+class ConsoleWidget;
 
 class Tab final : public GUI::Widget {
     C_OBJECT(Tab);
@@ -30,11 +32,6 @@ class Tab final : public GUI::Widget {
     friend class BrowserWindow;
 
 public:
-    enum class Type {
-        InProcessWebView,
-        OutOfProcessWebView,
-    };
-
     virtual ~Tab() override;
 
     URL url() const;
@@ -64,13 +61,21 @@ public:
     Function<void(const URL&, const Web::Cookie::ParsedCookie& cookie, Web::Cookie::Source source)> on_set_cookie;
     Function<void()> on_dump_cookies;
 
+    enum class InspectorTarget {
+        Document,
+        HoveredElement
+    };
+    void show_inspector_window(InspectorTarget);
+
+    void show_console_window();
+
     const String& title() const { return m_title; }
     const Gfx::Bitmap* icon() const { return m_icon; }
 
     GUI::AbstractScrollableWidget& view();
 
 private:
-    explicit Tab(BrowserWindow&, Type);
+    explicit Tab(BrowserWindow&);
 
     BrowserWindow const& window() const;
     BrowserWindow& window();
@@ -81,19 +86,15 @@ private:
     void update_bookmark_button(const String& url);
     void start_download(const URL& url);
     void view_source(const URL& url, const String& source);
-    void view_dom_tree(const String&);
-
-    Type m_type;
 
     History m_history;
 
-    RefPtr<Web::InProcessWebView> m_page_view;
     RefPtr<Web::OutOfProcessWebView> m_web_content_view;
 
     RefPtr<GUI::UrlBox> m_location_box;
     RefPtr<GUI::Button> m_bookmark_button;
-    RefPtr<GUI::Window> m_dom_inspector_window;
-    RefPtr<GUI::Window> m_console_window;
+    RefPtr<InspectorWidget> m_dom_inspector_widget;
+    RefPtr<ConsoleWidget> m_console_widget;
     RefPtr<GUI::Statusbar> m_statusbar;
     RefPtr<GUI::ToolbarContainer> m_toolbar_container;
 

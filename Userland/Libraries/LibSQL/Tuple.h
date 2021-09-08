@@ -28,9 +28,8 @@ namespace SQL {
 class Tuple {
 public:
     Tuple();
-    explicit Tuple(TupleDescriptor const&, u32 pointer = 0);
-    Tuple(TupleDescriptor const&, ByteBuffer&, size_t&);
-    Tuple(TupleDescriptor const&, ByteBuffer&);
+    explicit Tuple(NonnullRefPtr<TupleDescriptor> const&, u32 pointer = 0);
+    Tuple(NonnullRefPtr<TupleDescriptor> const&, Serializer&);
     Tuple(Tuple const&);
     virtual ~Tuple() = default;
 
@@ -61,24 +60,26 @@ public:
     [[nodiscard]] u32 pointer() const { return m_pointer; }
     void set_pointer(u32 ptr) { m_pointer = ptr; }
 
-    [[nodiscard]] size_t size() const;
-    [[nodiscard]] size_t length() const { return m_descriptor.size(); }
-    [[nodiscard]] TupleDescriptor descriptor() const { return m_descriptor; }
+    [[nodiscard]] size_t size() const { return m_data.size(); }
+    [[nodiscard]] virtual size_t length() const;
+    void clear() { m_descriptor->clear(); }
+    [[nodiscard]] NonnullRefPtr<TupleDescriptor> descriptor() const { return m_descriptor; }
     [[nodiscard]] int compare(Tuple const&) const;
     [[nodiscard]] int match(Tuple const&) const;
     [[nodiscard]] u32 hash() const;
-    virtual void serialize(ByteBuffer&) const;
-    [[nodiscard]] virtual size_t data_length() const { return descriptor().data_length(); }
 
 protected:
     [[nodiscard]] Optional<size_t> index_of(String) const;
     void copy_from(Tuple const&);
-    void deserialize(ByteBuffer&, size_t&);
+    virtual void serialize(Serializer&) const;
+    virtual void deserialize(Serializer&);
 
 private:
-    TupleDescriptor m_descriptor;
+    NonnullRefPtr<TupleDescriptor> m_descriptor;
     Vector<Value> m_data;
-    u32 m_pointer { 0 };
+    u32 m_pointer { 2 * sizeof(u32) };
+
+    friend Serializer;
 };
 
 }

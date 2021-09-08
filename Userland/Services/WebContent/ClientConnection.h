@@ -9,6 +9,7 @@
 #include <AK/HashMap.h>
 #include <LibIPC/ClientConnection.h>
 #include <LibJS/Forward.h>
+#include <LibJS/Heap/Handle.h>
 #include <LibWeb/Cookie/ParsedCookie.h>
 #include <LibWeb/Forward.h>
 #include <WebContent/Forward.h>
@@ -27,6 +28,8 @@ public:
     ~ClientConnection() override;
 
     virtual void die() override;
+
+    void initialize_js_console(Badge<PageHost>);
 
 private:
     Web::Page& page();
@@ -49,8 +52,13 @@ private:
     virtual void debug_request(String const&, String const&) override;
     virtual void get_source() override;
     virtual void inspect_dom_tree() override;
-    virtual void js_console_initialize() override;
+    virtual Messages::WebContentServer::InspectDomNodeResponse inspect_dom_node(i32) override;
+    virtual Messages::WebContentServer::GetHoveredNodeIdResponse get_hovered_node_id() override;
+
     virtual void js_console_input(String const&) override;
+    virtual void run_javascript(String const&) override;
+    virtual void js_console_request_messages(i32) override;
+
     virtual Messages::WebContentServer::GetSelectedTextResponse get_selected_text() override;
     virtual void select_all() override;
 
@@ -69,6 +77,7 @@ private:
 
     WeakPtr<JS::Interpreter> m_interpreter;
     OwnPtr<WebContentConsoleClient> m_console_client;
+    JS::Handle<JS::GlobalObject> m_console_global_object;
 };
 
 }

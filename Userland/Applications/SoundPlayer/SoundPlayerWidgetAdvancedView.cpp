@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, Cesar Torres <shortanemoia@protonmail.com>
+ * Copyright (c) 2021, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -36,6 +37,10 @@ SoundPlayerWidgetAdvancedView::SoundPlayerWidgetAdvancedView(GUI::Window& window
     m_splitter = add<GUI::HorizontalSplitter>();
     m_player_view = m_splitter->add<GUI::Widget>();
     m_playlist_model = adopt_ref(*new PlaylistModel());
+
+    m_playlist_widget = PlaylistWidget::construct();
+    m_playlist_widget->set_data_model(m_playlist_model);
+    m_playlist_widget->set_fixed_width(150);
 
     m_player_view->set_layout<GUI::VerticalBoxLayout>();
 
@@ -236,6 +241,14 @@ void SoundPlayerWidgetAdvancedView::drop_event(GUI::DropEvent& event)
     }
 }
 
+void SoundPlayerWidgetAdvancedView::keydown_event(GUI::KeyEvent& event)
+{
+    if (event.key() == Key_Space)
+        m_play_button->click();
+
+    GUI::Widget::keydown_event(event);
+}
+
 SoundPlayerWidgetAdvancedView::~SoundPlayerWidgetAdvancedView()
 {
     manager().on_load_sample_buffer = nullptr;
@@ -274,9 +287,9 @@ void SoundPlayerWidgetAdvancedView::read_playlist(StringView path)
 void SoundPlayerWidgetAdvancedView::set_playlist_visible(bool visible)
 {
     if (visible) {
-        m_playlist_widget = m_player_view->parent_widget()->add<PlaylistWidget>();
-        m_playlist_widget->set_data_model(m_playlist_model);
-        m_playlist_widget->set_fixed_width(150);
+        if (!m_playlist_widget->parent()) {
+            m_player_view->parent_widget()->add_child(*m_playlist_widget);
+        }
     } else {
         m_playlist_widget->remove_from_parent();
         m_player_view->set_max_width(window()->width());

@@ -146,10 +146,6 @@ public:
     void update();
     void update(const Gfx::IntRect&);
 
-    void set_global_cursor_tracking_widget(Widget*);
-    Widget* global_cursor_tracking_widget() { return m_global_cursor_tracking_widget.ptr(); }
-    const Widget* global_cursor_tracking_widget() const { return m_global_cursor_tracking_widget.ptr(); }
-
     void set_automatic_cursor_tracking_widget(Widget*);
     Widget* automatic_cursor_tracking_widget() { return m_automatic_cursor_tracking_widget.ptr(); }
     const Widget* automatic_cursor_tracking_widget() const { return m_automatic_cursor_tracking_widget.ptr(); }
@@ -207,6 +203,7 @@ protected:
     Window(Core::Object* parent = nullptr);
     virtual void wm_event(WMEvent&);
     virtual void screen_rects_change_event(ScreenRectsChangeEvent&);
+    virtual void applet_area_rect_change_event(AppletAreaRectChangeEvent&);
 
     virtual void enter_event(Core::Event&);
     virtual void leave_event(Core::Event&);
@@ -226,6 +223,7 @@ private:
     void handle_theme_change_event(ThemeChangeEvent&);
     void handle_fonts_change_event(FontsChangeEvent&);
     void handle_screen_rects_change_event(ScreenRectsChangeEvent&);
+    void handle_applet_area_rect_change_event(AppletAreaRectChangeEvent&);
     void handle_drag_move_event(DragEvent&);
     void handle_entered_event(Core::Event&);
     void handle_left_event(Core::Event&);
@@ -251,7 +249,6 @@ private:
     float m_alpha_hit_threshold { 0.0f };
     RefPtr<Widget> m_main_widget;
     WeakPtr<Widget> m_focused_widget;
-    WeakPtr<Widget> m_global_cursor_tracking_widget;
     WeakPtr<Widget> m_automatic_cursor_tracking_widget;
     WeakPtr<Widget> m_hovered_widget;
     Gfx::IntRect m_rect_when_windowless;

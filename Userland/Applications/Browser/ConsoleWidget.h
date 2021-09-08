@@ -1,16 +1,16 @@
 /*
  * Copyright (c) 2020, Hunter Salyer <thefalsehonesty@gmail.com>
+ * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include "BrowserConsoleClient.h"
 #include "History.h"
 #include <LibGUI/Widget.h>
-#include <LibJS/Forward.h>
-#include <LibWeb/InProcessWebView.h>
+#include <LibWeb/OutOfProcessWebView.h>
 
 namespace Browser {
 
@@ -19,22 +19,27 @@ class ConsoleWidget final : public GUI::Widget {
 public:
     virtual ~ConsoleWidget();
 
-    void set_interpreter(WeakPtr<JS::Interpreter>);
-    void handle_js_console_output(const String& method, const String& line);
+    void notify_about_new_console_message(i32 message_index);
+    void handle_console_messages(i32 start_index, Vector<String> const& message_types, Vector<String> const& messages);
     void print_source_line(const StringView&);
     void print_html(const StringView&);
-    void clear_output();
+    void reset();
 
     Function<void(const String&)> on_js_input;
+    Function<void(i32)> on_request_messages;
 
 private:
     ConsoleWidget();
 
+    void request_console_messages();
+    void clear_output();
+
     RefPtr<GUI::TextBox> m_input;
-    RefPtr<Web::InProcessWebView> m_output_view;
-    RefPtr<Web::DOM::Element> m_output_container;
-    WeakPtr<JS::Interpreter> m_interpreter;
-    OwnPtr<BrowserConsoleClient> m_console_client;
+    RefPtr<Web::OutOfProcessWebView> m_output_view;
+
+    i32 m_highest_notified_message_index { -1 };
+    i32 m_highest_received_message_index { -1 };
+    bool m_waiting_for_messages { false };
 };
 
 }

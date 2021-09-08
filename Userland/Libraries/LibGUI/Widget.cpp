@@ -303,6 +303,10 @@ void Widget::event(Core::Event& event)
         return handle_leave_event(event);
     case Event::EnabledChange:
         return change_event(static_cast<Event&>(event));
+    case Event::ContextMenu:
+        return context_menu_event(static_cast<ContextMenuEvent&>(event));
+    case Event::AppletAreaRectChange:
+        return applet_area_rect_change_event(static_cast<AppletAreaRectChangeEvent&>(event));
     default:
         return Core::Object::event(event);
     }
@@ -313,7 +317,7 @@ void Widget::handle_keydown_event(KeyEvent& event)
     keydown_event(event);
     if (event.key() == KeyCode::Key_Menu) {
         ContextMenuEvent c_event(window_relative_rect().bottom_right(), screen_relative_rect().bottom_right());
-        context_menu_event(c_event);
+        dispatch_event(c_event);
     }
 }
 
@@ -420,7 +424,7 @@ void Widget::handle_mousedown_event(MouseEvent& event)
     mousedown_event(event);
     if (event.button() == MouseButton::Right) {
         ContextMenuEvent c_event(event.position(), screen_relative_rect().location().translated(event.position()));
-        context_menu_event(c_event);
+        dispatch_event(c_event);
     }
 }
 
@@ -516,8 +520,9 @@ void Widget::mousewheel_event(MouseEvent& event)
     event.ignore();
 }
 
-void Widget::context_menu_event(ContextMenuEvent&)
+void Widget::context_menu_event(ContextMenuEvent& event)
 {
+    event.ignore();
 }
 
 void Widget::focusin_event(FocusEvent&)
@@ -573,6 +578,10 @@ void Widget::fonts_change_event(FontsChangeEvent&)
 }
 
 void Widget::screen_rects_change_event(ScreenRectsChangeEvent&)
+{
+}
+
+void Widget::applet_area_rect_change_event(AppletAreaRectChangeEvent&)
 {
 }
 
@@ -746,22 +755,6 @@ void Widget::set_font_fixed_width(bool fixed_width)
         set_font(Gfx::FontDatabase::the().get(Gfx::FontDatabase::the().default_fixed_width_font().family(), m_font->presentation_size(), m_font->weight()));
     else
         set_font(Gfx::FontDatabase::the().get(Gfx::FontDatabase::the().default_font().family(), m_font->presentation_size(), m_font->weight()));
-}
-
-void Widget::set_global_cursor_tracking(bool enabled)
-{
-    auto* win = window();
-    if (!win)
-        return;
-    win->set_global_cursor_tracking_widget(enabled ? this : nullptr);
-}
-
-bool Widget::global_cursor_tracking() const
-{
-    auto* win = window();
-    if (!win)
-        return false;
-    return win->global_cursor_tracking_widget() == this;
 }
 
 void Widget::set_min_size(const Gfx::IntSize& size)

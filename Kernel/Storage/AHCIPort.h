@@ -8,11 +8,13 @@
 
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
+#include <AK/WeakPtr.h>
+#include <AK/Weakable.h>
 #include <Kernel/Devices/Device.h>
 #include <Kernel/IO.h>
 #include <Kernel/Interrupts/IRQHandler.h>
 #include <Kernel/Locking/Mutex.h>
-#include <Kernel/Locking/SpinLock.h>
+#include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Memory/AnonymousVMObject.h>
 #include <Kernel/Memory/PhysicalPage.h>
 #include <Kernel/Memory/ScatterGatherList.h>
@@ -30,7 +32,8 @@ class AsyncBlockDeviceRequest;
 
 class AHCIPortHandler;
 class SATADiskDevice;
-class AHCIPort : public RefCounted<AHCIPort> {
+class AHCIPort : public RefCounted<AHCIPort>
+    , public Weakable<AHCIPort> {
     friend class AHCIPortHandler;
     friend class SATADiskDevice;
 
@@ -51,7 +54,7 @@ public:
 
 private:
     bool is_phy_enabled() const { return (m_port_registers.ssts & 0xf) == 3; }
-    bool initialize(ScopedSpinLock<SpinLock<u8>>&);
+    bool initialize(SpinlockLocker<Spinlock>&);
 
     UNMAP_AFTER_INIT AHCIPort(const AHCIPortHandler&, volatile AHCI::PortRegisters&, u32 port_index);
 
@@ -62,7 +65,7 @@ private:
     const char* try_disambiguate_sata_status();
     void try_disambiguate_sata_error();
 
-    bool initiate_sata_reset(ScopedSpinLock<SpinLock<u8>>&);
+    bool initiate_sata_reset(SpinlockLocker<Spinlock>&);
     void rebase();
     void recover_from_fatal_error();
     bool shutdown();
@@ -79,7 +82,7 @@ private:
 
     bool spin_until_ready() const;
 
-    bool identify_device(ScopedSpinLock<SpinLock<u8>>&);
+    bool identify_device(SpinlockLocker<Spinlock>&);
 
     ALWAYS_INLINE void start_command_list_processing() const;
     ALWAYS_INLINE void mark_command_header_ready_to_process(u8 command_header_index) const;
@@ -101,7 +104,7 @@ private:
 
     EntropySource m_entropy_source;
     RefPtr<AsyncBlockDeviceRequest> m_current_request;
-    SpinLock<u8> m_hard_lock;
+    Spinlock m_hard_lock;
     Mutex m_lock { "AHCIPort" };
 
     mutable bool m_wait_for_completion { false };

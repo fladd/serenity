@@ -9,6 +9,8 @@
 #include "Shell/Formatter.h"
 #include <AK/LexicalPath.h>
 #include <AK/ScopeGuard.h>
+#include <AK/Statistics.h>
+#include <AK/String.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
@@ -273,7 +275,10 @@ int Shell::builtin_cd(int argc, const char** argv)
     if (cd_history.is_empty() || cd_history.last() != real_path)
         cd_history.enqueue(real_path);
 
-    const char* path = real_path.characters();
+    auto path_relative_to_current_directory = LexicalPath::relative_path(real_path, cwd);
+    if (path_relative_to_current_directory.is_empty())
+        path_relative_to_current_directory = real_path;
+    const char* path = path_relative_to_current_directory.characters();
 
     int rc = chdir(path);
     if (rc < 0) {
@@ -285,7 +290,7 @@ int Shell::builtin_cd(int argc, const char** argv)
         return 1;
     }
     setenv("OLDPWD", cwd.characters(), 1);
-    cwd = real_path;
+    cwd = move(real_path);
     setenv("PWD", cwd.characters(), 1);
     return 0;
 }
@@ -659,54 +664,23 @@ int Shell::builtin_popd(int argc, const char** argv)
     }
 
     bool should_not_switch = false;
-    String path = directory_stack.take_last();
-
     Core::ArgsParser parser;
     parser.add_option(should_not_switch, "Do not switch dirs", "no-switch", 'n');
 
     if (!parser.parse(argc, const_cast<char**>(argv), Core::ArgsParser::FailureBehavior::PrintUsage))
         return 1;
 
-    bool should_switch = !should_not_switch;
+    auto popped_path = directory_stack.take_last();
 
-    // When no arguments are given, popd removes the top directory from the stack and performs a cd to the new top directory.
-    if (argc == 1) {
-        int rc = chdir(path.characters());
-        if (rc < 0) {
-            warnln("chdir({}) failed: {}", path, strerror(errno));
-            return 1;
-        }
-
-        cwd = path;
+    if (should_not_switch)
         return 0;
-    }
 
-    LexicalPath lexical_path(path.characters());
-
-    const char* real_path = lexical_path.string().characters();
-
-    struct stat st;
-    int rc = stat(real_path, &st);
-    if (rc < 0) {
-        warnln("stat({}) failed: {}", real_path, strerror(errno));
+    auto new_path = LexicalPath::canonicalized_path(popped_path);
+    if (chdir(new_path.characters()) < 0) {
+        warnln("chdir({}) failed: {}", new_path, strerror(errno));
         return 1;
     }
-
-    if (!S_ISDIR(st.st_mode)) {
-        warnln("Not a directory: {}", real_path);
-        return 1;
-    }
-
-    if (should_switch) {
-        int rc = chdir(real_path);
-        if (rc < 0) {
-            warnln("chdir({}) failed: {}", real_path, strerror(errno));
-            return 1;
-        }
-
-        cwd = lexical_path.string();
-    }
-
+    cwd = new_path;
     return 0;
 }
 
@@ -894,7 +868,7 @@ int Shell::builtin_source(int argc, const char** argv)
     } };
 
     if (!args.is_empty())
-        set_local_variable("ARGV", AST::create<AST::ListValue>(move(string_argv)));
+        set_local_variable("ARGV", AST::make_ref_counted<AST::ListValue>(move(string_argv)));
 
     if (!run_file(file_to_source, true))
         return 126;
@@ -906,11 +880,17 @@ int Shell::builtin_time(int argc, const char** argv)
 {
     Vector<const char*> args;
 
+    int number_of_iterations = 1;
+
     Core::ArgsParser parser;
+    parser.add_option(number_of_iterations, "Number of iterations", "iterations", 'n', "iterations");
     parser.set_stop_on_first_non_option(true);
     parser.add_positional_argument(args, "Command to execute with arguments", "command", Core::ArgsParser::Required::Yes);
 
     if (!parser.parse(argc, const_cast<char**>(argv), Core::ArgsParser::FailureBehavior::PrintUsage))
+        return 1;
+
+    if (number_of_iterations < 1)
         return 1;
 
     AST::Command command;
@@ -919,14 +899,33 @@ int Shell::builtin_time(int argc, const char** argv)
 
     auto commands = expand_aliases({ move(command) });
 
-    Core::ElapsedTimer timer;
+    AK::Statistics iteration_times;
+
     int exit_code = 1;
-    timer.start();
-    for (auto& job : run_commands(commands)) {
-        block_on_job(job);
-        exit_code = job.exit_code();
+    for (int i = 0; i < number_of_iterations; ++i) {
+        Core::ElapsedTimer timer;
+        timer.start();
+        for (auto& job : run_commands(commands)) {
+            block_on_job(job);
+            exit_code = job.exit_code();
+        }
+        iteration_times.add(timer.elapsed());
     }
-    warnln("Time: {} ms", timer.elapsed());
+
+    if (number_of_iterations == 1) {
+        warnln("Time: {} ms", iteration_times.values().first());
+    } else {
+        AK::Statistics iteration_times_excluding_first;
+        for (size_t i = 1; i < iteration_times.size(); i++)
+            iteration_times_excluding_first.add(iteration_times.values()[i]);
+
+        warnln("Timing report:");
+        warnln("==============");
+        warnln("Command:         {}", String::join(' ', args));
+        warnln("Average time:    {:.2} ms (median: {}, stddev: {:.2})", iteration_times.average(), iteration_times.median(), iteration_times.standard_deviation());
+        warnln("Excluding first: {:.2} ms (median: {}, stddev: {:.2})", iteration_times_excluding_first.average(), iteration_times_excluding_first.median(), iteration_times_excluding_first.standard_deviation());
+    }
+
     return exit_code;
 }
 

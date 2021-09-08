@@ -7,7 +7,7 @@ Make sure you have all the dependencies installed:
 ### Debian / Ubuntu
 
 ```console
-sudo apt install build-essential cmake curl libmpfr-dev libmpc-dev libgmp-dev e2fsprogs ninja-build qemu-system-i386 qemu-utils ccache rsync genext2fs
+sudo apt install build-essential cmake curl libmpfr-dev libmpc-dev libgmp-dev e2fsprogs ninja-build qemu-system-i386 qemu-utils ccache rsync genext2fs unzip
 ```
 
 #### GCC 10
@@ -50,7 +50,7 @@ sudo pacman -S --needed base-devel cmake curl mpfr libmpc gmp e2fsprogs ninja qe
 
 There is also documentation for installing the build prerequisites for some less commonly used systems:
 
-* [Other Linux distributions and *NIX systems](BuildInstructionsOther.md)
+* [Other Linux distributions and \*NIX systems](BuildInstructionsOther.md)
 * [macOS](BuildInstructionsMacOS.md)
 
 ## Build

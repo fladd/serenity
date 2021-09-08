@@ -70,17 +70,21 @@ static void flood_fill(Gfx::Bitmap& bitmap, Gfx::IntPoint const& start_position,
     }
 }
 
-void BucketTool::on_mousedown(Layer& layer, GUI::MouseEvent& event, GUI::MouseEvent&)
+void BucketTool::on_mousedown(Layer* layer, MouseEvent& event)
 {
-    if (!layer.rect().contains(event.position()))
+    if (!layer)
         return;
 
-    GUI::Painter painter(layer.bitmap());
-    auto target_color = layer.bitmap().get_pixel(event.x(), event.y());
+    auto& layer_event = event.layer_event();
+    if (!layer->rect().contains(layer_event.position()))
+        return;
 
-    flood_fill(layer.bitmap(), event.position(), target_color, m_editor->color_for(event), m_threshold);
+    GUI::Painter painter(layer->bitmap());
+    auto target_color = layer->bitmap().get_pixel(layer_event.x(), layer_event.y());
 
-    layer.did_modify_bitmap();
+    flood_fill(layer->bitmap(), layer_event.position(), target_color, m_editor->color_for(layer_event), m_threshold);
+
+    layer->did_modify_bitmap();
     m_editor->did_complete_action();
 }
 
@@ -105,6 +109,7 @@ GUI::Widget* BucketTool::get_properties_widget()
         threshold_slider.on_change = [&](int value) {
             m_threshold = value;
         };
+        set_primary_slider(&threshold_slider);
     }
 
     return m_properties_widget.ptr();

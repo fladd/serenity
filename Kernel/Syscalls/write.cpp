@@ -6,7 +6,7 @@
 
 #include <AK/NumericLimits.h>
 #include <Kernel/Debug.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Process.h>
 
 namespace Kernel {
@@ -26,18 +26,14 @@ KResultOr<FlatPtr> Process::sys$writev(int fd, Userspace<const struct iovec*> io
     Vector<iovec, 32> vecs;
     if (!vecs.try_resize(iov_count))
         return ENOMEM;
-    if (!copy_n_from_user(vecs.data(), iov, iov_count))
-        return EFAULT;
+    TRY(copy_n_from_user(vecs.data(), iov, iov_count));
     for (auto& vec : vecs) {
         total_length += vec.iov_len;
         if (total_length > NumericLimits<i32>::max())
             return EINVAL;
     }
 
-    auto description = fds().file_description(fd);
-    if (!description)
-        return EBADF;
-
+    auto description = TRY(fds().open_file_description(fd));
     if (!description->is_writable())
         return EBADF;
 
@@ -58,14 +54,12 @@ KResultOr<FlatPtr> Process::sys$writev(int fd, Userspace<const struct iovec*> io
     return nwritten;
 }
 
-KResultOr<FlatPtr> Process::do_write(FileDescription& description, const UserOrKernelBuffer& data, size_t data_size)
+KResultOr<FlatPtr> Process::do_write(OpenFileDescription& description, const UserOrKernelBuffer& data, size_t data_size)
 {
     size_t total_nwritten = 0;
 
     if (description.should_append() && description.file().is_seekable()) {
-        auto seek_result = description.seek(0, SEEK_END);
-        if (seek_result.is_error())
-            return seek_result.error();
+        TRY(description.seek(0, SEEK_END));
     }
 
     while (total_nwritten < data_size) {
@@ -107,9 +101,7 @@ KResultOr<FlatPtr> Process::sys$write(int fd, Userspace<const u8*> data, size_t 
         return EINVAL;
 
     dbgln_if(IO_DEBUG, "sys$write({}, {}, {})", fd, data.ptr(), size);
-    auto description = fds().file_description(fd);
-    if (!description)
-        return EBADF;
+    auto description = TRY(fds().open_file_description(fd));
     if (!description->is_writable())
         return EBADF;
 

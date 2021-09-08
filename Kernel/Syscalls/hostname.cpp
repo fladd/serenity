@@ -17,8 +17,7 @@ KResultOr<FlatPtr> Process::sys$gethostname(Userspace<char*> buffer, size_t size
     return hostname().with_shared([&](const auto& name) -> KResultOr<FlatPtr> {
         if (size < (name.length() + 1))
             return ENAMETOOLONG;
-        if (!copy_to_user(buffer, name.characters(), name.length() + 1))
-            return EFAULT;
+        TRY(copy_to_user(buffer, name.characters(), name.length() + 1));
         return 0;
     });
 }
@@ -31,12 +30,10 @@ KResultOr<FlatPtr> Process::sys$sethostname(Userspace<const char*> buffer, size_
         return EPERM;
     if (length > 64)
         return ENAMETOOLONG;
+    auto new_name = TRY(try_copy_kstring_from_user(buffer, length));
     return hostname().with_exclusive([&](auto& name) -> KResultOr<FlatPtr> {
-        auto name_or_error = try_copy_kstring_from_user(buffer, length);
-        if (name_or_error.is_error())
-            return name_or_error.error();
         // FIXME: Use KString instead of String here.
-        name = name_or_error.value()->view();
+        name = new_name->view();
         return 0;
     });
 }

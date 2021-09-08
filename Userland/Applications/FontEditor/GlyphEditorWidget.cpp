@@ -38,13 +38,11 @@ void GlyphEditorWidget::set_glyph(int glyph)
 void GlyphEditorWidget::delete_glyph()
 {
     if (on_undo_event)
-        on_undo_event(false);
+        on_undo_event();
     auto bitmap = font().glyph(m_glyph).glyph_bitmap();
     for (int x = 0; x < bitmap.width(); x++)
         for (int y = 0; y < bitmap.height(); y++)
             bitmap.set_bit_at(x, y, false);
-    if (on_undo_event)
-        on_undo_event(true);
     if (on_glyph_altered)
         on_glyph_altered(m_glyph);
     update();
@@ -82,8 +80,7 @@ void GlyphEditorWidget::copy_glyph()
     metadata.set("width", String::number(bitmap.width()));
     metadata.set("height", String::number(bitmap.height()));
 
-    auto data = ByteBuffer::copy(&bits[0], bitmap.width() * bitmap.height());
-    GUI::Clipboard::the().set_data(data, "glyph/x-fonteditor", metadata);
+    GUI::Clipboard::the().set_data(ReadonlyBytes(&bits[0], bitmap.width() * bitmap.height()), "glyph/x-fonteditor", metadata);
 }
 
 void GlyphEditorWidget::paste_glyph()
@@ -93,7 +90,7 @@ void GlyphEditorWidget::paste_glyph()
         return;
 
     if (on_undo_event)
-        on_undo_event(false);
+        on_undo_event();
 
     auto byte_buffer = GUI::Clipboard::the().data();
     auto buffer_height = GUI::Clipboard::the().data_and_type().metadata.get("height").value().to_int();
@@ -115,8 +112,7 @@ void GlyphEditorWidget::paste_glyph()
                 bitmap.set_bit_at(x, y, bits[x][y]);
         }
     }
-    if (on_undo_event)
-        on_undo_event(true);
+
     if (on_glyph_altered)
         on_glyph_altered(m_glyph);
     update();
@@ -175,7 +171,7 @@ void GlyphEditorWidget::mousedown_event(GUI::MouseEvent& event)
         return;
     m_is_clicking_valid_cell = true;
     if (on_undo_event)
-        on_undo_event(false);
+        on_undo_event();
     if (mode() == Paint) {
         draw_at_mouse(event);
     } else {
@@ -195,8 +191,6 @@ void GlyphEditorWidget::mouseup_event(GUI::MouseEvent&)
     if (!m_is_clicking_valid_cell)
         return;
     m_is_clicking_valid_cell = false;
-    if (on_undo_event)
-        on_undo_event(true);
 }
 
 void GlyphEditorWidget::mousemove_event(GUI::MouseEvent& event)

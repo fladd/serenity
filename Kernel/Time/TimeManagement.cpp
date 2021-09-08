@@ -146,8 +146,7 @@ UNMAP_AFTER_INIT void TimeManagement::initialize(u32 cpu)
             s_the->set_system_timer(*apic_timer);
         }
 
-        s_the->m_time_page_region = MM.allocate_kernel_region(PAGE_SIZE, "Time page"sv, Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow);
-        VERIFY(s_the->m_time_page_region);
+        s_the->m_time_page_region = MM.allocate_kernel_region(PAGE_SIZE, "Time page"sv, Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow).release_value();
     } else {
         VERIFY(s_the.is_initialized());
         if (auto* apic_timer = APIC::the().get_timer()) {
@@ -403,7 +402,7 @@ void TimeManagement::increment_time_since_boot()
 
 void TimeManagement::system_timer_tick(const RegisterState& regs)
 {
-    if (Processor::current().in_irq() <= 1) {
+    if (Processor::current_in_irq() <= 1) {
         // Don't expire timers while handling IRQs
         TimerQueue::the().fire();
     }

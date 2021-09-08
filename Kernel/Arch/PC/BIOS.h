@@ -60,21 +60,20 @@ Memory::MappedROM map_ebda();
 
 class BIOSSysFSComponent : public SysFSComponent {
 public:
-    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer&, FileDescription*) const override;
+    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer&, OpenFileDescription*) const override;
 
 protected:
-    virtual OwnPtr<KBuffer> try_to_generate_buffer() const = 0;
+    virtual KResultOr<NonnullOwnPtr<KBuffer>> try_to_generate_buffer() const = 0;
     explicit BIOSSysFSComponent(String name);
 };
 
 class DMIEntryPointExposedBlob : public BIOSSysFSComponent {
 public:
     static NonnullRefPtr<DMIEntryPointExposedBlob> create(PhysicalAddress dmi_entry_point, size_t blob_size);
-    virtual size_t size() const override { return m_dmi_entry_point_length; }
 
 private:
     DMIEntryPointExposedBlob(PhysicalAddress dmi_entry_point, size_t blob_size);
-    virtual OwnPtr<KBuffer> try_to_generate_buffer() const override;
+    virtual KResultOr<NonnullOwnPtr<KBuffer>> try_to_generate_buffer() const override;
     PhysicalAddress m_dmi_entry_point;
     size_t m_dmi_entry_point_length;
 };
@@ -82,11 +81,10 @@ private:
 class SMBIOSExposedTable : public BIOSSysFSComponent {
 public:
     static NonnullRefPtr<SMBIOSExposedTable> create(PhysicalAddress, size_t blob_size);
-    virtual size_t size() const override { return m_smbios_structure_table_length; }
 
 private:
     SMBIOSExposedTable(PhysicalAddress dmi_entry_point, size_t blob_size);
-    virtual OwnPtr<KBuffer> try_to_generate_buffer() const override;
+    virtual KResultOr<NonnullOwnPtr<KBuffer>> try_to_generate_buffer() const override;
 
     PhysicalAddress m_smbios_structure_table;
     size_t m_smbios_structure_table_length;
@@ -99,11 +97,6 @@ public:
     void create_components();
 
 private:
-    OwnPtr<KBuffer> dmi_entry_point() const;
-    OwnPtr<KBuffer> smbios_structure_table() const;
-    size_t dmi_entry_point_length() const;
-    size_t smbios_structure_table_length() const;
-
     BIOSSysFSDirectory();
 
     void set_dmi_64_bit_entry_initialization_values();

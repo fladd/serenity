@@ -21,14 +21,13 @@ KResultOr<FlatPtr> Process::sys$sched_setparam(int pid, Userspace<const struct s
     VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(proc);
     struct sched_param desired_param;
-    if (!copy_from_user(&desired_param, user_param))
-        return EFAULT;
+    TRY(copy_from_user(&desired_param, user_param));
 
     if (desired_param.sched_priority < THREAD_PRIORITY_MIN || desired_param.sched_priority > THREAD_PRIORITY_MAX)
         return EINVAL;
 
     auto* peer = Thread::current();
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     if (pid != 0)
         peer = Thread::from_tid(pid);
 
@@ -49,7 +48,7 @@ KResultOr<FlatPtr> Process::sys$sched_getparam(pid_t pid, Userspace<struct sched
     int priority;
     {
         auto* peer = Thread::current();
-        ScopedSpinLock lock(g_scheduler_lock);
+        SpinlockLocker lock(g_scheduler_lock);
         if (pid != 0) {
             // FIXME: PID/TID BUG
             // The entire process is supposed to be affected.
@@ -68,9 +67,8 @@ KResultOr<FlatPtr> Process::sys$sched_getparam(pid_t pid, Userspace<struct sched
     struct sched_param param {
         priority
     };
-    if (!copy_to_user(user_param, &param))
-        return EFAULT;
-    return 0;
+
+    return copy_to_user(user_param, &param);
 }
 
 }

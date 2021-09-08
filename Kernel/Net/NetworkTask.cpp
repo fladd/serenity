@@ -6,7 +6,7 @@
 
 #include <Kernel/Debug.h>
 #include <Kernel/Locking/Mutex.h>
-#include <Kernel/Locking/ProtectedValue.h>
+#include <Kernel/Locking/MutexProtected.h>
 #include <Kernel/Net/ARP.h>
 #include <Kernel/Net/EtherType.h>
 #include <Kernel/Net/EthernetFrameHeader.h>
@@ -43,7 +43,10 @@ static HashTable<RefPtr<TCPSocket>>* delayed_ack_sockets;
 void NetworkTask::spawn()
 {
     RefPtr<Thread> thread;
-    Process::create_kernel_process(thread, "NetworkTask", NetworkTask_main, nullptr);
+    auto name = KString::try_create("NetworkTask");
+    if (name.is_error())
+        TODO();
+    Process::create_kernel_process(thread, name.release_value(), NetworkTask_main, nullptr);
     network_task = thread;
 }
 
@@ -61,7 +64,7 @@ void NetworkTask_main(void*)
     NetworkingManagement::the().for_each([&](auto& adapter) {
         dmesgln("NetworkTask: {} network adapter found: hw={}", adapter.class_name(), adapter.mac_address().to_string());
 
-        if (String(adapter.class_name()) == "LoopbackAdapter") {
+        if (adapter.class_name() == "LoopbackAdapter"sv) {
             adapter.set_ipv4_address({ 127, 0, 0, 1 });
             adapter.set_ipv4_netmask({ 255, 0, 0, 0 });
             adapter.set_ipv4_gateway({ 0, 0, 0, 0 });
@@ -88,7 +91,10 @@ void NetworkTask_main(void*)
     };
 
     size_t buffer_size = 64 * KiB;
-    auto buffer_region = MM.allocate_kernel_region(buffer_size, "Kernel Packet Buffer", Memory::Region::Access::ReadWrite);
+    auto region_or_error = MM.allocate_kernel_region(buffer_size, "Kernel Packet Buffer", Memory::Region::Access::ReadWrite);
+    if (region_or_error.is_error())
+        TODO();
+    auto buffer_region = region_or_error.release_value();
     auto buffer = (u8*)buffer_region->vaddr().get();
     Time packet_timestamp;
 
@@ -298,7 +304,7 @@ void handle_udp(IPv4Packet const& ipv4_packet, Time const& packet_timestamp)
 
 void send_delayed_tcp_ack(RefPtr<TCPSocket> socket)
 {
-    VERIFY(socket->lock().is_locked());
+    VERIFY(socket->mutex().is_locked());
     if (!socket->should_delay_next_ack()) {
         [[maybe_unused]] auto result = socket->send_ack();
         return;
@@ -311,7 +317,7 @@ void flush_delayed_tcp_acks()
 {
     Vector<RefPtr<TCPSocket>, 32> remaining_sockets;
     for (auto& socket : *delayed_ack_sockets) {
-        MutexLocker locker(socket->lock());
+        MutexLocker locker(socket->mutex());
         if (socket->should_delay_next_ack()) {
             remaining_sockets.append(socket);
             continue;
@@ -418,7 +424,7 @@ void handle_tcp(IPv4Packet const& ipv4_packet, Time const& packet_timestamp)
         return;
     }
 
-    MutexLocker locker(socket->lock());
+    MutexLocker locker(socket->mutex());
 
     VERIFY(socket->type() == SOCK_STREAM);
     VERIFY(socket->local_port() == tcp_packet.destination_port());
@@ -443,12 +449,13 @@ void handle_tcp(IPv4Packet const& ipv4_packet, Time const& packet_timestamp)
             dbgln_if(TCP_DEBUG, "handle_tcp: incoming connection");
             auto& local_address = ipv4_packet.destination();
             auto& peer_address = ipv4_packet.source();
-            auto client = socket->create_client(local_address, tcp_packet.destination_port(), peer_address, tcp_packet.source_port());
-            if (!client) {
-                dmesgln("handle_tcp: couldn't create client socket");
+            auto client_or_error = socket->try_create_client(local_address, tcp_packet.destination_port(), peer_address, tcp_packet.source_port());
+            if (client_or_error.is_error()) {
+                dmesgln("handle_tcp: couldn't create client socket: {}", client_or_error.error());
                 return;
             }
-            MutexLocker locker(client->lock());
+            auto client = client_or_error.release_value();
+            MutexLocker locker(client->mutex());
             dbgln_if(TCP_DEBUG, "handle_tcp: created new client socket with tuple {}", client->tuple().to_string());
             client->set_sequence_number(1000);
             client->set_ack_number(tcp_packet.sequence_number() + payload_size + 1);
@@ -648,7 +655,7 @@ void retransmit_tcp_packets()
     });
 
     for (auto& socket : sockets) {
-        MutexLocker socket_locker(socket.lock());
+        MutexLocker socket_locker(socket.mutex());
         socket.retransmit_packets();
     }
 }

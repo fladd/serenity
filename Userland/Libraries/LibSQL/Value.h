@@ -6,103 +6,125 @@
 
 #pragma once
 
+#include <AK/Badge.h>
 #include <AK/ByteBuffer.h>
-#include <AK/Function.h>
+#include <AK/ScopeGuard.h>
 #include <AK/String.h>
 #include <AK/Variant.h>
+#include <LibSQL/Forward.h>
+#include <LibSQL/TupleDescriptor.h>
 #include <LibSQL/Type.h>
+#include <LibSQL/ValueImpl.h>
+#include <string.h>
 
 namespace SQL {
 
 /**
- * A `Value` is an atomic piece of SQL data. A `Value` has a basic type
+ * A `Value` is an atomic piece of SQL data`. A `Value` has a basic type
  * (Text/String, Integer, Float, etc). Richer types are implemented in higher
  * level layers, but the resulting data is stored in these `Value` objects.
  */
 class Value {
 public:
-    explicit Value(SQLType sql_type = SQLType::Text);
-    Value(SQLType sql_type, ByteBuffer& buffer, size_t& offset);
-    Value(Value const& other);
-    ~Value();
+    Value(Value&) = default;
+    Value(Value const&) = default;
 
-    static Value const& null();
+    explicit Value(SQLType sql_type = SQLType::Null);
 
-    Value& operator=(Value&& other) noexcept
+    template<typename... Ts>
+    explicit Value(Variant<Ts...> impl)
+        : m_impl(impl)
     {
-        (*this) = other;
-        return (*this);
     }
+
+    enum SetImplementation {
+        SetImplementationSingleton
+    };
+
+    template<typename I>
+    Value(SetImplementation, I&& impl)
+    {
+        m_impl.set<I>(forward<I>(impl));
+    }
+
+    Value(SQLType, Value const&);
+    Value(SQLType, String const&);
+    Value(SQLType, char const*);
+    Value(SQLType, int);
+    Value(SQLType, double);
+    Value(SQLType, bool);
+    explicit Value(String const&);
+    explicit Value(char const*);
+    explicit Value(int);
+    explicit Value(double);
+    explicit Value(bool);
+
+    ~Value() = default;
+
+    [[nodiscard]] bool is_null() const;
+    [[nodiscard]] SQLType type() const;
+    [[nodiscard]] String type_name() const;
+    [[nodiscard]] BaseTypeImpl downcast_to_basetype() const;
+
+    template<typename Impl>
+    Impl const& get_impl(Badge<Impl>) const { return m_impl.get<Impl>(); }
+
+    [[nodiscard]] String to_string() const;
+    [[nodiscard]] Optional<int> to_int() const;
+    [[nodiscard]] Optional<u32> to_u32() const;
+    [[nodiscard]] Optional<double> to_double() const;
+    [[nodiscard]] Optional<bool> to_bool() const;
+    [[nodiscard]] Optional<Vector<Value>> to_vector() const;
+
+    explicit operator String() const;
+    explicit operator int() const;
+    explicit operator u32() const;
+    explicit operator double() const;
+    explicit operator bool() const;
+
+    void assign(Value const& other_value);
+    void assign(String const& string_value);
+    void assign(int const& int_value);
+    void assign(double const& double_value);
+    void assign(bool const& bool_value);
+    void assign(Vector<Value> const& values);
+
     Value& operator=(Value const& other);
+
     Value& operator=(String const&);
-    Value& operator=(String&& string)
-    {
-        operator=(string);
-        return *this;
-    }
+    Value& operator=(char const*);
     Value& operator=(int);
     Value& operator=(u32);
     Value& operator=(double);
-    Value& set_null();
+    Value& operator=(bool);
+    Value& operator=(Vector<Value> const&);
 
-    Optional<String> to_string() const;
-    explicit operator String() const;
-    Optional<int> to_int() const;
-    explicit operator int() const;
-    Optional<double> to_double() const;
-    explicit operator double() const;
-    Optional<u32> to_u32() const;
-    explicit operator u32() const;
-
-    [[nodiscard]] SQLType type() const { return m_type; }
-    [[nodiscard]] const char* type_name() const { return m_type_name(); }
-    [[nodiscard]] size_t size() const { return m_size(); }
-    [[nodiscard]] int compare(Value const& other) const { return m_compare(other); }
-    [[nodiscard]] bool is_null() const { return m_is_null; }
+    [[nodiscard]] size_t length() const;
+    [[nodiscard]] u32 hash() const;
     [[nodiscard]] bool can_cast(Value const&) const;
-    [[nodiscard]] u32 hash() const { return (is_null()) ? 0 : m_hash(); }
+    void serialize(Serializer&) const;
+    void deserialize(Serializer&);
 
-    bool operator==(Value const& other) const { return m_compare(other) == 0; }
-    bool operator==(String const& other) const;
-    bool operator==(int other) const;
-    bool operator==(double other) const;
-    bool operator!=(Value const& other) const { return m_compare(other) != 0; }
-    bool operator<(Value const& other) const { return m_compare(other) < 0; }
-    bool operator<=(Value const& other) const { return m_compare(other) <= 0; }
-    bool operator>(Value const& other) const { return m_compare(other) > 0; }
-    bool operator>=(Value const& other) const { return m_compare(other) >= 0; }
+    [[nodiscard]] int compare(Value const&) const;
+    bool operator==(Value const&) const;
+    bool operator==(String const&) const;
+    bool operator==(int) const;
+    bool operator==(double) const;
+    bool operator!=(Value const&) const;
+    bool operator<(Value const&) const;
+    bool operator<=(Value const&) const;
+    bool operator>(Value const&) const;
+    bool operator>=(Value const&) const;
 
-    void serialize(ByteBuffer& buffer) const
-    {
-        VERIFY(!is_null());
-        m_serialize(buffer);
-    }
+    static Value const& null();
+    static Value create_tuple(NonnullRefPtr<TupleDescriptor> const&);
+    static Value create_array(SQLType element_type, Optional<size_t> const& max_size = {});
 
 private:
-    void setup(SQLType sql_type);
-    void setup_text();
-    void setup_int();
-    void setup_float();
+    void setup(SQLType type);
 
-    Function<Optional<String>()> m_to_string;
-    Function<Optional<int>()> m_to_int;
-    Function<Optional<double>()> m_to_double;
-    Function<void(Value const&)> m_assign_value;
-    Function<void(String const&)> m_assign_string;
-    Function<void(int)> m_assign_int;
-    Function<void(double)> m_assign_double;
-    Function<int(Value const&)> m_compare;
-    Function<void(ByteBuffer&)> m_serialize;
-    Function<void(ByteBuffer&, size_t& offset)> m_deserialize;
-    Function<size_t()> m_size;
-    Function<const char*()> m_type_name;
-    Function<bool(Value const&)> m_can_cast;
-    Function<u32()> m_hash;
-
-    SQLType m_type { SQLType::Text };
-    bool m_is_null { true };
-
-    Variant<String, int, double> m_impl;
+    ValueTypeImpl m_impl { NullImpl() };
+    friend Serializer;
 };
 
 }

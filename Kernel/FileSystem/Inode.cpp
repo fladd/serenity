@@ -11,9 +11,9 @@
 #include <AK/StringView.h>
 #include <Kernel/API/InodeWatcherEvent.h>
 #include <Kernel/FileSystem/Custody.h>
-#include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/FileSystem/InodeWatcher.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
 #include <Kernel/KBufferBuilder.h>
 #include <Kernel/Memory/SharedInodeVMObject.h>
@@ -22,9 +22,9 @@
 
 namespace Kernel {
 
-static Singleton<SpinLockProtectedValue<Inode::AllInstancesList>> s_all_instances;
+static Singleton<SpinlockProtected<Inode::AllInstancesList>> s_all_instances;
 
-SpinLockProtectedValue<Inode::AllInstancesList>& Inode::all_instances()
+SpinlockProtected<Inode::AllInstancesList>& Inode::all_instances()
 {
     return s_all_instances;
 }
@@ -45,23 +45,19 @@ void Inode::sync()
     }
 }
 
-KResultOr<NonnullOwnPtr<KBuffer>> Inode::read_entire(FileDescription* description) const
+KResultOr<NonnullOwnPtr<KBuffer>> Inode::read_entire(OpenFileDescription* description) const
 {
-    KBufferBuilder builder;
+    auto builder = TRY(KBufferBuilder::try_create());
 
-    size_t nread;
     u8 buffer[4096];
     off_t offset = 0;
     for (;;) {
         auto buf = UserOrKernelBuffer::for_kernel_buffer(buffer);
-        auto result = read_bytes(offset, sizeof(buffer), buf, description);
-        if (result.is_error())
-            return result.error();
-        nread = result.value();
+        auto nread = TRY(read_bytes(offset, sizeof(buffer), buf, description));
         VERIFY(nread <= sizeof(buffer));
         if (nread == 0)
             break;
-        builder.append((const char*)buffer, nread);
+        TRY(builder.append((const char*)buffer, nread));
         offset += nread;
         if (nread < sizeof(buffer))
             break;
@@ -78,11 +74,7 @@ KResultOr<NonnullRefPtr<Custody>> Inode::resolve_as_link(Custody& base, RefPtr<C
     // The default implementation simply treats the stored
     // contents as a path and resolves that. That is, it
     // behaves exactly how you would expect a symlink to work.
-    auto contents_or = read_entire();
-    if (contents_or.is_error())
-        return contents_or.error();
-
-    auto& contents = contents_or.value();
+    auto contents = TRY(read_entire());
     auto path = StringView(contents->data(), contents->size());
     return VirtualFileSystem::the().resolve_path(path, base, out_parent, options, symlink_recursion_level);
 }
@@ -171,19 +163,15 @@ void Inode::unregister_watcher(Badge<InodeWatcher>, InodeWatcher& watcher)
     m_watchers.remove(&watcher);
 }
 
-NonnullRefPtr<FIFO> Inode::fifo()
+KResultOr<NonnullRefPtr<FIFO>> Inode::fifo()
 {
     MutexLocker locker(m_inode_lock);
     VERIFY(metadata().is_fifo());
 
     // FIXME: Release m_fifo when it is closed by all readers and writers
-    if (!m_fifo) {
-        m_fifo = FIFO::try_create(metadata().uid);
-        // FIXME: We need to be able to observe OOM here.
-        VERIFY(!m_fifo.is_null());
-    }
+    if (!m_fifo)
+        m_fifo = TRY(FIFO::try_create(metadata().uid));
 
-    VERIFY(m_fifo);
     return *m_fifo;
 }
 
@@ -275,7 +263,7 @@ static inline bool range_overlap(T start1, T len1, T start2, T len2)
     return ((start1 < start2 + len2) || len2 == 0) && ((start2 < start1 + len1) || len1 == 0);
 }
 
-static inline KResult normalize_flock(FileDescription const& description, flock& lock)
+static inline KResult normalize_flock(OpenFileDescription const& description, flock& lock)
 {
     off_t start;
     switch (lock.l_whence) {
@@ -295,7 +283,7 @@ static inline KResult normalize_flock(FileDescription const& description, flock&
     return KSuccess;
 }
 
-KResult Inode::can_apply_flock(FileDescription const& description, flock const& new_lock) const
+KResult Inode::can_apply_flock(OpenFileDescription const& description, flock const& new_lock) const
 {
     VERIFY(new_lock.l_whence == SEEK_SET);
 
@@ -322,21 +310,15 @@ KResult Inode::can_apply_flock(FileDescription const& description, flock const& 
     return KSuccess;
 }
 
-KResult Inode::apply_flock(Process const& process, FileDescription const& description, Userspace<flock const*> input_lock)
+KResult Inode::apply_flock(Process const& process, OpenFileDescription const& description, Userspace<flock const*> input_lock)
 {
-    flock new_lock;
-    if (!copy_from_user(&new_lock, input_lock))
-        return EFAULT;
-
-    auto rc = normalize_flock(description, new_lock);
-    if (rc.is_error())
-        return rc;
+    flock new_lock = {};
+    TRY(copy_from_user(&new_lock, input_lock));
+    TRY(normalize_flock(description, new_lock));
 
     MutexLocker locker(m_inode_lock);
 
-    rc = can_apply_flock(description, new_lock);
-    if (rc.is_error())
-        return rc;
+    TRY(can_apply_flock(description, new_lock));
 
     if (new_lock.l_type == F_UNLCK) {
         for (size_t i = 0; i < m_flocks.size(); ++i) {
@@ -352,15 +334,11 @@ KResult Inode::apply_flock(Process const& process, FileDescription const& descri
     return KSuccess;
 }
 
-KResult Inode::get_flock(FileDescription const& description, Userspace<flock*> reference_lock) const
+KResult Inode::get_flock(OpenFileDescription const& description, Userspace<flock*> reference_lock) const
 {
-    flock lookup;
-    if (!copy_from_user(&lookup, reference_lock))
-        return EFAULT;
-
-    auto rc = normalize_flock(description, lookup);
-    if (rc.is_error())
-        return rc;
+    flock lookup = {};
+    TRY(copy_from_user(&lookup, reference_lock));
+    TRY(normalize_flock(description, lookup));
 
     MutexLocker locker(m_inode_lock, Mutex::Mode::Shared);
 
@@ -370,19 +348,15 @@ KResult Inode::get_flock(FileDescription const& description, Userspace<flock*> r
 
         if ((lookup.l_type == F_RDLCK && lock.type == F_WRLCK) || lookup.l_type == F_WRLCK) {
             lookup = { lock.type, SEEK_SET, lock.start, lock.len, lock.pid };
-            if (!copy_to_user(reference_lock, &lookup))
-                return EFAULT;
-            return KSuccess;
+            return copy_to_user(reference_lock, &lookup);
         }
     }
 
     lookup.l_type = F_UNLCK;
-    if (!copy_to_user(reference_lock, &lookup))
-        return EFAULT;
-    return KSuccess;
+    return copy_to_user(reference_lock, &lookup);
 }
 
-void Inode::remove_flocks_for_description(FileDescription const& description)
+void Inode::remove_flocks_for_description(OpenFileDescription const& description)
 {
     MutexLocker locker(m_inode_lock);
 

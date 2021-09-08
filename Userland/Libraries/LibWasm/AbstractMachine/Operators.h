@@ -259,7 +259,7 @@ struct Floor {
 };
 struct Truncate {
     template<typename Lhs>
-    auto operator()(Lhs lhs) const
+    Result<Lhs, StringView> operator()(Lhs lhs) const
     {
         if constexpr (IsSame<Lhs, float>)
             return truncf(lhs);
@@ -271,14 +271,14 @@ struct Truncate {
 
     static StringView name() { return "truncate"; }
 };
-struct Round {
+struct NearbyIntegral {
     template<typename Lhs>
     auto operator()(Lhs lhs) const
     {
         if constexpr (IsSame<Lhs, float>)
-            return roundf(lhs);
+            return nearbyintf(lhs);
         else if constexpr (IsSame<Lhs, double>)
-            return round(lhs);
+            return nearbyint(lhs);
         else
             VERIFY_NOT_REACHED();
     }
@@ -317,7 +317,7 @@ struct CheckedTruncate {
     AK::Result<ResultT, StringView> operator()(Lhs lhs) const
     {
         if (isnan(lhs) || isinf(lhs)) // "undefined", let's just trap.
-            return "Truncation undefined behaviour"sv;
+            return "Truncation undefined behavior"sv;
 
         Lhs truncated;
         if constexpr (IsSame<float, Lhs>)
@@ -327,10 +327,13 @@ struct CheckedTruncate {
         else
             VERIFY_NOT_REACHED();
 
-        if (NumericLimits<ResultT>::min() <= truncated && static_cast<double>(NumericLimits<ResultT>::max()) >= static_cast<double>(truncated))
-            return static_cast<ResultT>(truncated);
+        // FIXME: This function assumes that all values of ResultT are representable in Lhs
+        //        the assumption comes from the fact that this was used exclusively by LibJS,
+        //        which only considers values that are all representable in 'double'.
+        if (!AK::is_within_range<ResultT>(truncated))
+            return "Truncation out of range"sv;
 
-        return "Truncation out of range"sv;
+        return static_cast<ResultT>(truncated);
     }
 
     static StringView name() { return "truncate.checked"; }
@@ -424,6 +427,9 @@ struct SaturatingTruncate {
             return NumericLimits<ResultT>::max();
         }
 
+        // FIXME: This assumes that all values in ResultT are representable in 'double'.
+        //        that assumption is not correct, which makes this function yield incorrect values
+        //        for 'edge' values of type i64.
         constexpr auto convert = [](auto truncated_value) {
             if (truncated_value < NumericLimits<ResultT>::min())
                 return NumericLimits<ResultT>::min();

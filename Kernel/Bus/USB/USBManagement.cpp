@@ -5,9 +5,9 @@
  */
 
 #include <AK/Singleton.h>
-#include <Kernel/Bus/PCI/Access.h>
+#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Bus/USB/SysFSUSB.h>
-#include <Kernel/Bus/USB/UHCIController.h>
+#include <Kernel/Bus/USB/UHCI/UHCIController.h>
 #include <Kernel/Bus/USB/USBManagement.h>
 #include <Kernel/CommandLine.h>
 #include <Kernel/Sections.h>

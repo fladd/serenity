@@ -12,11 +12,11 @@
 #include <Kernel/Arch/x86/TrapFrame.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Devices/KCOVDevice.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/KSyms.h>
 #include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Memory/PageDirectory.h>
-#include <Kernel/Memory/ProcessPagingScope.h>
+#include <Kernel/Memory/ScopedAddressSpaceSwitcher.h>
 #include <Kernel/Panic.h>
 #include <Kernel/PerformanceEventBuffer.h>
 #include <Kernel/Process.h>
@@ -30,38 +30,31 @@
 
 namespace Kernel {
 
-static Singleton<SpinLockProtectedValue<Thread::GlobalList>> s_list;
+static Singleton<SpinlockProtected<Thread::GlobalList>> s_list;
 
-SpinLockProtectedValue<Thread::GlobalList>& Thread::all_instances()
+SpinlockProtected<Thread::GlobalList>& Thread::all_instances()
 {
     return *s_list;
 }
 
 KResultOr<NonnullRefPtr<Thread>> Thread::try_create(NonnullRefPtr<Process> process)
 {
-    auto kernel_stack_region = MM.allocate_kernel_region(default_kernel_stack_size, {}, Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow);
-    if (!kernel_stack_region)
-        return ENOMEM;
+    auto kernel_stack_region = TRY(MM.allocate_kernel_region(default_kernel_stack_size, {}, Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow));
     kernel_stack_region->set_stack(true);
 
-    auto block_timer = AK::try_create<Timer>();
+    auto block_timer = try_make_ref_counted<Timer>();
     if (!block_timer)
         return ENOMEM;
 
-    auto name = KString::try_create(process->name());
-
-    auto thread = adopt_ref_if_nonnull(new (nothrow) Thread(move(process), kernel_stack_region.release_nonnull(), block_timer.release_nonnull(), move(name)));
-    if (!thread)
-        return ENOMEM;
-
-    return thread.release_nonnull();
+    auto name = TRY(KString::try_create(process->name()));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) Thread(move(process), move(kernel_stack_region), block_timer.release_nonnull(), move(name)));
 }
 
-Thread::Thread(NonnullRefPtr<Process> process, NonnullOwnPtr<Memory::Region> kernel_stack_region, NonnullRefPtr<Timer> block_timer, OwnPtr<KString> name)
+Thread::Thread(NonnullRefPtr<Process> process, NonnullOwnPtr<Memory::Region> kernel_stack_region, NonnullRefPtr<Timer> block_timer, NonnullOwnPtr<KString> name)
     : m_process(move(process))
     , m_kernel_stack_region(move(kernel_stack_region))
     , m_name(move(name))
-    , m_block_timer(block_timer)
+    , m_block_timer(move(block_timer))
 {
     bool is_first_thread = m_process->add_thread(*this);
     if (is_first_thread) {
@@ -74,7 +67,8 @@ Thread::Thread(NonnullRefPtr<Process> process, NonnullOwnPtr<Memory::Region> ker
     {
         // FIXME: Go directly to KString
         auto string = String::formatted("Kernel stack (thread {})", m_tid.value());
-        m_kernel_stack_region->set_name(KString::try_create(string));
+        // FIXME: Handle KString allocation failure.
+        m_kernel_stack_region->set_name(KString::try_create(string).release_value());
     }
 
     Thread::all_instances().with([&](auto& list) {
@@ -86,10 +80,10 @@ Thread::Thread(NonnullRefPtr<Process> process, NonnullOwnPtr<Memory::Region> ker
 
     reset_fpu_state();
 
-#if ARCH(I386)
     // Only IF is set when a process boots.
-    m_regs.eflags = 0x0202;
+    m_regs.set_flags(0x0202);
 
+#if ARCH(I386)
     if (m_process->is_kernel_process()) {
         m_regs.cs = GDT_SELECTOR_CODE0;
         m_regs.ds = GDT_SELECTOR_DATA0;
@@ -106,9 +100,6 @@ Thread::Thread(NonnullRefPtr<Process> process, NonnullOwnPtr<Memory::Region> ker
         m_regs.gs = GDT_SELECTOR_TLS | 3;
     }
 #else
-    // Only IF is set when a process boots.
-    m_regs.rflags = 0x0202;
-
     if (m_process->is_kernel_process())
         m_regs.cs = GDT_SELECTOR_CODE0;
     else
@@ -121,20 +112,15 @@ Thread::Thread(NonnullRefPtr<Process> process, NonnullOwnPtr<Memory::Region> ker
     m_kernel_stack_top = m_kernel_stack_region->vaddr().offset(default_kernel_stack_size).get() & ~(FlatPtr)0x7u;
 
     if (m_process->is_kernel_process()) {
-#if ARCH(I386)
-        m_regs.esp = m_regs.esp0 = m_kernel_stack_top;
-#else
-        m_regs.rsp = m_regs.rsp0 = m_kernel_stack_top;
-#endif
+        m_regs.set_sp(m_kernel_stack_top);
+        m_regs.set_sp0(m_kernel_stack_top);
     } else {
         // Ring 3 processes get a separate stack for ring 0.
         // The ring 3 stack will be assigned by exec().
 #if ARCH(I386)
         m_regs.ss0 = GDT_SELECTOR_DATA0;
-        m_regs.esp0 = m_kernel_stack_top;
-#else
-        m_regs.rsp0 = m_kernel_stack_top;
 #endif
+        m_regs.set_sp0(m_kernel_stack_top);
     }
 
     // We need to add another reference if we could successfully create
@@ -150,12 +136,12 @@ Thread::~Thread()
 {
     {
         // We need to explicitly remove ourselves from the thread list
-        // here. We may get pre-empted in the middle of destructing this
+        // here. We may get preempted in the middle of destructing this
         // thread, which causes problems if the thread list is iterated.
         // Specifically, if this is the last thread of a process, checking
         // block conditions would access m_process, which would be in
         // the middle of being destroyed.
-        ScopedSpinLock lock(g_scheduler_lock);
+        SpinlockLocker lock(g_scheduler_lock);
         VERIFY(!m_process_thread_list_node.is_in_list());
 
         // We shouldn't be queued
@@ -163,16 +149,16 @@ Thread::~Thread()
     }
 }
 
-void Thread::block(Kernel::Mutex& lock, ScopedSpinLock<SpinLock<u8>>& lock_lock, u32 lock_count)
+void Thread::block(Kernel::Mutex& lock, SpinlockLocker<Spinlock>& lock_lock, u32 lock_count)
 {
-    VERIFY(!Processor::current().in_irq());
+    VERIFY(!Processor::current_in_irq());
     VERIFY(this == Thread::current());
     ScopedCritical critical;
-    VERIFY(!Memory::s_mm_lock.own_lock());
+    VERIFY(!Memory::s_mm_lock.is_locked_by_current_processor());
 
-    ScopedSpinLock block_lock(m_block_lock);
+    SpinlockLocker block_lock(m_block_lock);
 
-    ScopedSpinLock scheduler_lock(g_scheduler_lock);
+    SpinlockLocker scheduler_lock(g_scheduler_lock);
 
     switch (state()) {
     case Thread::Stopped:
@@ -206,9 +192,9 @@ void Thread::block(Kernel::Mutex& lock, ScopedSpinLock<SpinLock<u8>>& lock_lock,
 
     for (;;) {
         // Yield to the scheduler, and wait for us to resume unblocked.
-        VERIFY(!g_scheduler_lock.own_lock());
+        VERIFY(!g_scheduler_lock.is_locked_by_current_processor());
         VERIFY(Processor::in_critical());
-        if (&lock != &big_lock && big_lock.own_lock()) {
+        if (&lock != &big_lock && big_lock.is_locked_by_current_thread()) {
             // We're locking another lock and already hold the big lock...
             // We need to release the big lock
             yield_and_release_relock_big_lock();
@@ -220,7 +206,7 @@ void Thread::block(Kernel::Mutex& lock, ScopedSpinLock<SpinLock<u8>>& lock_lock,
         }
         VERIFY(Processor::in_critical());
 
-        ScopedSpinLock block_lock2(m_block_lock);
+        SpinlockLocker block_lock2(m_block_lock);
         if (should_be_stopped() || state() == Stopped) {
             dbgln("Thread should be stopped, current state: {}", state_string());
             set_state(Thread::Blocked);
@@ -237,18 +223,18 @@ void Thread::block(Kernel::Mutex& lock, ScopedSpinLock<SpinLock<u8>>& lock_lock,
 
 u32 Thread::unblock_from_lock(Kernel::Mutex& lock)
 {
-    ScopedSpinLock block_lock(m_block_lock);
+    SpinlockLocker block_lock(m_block_lock);
     VERIFY(m_blocking_lock == &lock);
     auto requested_count = m_lock_requested_count;
     block_lock.unlock();
 
     auto do_unblock = [&]() {
-        ScopedSpinLock scheduler_lock(g_scheduler_lock);
-        ScopedSpinLock block_lock(m_block_lock);
+        SpinlockLocker scheduler_lock(g_scheduler_lock);
+        SpinlockLocker block_lock(m_block_lock);
         VERIFY(m_blocking_lock == &lock);
-        VERIFY(!Processor::current().in_irq());
-        VERIFY(g_scheduler_lock.own_lock());
-        VERIFY(m_block_lock.own_lock());
+        VERIFY(!Processor::current_in_irq());
+        VERIFY(g_scheduler_lock.is_locked_by_current_processor());
+        VERIFY(m_block_lock.is_locked_by_current_processor());
         VERIFY(m_blocking_lock == &lock);
         dbgln_if(THREAD_DEBUG, "Thread {} unblocked from Mutex {}", *this, &lock);
         m_blocking_lock = nullptr;
@@ -259,8 +245,8 @@ u32 Thread::unblock_from_lock(Kernel::Mutex& lock)
         VERIFY(m_state != Thread::Runnable && m_state != Thread::Running);
         set_state(Thread::Runnable);
     };
-    if (Processor::current().in_irq()) {
-        Processor::current().deferred_call_queue([do_unblock = move(do_unblock), self = make_weak_ptr()]() {
+    if (Processor::current_in_irq()) {
+        Processor::deferred_call_queue([do_unblock = move(do_unblock), self = make_weak_ptr()]() {
             if (auto this_thread = self.strong_ref())
                 do_unblock();
         });
@@ -273,15 +259,15 @@ u32 Thread::unblock_from_lock(Kernel::Mutex& lock)
 void Thread::unblock_from_blocker(Blocker& blocker)
 {
     auto do_unblock = [&]() {
-        ScopedSpinLock scheduler_lock(g_scheduler_lock);
-        ScopedSpinLock block_lock(m_block_lock);
+        SpinlockLocker scheduler_lock(g_scheduler_lock);
+        SpinlockLocker block_lock(m_block_lock);
         if (m_blocker != &blocker)
             return;
         if (!should_be_stopped() && !is_stopped())
             unblock();
     };
-    if (Processor::current().in_irq()) {
-        Processor::current().deferred_call_queue([do_unblock = move(do_unblock), self = make_weak_ptr()]() {
+    if (Processor::current_in_irq()) {
+        Processor::deferred_call_queue([do_unblock = move(do_unblock), self = make_weak_ptr()]() {
             if (auto this_thread = self.strong_ref())
                 do_unblock();
         });
@@ -292,9 +278,9 @@ void Thread::unblock_from_blocker(Blocker& blocker)
 
 void Thread::unblock(u8 signal)
 {
-    VERIFY(!Processor::current().in_irq());
-    VERIFY(g_scheduler_lock.own_lock());
-    VERIFY(m_block_lock.own_lock());
+    VERIFY(!Processor::current_in_irq());
+    VERIFY(g_scheduler_lock.is_locked_by_current_processor());
+    VERIFY(m_block_lock.is_locked_by_current_processor());
     if (m_state != Thread::Blocked)
         return;
     if (m_blocking_lock)
@@ -330,7 +316,7 @@ void Thread::set_should_die()
 
     // Remember that we should die instead of returning to
     // the userspace.
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     m_should_die = true;
 
     // NOTE: Even the current thread can technically be in "Stopped"
@@ -345,7 +331,7 @@ void Thread::set_should_die()
         resume_from_stopped();
     }
     if (is_blocked()) {
-        ScopedSpinLock block_lock(m_block_lock);
+        SpinlockLocker block_lock(m_block_lock);
         if (m_blocker) {
             // We're blocked in the kernel.
             m_blocker->set_interrupted_by_death();
@@ -367,7 +353,7 @@ void Thread::die_if_needed()
     dbgln_if(THREAD_DEBUG, "Thread {} is dying", *this);
 
     {
-        ScopedSpinLock lock(g_scheduler_lock);
+        SpinlockLocker lock(g_scheduler_lock);
         // It's possible that we don't reach the code after this block if the
         // scheduler is invoked and FinalizerTask cleans up this thread, however
         // that doesn't matter because we're trying to invoke the scheduler anyway
@@ -385,7 +371,7 @@ void Thread::die_if_needed()
     // Now leave the critical section so that we can also trigger the
     // actual context switch
     Processor::clear_critical();
-    dbgln("die_if_needed returned from clear_critical!!! in irq: {}", Processor::current().in_irq());
+    dbgln("die_if_needed returned from clear_critical!!! in irq: {}", Processor::current_in_irq());
     // We should never get here, but the scoped scheduler lock
     // will be released by Scheduler::context_switch again
     VERIFY_NOT_REACHED();
@@ -394,7 +380,7 @@ void Thread::die_if_needed()
 void Thread::exit(void* exit_value)
 {
     VERIFY(Thread::current() == this);
-    m_join_condition.thread_did_exit(exit_value);
+    m_join_blocker_set.thread_did_exit(exit_value);
     set_should_die();
     u32 unlock_count;
     [[maybe_unused]] auto rc = unlock_process_if_locked(unlock_count);
@@ -410,8 +396,8 @@ void Thread::exit(void* exit_value)
 
 void Thread::yield_without_releasing_big_lock(VerifyLockNotHeld verify_lock_not_held)
 {
-    VERIFY(!g_scheduler_lock.own_lock());
-    VERIFY(verify_lock_not_held == VerifyLockNotHeld::No || !process().big_lock().own_lock());
+    VERIFY(!g_scheduler_lock.is_locked_by_current_processor());
+    VERIFY(verify_lock_not_held == VerifyLockNotHeld::No || !process().big_lock().is_locked_by_current_thread());
     // Disable interrupts here. This ensures we don't accidentally switch contexts twice
     InterruptDisabler disable;
     Scheduler::yield(); // flag a switch
@@ -422,7 +408,7 @@ void Thread::yield_without_releasing_big_lock(VerifyLockNotHeld verify_lock_not_
 
 void Thread::yield_and_release_relock_big_lock()
 {
-    VERIFY(!g_scheduler_lock.own_lock());
+    VERIFY(!g_scheduler_lock.is_locked_by_current_processor());
     // Disable interrupts here. This ensures we don't accidentally switch contexts twice
     InterruptDisabler disable;
     Scheduler::yield(); // flag a switch
@@ -486,7 +472,7 @@ StringView Thread::state_string() const
     case Thread::Stopped:
         return "Stopped"sv;
     case Thread::Blocked: {
-        ScopedSpinLock block_lock(m_block_lock);
+        SpinlockLocker block_lock(m_block_lock);
         if (m_blocking_lock)
             return "Mutex"sv;
         if (m_blocker)
@@ -503,10 +489,10 @@ void Thread::finalize()
     VERIFY(Thread::current() != this);
 
 #if LOCK_DEBUG
-    VERIFY(!m_lock.own_lock());
+    VERIFY(!m_lock.is_locked_by_current_processor());
     if (lock_count() > 0) {
         dbgln("Thread {} leaking {} Locks!", *this, lock_count());
-        ScopedSpinLock list_lock(m_holding_locks_lock);
+        SpinlockLocker list_lock(m_holding_locks_lock);
         for (auto& info : m_holding_locks_list) {
             const auto& location = info.lock_location;
             dbgln(" - Mutex: \"{}\" @ {} locked in function \"{}\" at \"{}:{}\" with a count of: {}", info.lock->name(), info.lock, location.function_name(), location.filename(), location.line_number(), info.count);
@@ -516,10 +502,10 @@ void Thread::finalize()
 #endif
 
     {
-        ScopedSpinLock lock(g_scheduler_lock);
+        SpinlockLocker lock(g_scheduler_lock);
         dbgln_if(THREAD_DEBUG, "Finalizing thread {}", *this);
         set_state(Thread::State::Dead);
-        m_join_condition.thread_finalizing();
+        m_join_blocker_set.thread_finalizing();
     }
 
     if (m_dump_backtrace_on_finalization)
@@ -541,7 +527,7 @@ void Thread::finalize_dying_threads()
     VERIFY(Thread::current() == g_finalizer);
     Vector<Thread*, 32> dying_threads;
     {
-        ScopedSpinLock lock(g_scheduler_lock);
+        SpinlockLocker lock(g_scheduler_lock);
         for_each_in_state(Thread::State::Dying, [&](Thread& thread) {
             if (thread.is_finalizable())
                 dying_threads.append(&thread);
@@ -574,7 +560,7 @@ void Thread::update_time_scheduled(u64 current_scheduler_time, bool is_kernel, b
             Scheduler::add_time_scheduled(delta, is_kernel);
 
             auto& total_time = is_kernel ? m_total_time_scheduled_kernel : m_total_time_scheduled_user;
-            ScopedSpinLock scheduler_lock(g_scheduler_lock);
+            SpinlockLocker scheduler_lock(g_scheduler_lock);
             total_time += delta;
         }
     }
@@ -600,31 +586,27 @@ void Thread::check_dispatch_pending_signal()
 {
     auto result = DispatchSignalResult::Continue;
     {
-        ScopedSpinLock scheduler_lock(g_scheduler_lock);
+        SpinlockLocker scheduler_lock(g_scheduler_lock);
         if (pending_signals_for_state()) {
-            ScopedSpinLock lock(m_lock);
+            SpinlockLocker lock(m_lock);
             result = dispatch_one_pending_signal();
         }
     }
 
-    switch (result) {
-    case DispatchSignalResult::Yield:
+    if (result == DispatchSignalResult::Yield) {
         yield_without_releasing_big_lock();
-        break;
-    default:
-        break;
     }
 }
 
 u32 Thread::pending_signals() const
 {
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     return pending_signals_for_state();
 }
 
 u32 Thread::pending_signals_for_state() const
 {
-    VERIFY(g_scheduler_lock.own_lock());
+    VERIFY(g_scheduler_lock.is_locked_by_current_processor());
     constexpr u32 stopped_signal_mask = (1 << (SIGCONT - 1)) | (1 << (SIGKILL - 1)) | (1 << (SIGTRAP - 1));
     if (is_handling_page_fault())
         return 0;
@@ -634,7 +616,7 @@ u32 Thread::pending_signals_for_state() const
 void Thread::send_signal(u8 signal, [[maybe_unused]] Process* sender)
 {
     VERIFY(signal < 32);
-    ScopedSpinLock scheduler_lock(g_scheduler_lock);
+    SpinlockLocker scheduler_lock(g_scheduler_lock);
 
     // FIXME: Figure out what to do for masked signals. Should we also ignore them here?
     if (should_ignore_signal(signal)) {
@@ -653,13 +635,13 @@ void Thread::send_signal(u8 signal, [[maybe_unused]] Process* sender)
     m_have_any_unmasked_pending_signals.store(pending_signals_for_state() & ~m_signal_mask, AK::memory_order_release);
 
     if (m_state == Stopped) {
-        ScopedSpinLock lock(m_lock);
+        SpinlockLocker lock(m_lock);
         if (pending_signals_for_state()) {
             dbgln_if(SIGNAL_DEBUG, "Signal: Resuming stopped {} to deliver signal {}", *this, signal);
             resume_from_stopped();
         }
     } else {
-        ScopedSpinLock block_lock(m_block_lock);
+        SpinlockLocker block_lock(m_block_lock);
         dbgln_if(SIGNAL_DEBUG, "Signal: Unblocking {} to deliver signal {}", *this, signal);
         unblock(signal);
     }
@@ -667,7 +649,7 @@ void Thread::send_signal(u8 signal, [[maybe_unused]] Process* sender)
 
 u32 Thread::update_signal_mask(u32 signal_mask)
 {
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     auto previous_signal_mask = m_signal_mask;
     m_signal_mask = signal_mask;
     m_have_any_unmasked_pending_signals.store(pending_signals_for_state() & ~m_signal_mask, AK::memory_order_release);
@@ -676,13 +658,13 @@ u32 Thread::update_signal_mask(u32 signal_mask)
 
 u32 Thread::signal_mask() const
 {
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     return m_signal_mask;
 }
 
 u32 Thread::signal_mask_block(sigset_t signal_set, bool block)
 {
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     auto previous_signal_mask = m_signal_mask;
     if (block)
         m_signal_mask &= ~signal_set;
@@ -694,7 +676,7 @@ u32 Thread::signal_mask_block(sigset_t signal_set, bool block)
 
 void Thread::clear_signals()
 {
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     m_signal_mask = 0;
     m_pending_signals = 0;
     m_have_any_unmasked_pending_signals.store(false, AK::memory_order_release);
@@ -712,7 +694,7 @@ void Thread::send_urgent_signal_to_self(u8 signal)
     VERIFY(Thread::current() == this);
     DispatchSignalResult result;
     {
-        ScopedSpinLock lock(g_scheduler_lock);
+        SpinlockLocker lock(g_scheduler_lock);
         result = dispatch_signal(signal);
     }
     if (result == DispatchSignalResult::Yield)
@@ -721,7 +703,7 @@ void Thread::send_urgent_signal_to_self(u8 signal)
 
 DispatchSignalResult Thread::dispatch_one_pending_signal()
 {
-    VERIFY(m_lock.own_lock());
+    VERIFY(m_lock.is_locked_by_current_processor());
     u32 signal_candidates = pending_signals_for_state() & ~m_signal_mask;
     if (signal_candidates == 0)
         return DispatchSignalResult::Continue;
@@ -738,8 +720,8 @@ DispatchSignalResult Thread::dispatch_one_pending_signal()
 DispatchSignalResult Thread::try_dispatch_one_pending_signal(u8 signal)
 {
     VERIFY(signal != 0);
-    ScopedSpinLock scheduler_lock(g_scheduler_lock);
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker scheduler_lock(g_scheduler_lock);
+    SpinlockLocker lock(m_lock);
     u32 signal_candidates = pending_signals_for_state() & ~m_signal_mask;
     if (!(signal_candidates & (1 << (signal - 1))))
         return DispatchSignalResult::Continue;
@@ -795,8 +777,9 @@ static DefaultSignalAction default_signal_action(u8 signal)
     case SIGTTIN:
     case SIGTTOU:
         return DefaultSignalAction::Stop;
+    default:
+        VERIFY_NOT_REACHED();
     }
-    VERIFY_NOT_REACHED();
 }
 
 bool Thread::should_ignore_signal(u8 signal) const
@@ -817,19 +800,20 @@ bool Thread::has_signal_handler(u8 signal) const
     return !action.handler_or_sigaction.is_null();
 }
 
-static bool push_value_on_user_stack(FlatPtr& stack, FlatPtr data)
+static void push_value_on_user_stack(FlatPtr& stack, FlatPtr data)
 {
     stack -= sizeof(FlatPtr);
-    return copy_to_user((FlatPtr*)stack, &data);
+    auto result = copy_to_user((FlatPtr*)stack, &data);
+    VERIFY(result.is_success());
 }
 
 void Thread::resume_from_stopped()
 {
     VERIFY(is_stopped());
     VERIFY(m_stop_state != State::Invalid);
-    VERIFY(g_scheduler_lock.own_lock());
+    VERIFY(g_scheduler_lock.is_locked_by_current_processor());
     if (m_stop_state == Blocked) {
-        ScopedSpinLock block_lock(m_block_lock);
+        SpinlockLocker block_lock(m_block_lock);
         if (m_blocker || m_blocking_lock) {
             // Hasn't been unblocked yet
             set_state(Blocked, 0);
@@ -845,7 +829,7 @@ void Thread::resume_from_stopped()
 DispatchSignalResult Thread::dispatch_signal(u8 signal)
 {
     VERIFY_INTERRUPTS_DISABLED();
-    VERIFY(g_scheduler_lock.own_lock());
+    VERIFY(g_scheduler_lock.is_locked_by_current_processor());
     VERIFY(signal > 0 && signal <= 32);
     VERIFY(process().is_user_process());
     VERIFY(this == Thread::current());
@@ -901,7 +885,7 @@ DispatchSignalResult Thread::dispatch_signal(u8 signal)
             set_state(Stopped, signal);
             return DispatchSignalResult::Yield;
         case DefaultSignalAction::DumpCore:
-            process.set_dump_core(true);
+            process.set_should_generate_coredump(true);
             process.for_each_thread([](auto& thread) {
                 thread.set_dump_backtrace_on_finalization();
             });
@@ -925,7 +909,7 @@ DispatchSignalResult Thread::dispatch_signal(u8 signal)
     VERIFY(previous_mode() == PreviousMode::UserMode);
     VERIFY(current_trap());
 
-    ProcessPagingScope paging_scope(m_process);
+    ScopedAddressSpaceSwitcher switcher(m_process);
 
     u32 old_signal_mask = m_signal_mask;
     u32 new_signal_mask = action.mask;
@@ -938,21 +922,12 @@ DispatchSignalResult Thread::dispatch_signal(u8 signal)
     m_have_any_unmasked_pending_signals.store(m_pending_signals & ~m_signal_mask, AK::memory_order_release);
 
     auto setup_stack = [&](RegisterState& state) {
-#if ARCH(I386)
-        FlatPtr stack = state.userspace_esp;
-        FlatPtr old_esp = stack;
-        FlatPtr ret_eip = state.eip;
-        FlatPtr ret_eflags = state.eflags;
+        FlatPtr stack = state.userspace_sp();
+        FlatPtr old_sp = stack;
+        FlatPtr ret_ip = state.ip();
+        FlatPtr ret_flags = state.flags();
 
-        dbgln_if(SIGNAL_DEBUG, "Setting up user stack to return to EIP {:p}, ESP {:p}", ret_eip, old_esp);
-#elif ARCH(X86_64)
-        FlatPtr stack = state.userspace_rsp;
-        FlatPtr old_rsp = stack;
-        FlatPtr ret_rip = state.rip;
-        FlatPtr ret_rflags = state.rflags;
-
-        dbgln_if(SIGNAL_DEBUG, "Setting up user stack to return to RIP {:p}, RSP {:p}", ret_rip, old_rsp);
-#endif
+        dbgln_if(SIGNAL_DEBUG, "Setting up user stack to return to IP {:p}, SP {:p}", ret_ip, old_sp);
 
 #if ARCH(I386)
         // Align the stack to 16 bytes.
@@ -963,14 +938,14 @@ DispatchSignalResult Thread::dispatch_signal(u8 signal)
         FlatPtr stack_alignment = (stack - 8) % 16;
         stack -= stack_alignment;
 
-        push_value_on_user_stack(stack, ret_eflags);
+        push_value_on_user_stack(stack, ret_flags);
 
-        push_value_on_user_stack(stack, ret_eip);
+        push_value_on_user_stack(stack, ret_ip);
         push_value_on_user_stack(stack, state.eax);
         push_value_on_user_stack(stack, state.ecx);
         push_value_on_user_stack(stack, state.edx);
         push_value_on_user_stack(stack, state.ebx);
-        push_value_on_user_stack(stack, old_esp);
+        push_value_on_user_stack(stack, old_sp);
         push_value_on_user_stack(stack, state.ebp);
         push_value_on_user_stack(stack, state.esi);
         push_value_on_user_stack(stack, state.edi);
@@ -984,9 +959,9 @@ DispatchSignalResult Thread::dispatch_signal(u8 signal)
         FlatPtr stack_alignment = stack % 16;
         stack -= 128 + stack_alignment;
 
-        push_value_on_user_stack(stack, ret_rflags);
+        push_value_on_user_stack(stack, ret_flags);
 
-        push_value_on_user_stack(stack, ret_rip);
+        push_value_on_user_stack(stack, ret_ip);
         push_value_on_user_stack(stack, state.r15);
         push_value_on_user_stack(stack, state.r14);
         push_value_on_user_stack(stack, state.r13);
@@ -999,7 +974,7 @@ DispatchSignalResult Thread::dispatch_signal(u8 signal)
         push_value_on_user_stack(stack, state.rcx);
         push_value_on_user_stack(stack, state.rdx);
         push_value_on_user_stack(stack, state.rbx);
-        push_value_on_user_stack(stack, old_rsp);
+        push_value_on_user_stack(stack, old_sp);
         push_value_on_user_stack(stack, state.rbp);
         push_value_on_user_stack(stack, state.rsi);
         push_value_on_user_stack(stack, state.rdi);
@@ -1014,11 +989,7 @@ DispatchSignalResult Thread::dispatch_signal(u8 signal)
 
         // We write back the adjusted stack value into the register state.
         // We have to do this because we can't just pass around a reference to a packed field, as it's UB.
-#if ARCH(I386)
-        state.userspace_esp = stack;
-#else
-        state.userspace_rsp = stack;
-#endif
+        state.set_userspace_sp(stack);
 
         VERIFY((stack % 16) == 0);
     };
@@ -1030,7 +1001,7 @@ DispatchSignalResult Thread::dispatch_signal(u8 signal)
     auto& regs = get_register_dump_from_stack();
     setup_stack(regs);
     auto signal_trampoline_addr = process.signal_trampoline().get();
-    regs.set_ip_reg(signal_trampoline_addr);
+    regs.set_ip(signal_trampoline_addr);
 
     dbgln_if(SIGNAL_DEBUG, "Thread in state '{}' has been primed with signal handler {:#04x}:{:p} to deliver {}", state_string(), m_regs.cs, m_regs.ip(), signal);
 
@@ -1042,7 +1013,7 @@ RegisterState& Thread::get_register_dump_from_stack()
     auto* trap = current_trap();
 
     // We should *always* have a trap. If we don't we're probably a kernel
-    // thread that hasn't been pre-empted. If we want to support this, we
+    // thread that hasn't been preempted. If we want to support this, we
     // need to capture the registers probably into m_regs and return it
     VERIFY(trap);
 
@@ -1054,12 +1025,9 @@ RegisterState& Thread::get_register_dump_from_stack()
     return *trap->regs;
 }
 
-RefPtr<Thread> Thread::clone(Process& process)
+KResultOr<NonnullRefPtr<Thread>> Thread::try_clone(Process& process)
 {
-    auto thread_or_error = Thread::try_create(process);
-    if (thread_or_error.is_error())
-        return {};
-    auto& clone = thread_or_error.value();
+    auto clone = TRY(Thread::try_create(process));
     auto signal_action_data_span = m_signal_action_data.span();
     signal_action_data_span.copy_to(clone->m_signal_action_data.span());
     clone->m_signal_mask = m_signal_mask;
@@ -1071,12 +1039,12 @@ RefPtr<Thread> Thread::clone(Process& process)
 void Thread::set_state(State new_state, u8 stop_signal)
 {
     State previous_state;
-    VERIFY(g_scheduler_lock.own_lock());
+    VERIFY(g_scheduler_lock.is_locked_by_current_processor());
     if (new_state == m_state)
         return;
 
     {
-        ScopedSpinLock thread_lock(m_lock);
+        SpinlockLocker thread_lock(m_lock);
         previous_state = m_state;
         if (previous_state == Invalid) {
             // If we were *just* created, we may have already pending signals
@@ -1186,8 +1154,8 @@ String Thread::backtrace()
 
     auto& process = const_cast<Process&>(this->process());
     auto stack_trace = Processor::capture_stack_trace(*this);
-    VERIFY(!g_scheduler_lock.own_lock());
-    ProcessPagingScope paging_scope(process);
+    VERIFY(!g_scheduler_lock.is_locked_by_current_processor());
+    ScopedAddressSpaceSwitcher switcher(process);
     for (auto& frame : stack_trace) {
         if (Memory::is_user_range(VirtualAddress(frame), sizeof(FlatPtr) * 2)) {
             recognized_symbols.append({ frame });
@@ -1220,18 +1188,13 @@ KResult Thread::make_thread_specific_region(Badge<Process>)
     if (!process().m_master_tls_region)
         return KSuccess;
 
-    auto range = process().address_space().allocate_range({}, thread_specific_region_size());
-    if (!range.has_value())
-        return ENOMEM;
+    auto range = TRY(process().address_space().try_allocate_range({}, thread_specific_region_size()));
+    auto* region = TRY(process().address_space().allocate_region(range, "Thread-specific", PROT_READ | PROT_WRITE));
 
-    auto region_or_error = process().address_space().allocate_region(range.value(), "Thread-specific", PROT_READ | PROT_WRITE);
-    if (region_or_error.is_error())
-        return region_or_error.error();
-
-    m_thread_specific_range = range.value();
+    m_thread_specific_range = range;
 
     SmapDisabler disabler;
-    auto* thread_specific_data = (ThreadSpecificData*)region_or_error.value()->vaddr().offset(align_up_to(process().m_master_tls_size, thread_specific_region_alignment())).as_ptr();
+    auto* thread_specific_data = (ThreadSpecificData*)region->vaddr().offset(align_up_to(process().m_master_tls_size, thread_specific_region_alignment())).as_ptr();
     auto* thread_local_storage = (u8*)((u8*)thread_specific_data) - align_up_to(process().m_master_tls_size, process().m_master_tls_alignment);
     m_thread_specific_data = VirtualAddress(thread_specific_data);
     thread_specific_data->self = thread_specific_data;
@@ -1255,12 +1218,62 @@ RefPtr<Thread> Thread::from_tid(ThreadID tid)
 
 void Thread::reset_fpu_state()
 {
-    memcpy(&m_fpu_state, &Processor::current().clean_fpu_state(), sizeof(FPUState));
+    memcpy(&m_fpu_state, &Processor::clean_fpu_state(), sizeof(FPUState));
 }
 
 bool Thread::should_be_stopped() const
 {
     return process().is_stopped();
+}
+
+void Thread::track_lock_acquire(LockRank rank)
+{
+    // Nothing to do for locks without a rank.
+    if (rank == LockRank::None)
+        return;
+
+    if (m_lock_rank_mask != LockRank::None) {
+        // Verify we are only attempting to take a lock of a higher rank.
+        VERIFY(m_lock_rank_mask > rank);
+    }
+
+    m_lock_rank_mask |= rank;
+}
+
+void Thread::track_lock_release(LockRank rank)
+{
+    // Nothing to do for locks without a rank.
+    if (rank == LockRank::None)
+        return;
+
+    using PrimitiveType = UnderlyingType<LockRank>;
+
+    // The rank value from the caller should only contain a single bit, otherwise
+    // we are disabling the tracking for multiple locks at once which will corrupt
+    // the lock tracking mask, and we will assert somewhere else.
+    auto rank_is_a_single_bit = [](auto rank_enum) -> bool {
+        auto rank = static_cast<PrimitiveType>(rank_enum);
+        auto rank_without_least_significant_bit = rank - 1;
+        return (rank & rank_without_least_significant_bit) == 0;
+    };
+
+    // We can't release locks out of order, as that would violate the ranking.
+    // This is validated by toggling the least significant bit of the mask, and
+    // then bit wise or-ing the rank we are trying to release with the resulting
+    // mask. If the rank we are releasing is truly the highest rank then the mask
+    // we get back will be equal to the current mask of stored on the thread.
+    auto rank_is_in_order = [](auto mask_enum, auto rank_enum) -> bool {
+        auto mask = static_cast<PrimitiveType>(mask_enum);
+        auto rank = static_cast<PrimitiveType>(rank_enum);
+        auto mask_without_least_significant_bit = mask - 1;
+        return ((mask & mask_without_least_significant_bit) | rank) == mask;
+    };
+
+    VERIFY(has_flag(m_lock_rank_mask, rank));
+    VERIFY(rank_is_a_single_bit(rank));
+    VERIFY(rank_is_in_order(m_lock_rank_mask, rank));
+
+    m_lock_rank_mask ^= rank;
 }
 
 }

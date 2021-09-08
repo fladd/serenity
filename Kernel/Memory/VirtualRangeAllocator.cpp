@@ -25,7 +25,7 @@ void VirtualRangeAllocator::initialize_with_range(VirtualAddress base, size_t si
 
 void VirtualRangeAllocator::initialize_from_parent(VirtualRangeAllocator const& parent_allocator)
 {
-    ScopedSpinLock lock(parent_allocator.m_lock);
+    SpinlockLocker lock(parent_allocator.m_lock);
     m_total_range = parent_allocator.m_total_range;
     m_available_ranges.clear();
     for (auto it = parent_allocator.m_available_ranges.begin(); !it.is_end(); ++it) {
@@ -56,10 +56,10 @@ void VirtualRangeAllocator::carve_at_iterator(auto& it, VirtualRange const& rang
     }
 }
 
-Optional<VirtualRange> VirtualRangeAllocator::allocate_randomized(size_t size, size_t alignment)
+KResultOr<VirtualRange> VirtualRangeAllocator::try_allocate_randomized(size_t size, size_t alignment)
 {
     if (!size)
-        return {};
+        return EINVAL;
 
     VERIFY((size % PAGE_SIZE) == 0);
     VERIFY((alignment % PAGE_SIZE) == 0);
@@ -72,18 +72,18 @@ Optional<VirtualRange> VirtualRangeAllocator::allocate_randomized(size_t size, s
         if (!m_total_range.contains(random_address, size))
             continue;
 
-        auto range = allocate_specific(random_address, size);
-        if (range.has_value())
-            return range;
+        auto range_or_error = try_allocate_specific(random_address, size);
+        if (!range_or_error.is_error())
+            return range_or_error.release_value();
     }
 
-    return allocate_anywhere(size, alignment);
+    return try_allocate_anywhere(size, alignment);
 }
 
-Optional<VirtualRange> VirtualRangeAllocator::allocate_anywhere(size_t size, size_t alignment)
+KResultOr<VirtualRange> VirtualRangeAllocator::try_allocate_anywhere(size_t size, size_t alignment)
 {
     if (!size)
-        return {};
+        return EINVAL;
 
     VERIFY((size % PAGE_SIZE) == 0);
     VERIFY((alignment % PAGE_SIZE) == 0);
@@ -91,7 +91,7 @@ Optional<VirtualRange> VirtualRangeAllocator::allocate_anywhere(size_t size, siz
 #ifdef VM_GUARD_PAGES
     // NOTE: We pad VM allocations with a guard page on each side.
     if (Checked<size_t>::addition_would_overflow(size, PAGE_SIZE * 2))
-        return {};
+        return EOVERFLOW;
 
     size_t effective_size = size + PAGE_SIZE * 2;
     size_t offset_from_effective_base = PAGE_SIZE;
@@ -101,9 +101,9 @@ Optional<VirtualRange> VirtualRangeAllocator::allocate_anywhere(size_t size, siz
 #endif
 
     if (Checked<size_t>::addition_would_overflow(effective_size, alignment))
-        return {};
+        return EOVERFLOW;
 
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
 
     for (auto it = m_available_ranges.begin(); !it.is_end(); ++it) {
         auto& available_range = *it;
@@ -126,23 +126,22 @@ Optional<VirtualRange> VirtualRangeAllocator::allocate_anywhere(size_t size, siz
         return allocated_range;
     }
     dmesgln("VirtualRangeAllocator: Failed to allocate anywhere: size={}, alignment={}", size, alignment);
-    return {};
+    return ENOMEM;
 }
 
-Optional<VirtualRange> VirtualRangeAllocator::allocate_specific(VirtualAddress base, size_t size)
+KResultOr<VirtualRange> VirtualRangeAllocator::try_allocate_specific(VirtualAddress base, size_t size)
 {
     if (!size)
-        return {};
+        return EINVAL;
 
     VERIFY(base.is_page_aligned());
     VERIFY((size % PAGE_SIZE) == 0);
 
     VirtualRange const allocated_range(base, size);
-    if (!m_total_range.contains(allocated_range)) {
-        return {};
-    }
+    if (!m_total_range.contains(allocated_range))
+        return ENOMEM;
 
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     for (auto it = m_available_ranges.begin(); !it.is_end(); ++it) {
         auto& available_range = *it;
         if (!available_range.contains(base, size))
@@ -154,12 +153,12 @@ Optional<VirtualRange> VirtualRangeAllocator::allocate_specific(VirtualAddress b
         carve_at_iterator(it, allocated_range);
         return allocated_range;
     }
-    return {};
+    return ENOMEM;
 }
 
 void VirtualRangeAllocator::deallocate(VirtualRange const& range)
 {
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     VERIFY(m_total_range.contains(range));
     VERIFY(range.size());
     VERIFY((range.size() % PAGE_SIZE) == 0);

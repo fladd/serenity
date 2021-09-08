@@ -23,12 +23,13 @@ SysFSUSBDeviceInformation::~SysFSUSBDeviceInformation()
 {
 }
 
-KResultOr<size_t> SysFSUSBDeviceInformation::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, FileDescription*) const
+KResult SysFSUSBDeviceInformation::try_generate(KBufferBuilder& builder)
 {
-    KBufferBuilder builder;
+    VERIFY(m_lock.is_locked());
     JsonArraySerializer array { builder };
 
     auto obj = array.add_object();
+    obj.add("device_address", m_device->address());
     obj.add("usb_spec_compliance_bcd", m_device->device_descriptor().usb_spec_compliance_bcd);
     obj.add("device_class", m_device->device_descriptor().device_class);
     obj.add("device_sub_class", m_device->device_descriptor().device_sub_class);
@@ -43,21 +44,56 @@ KResultOr<size_t> SysFSUSBDeviceInformation::read_bytes(off_t offset, size_t cou
     obj.add("num_configurations", m_device->device_descriptor().num_configurations);
     obj.finish();
     array.finish();
+    return KSuccess;
+}
 
-    auto data = builder.build();
-    if (!data)
+KResult SysFSUSBDeviceInformation::refresh_data(OpenFileDescription& description) const
+{
+    MutexLocker lock(m_lock);
+    auto& cached_data = description.data();
+    if (!cached_data) {
+        cached_data = TRY(adopt_nonnull_own_or_enomem(new (nothrow) SysFSInodeData));
+    }
+    auto builder = TRY(KBufferBuilder::try_create());
+    TRY(const_cast<SysFSUSBDeviceInformation&>(*this).try_generate(builder));
+    auto& typed_cached_data = static_cast<SysFSInodeData&>(*cached_data);
+    typed_cached_data.buffer = builder.build();
+    if (!typed_cached_data.buffer)
         return ENOMEM;
+    return KSuccess;
+}
 
-    ssize_t nread = min(static_cast<off_t>(data->size() - offset), static_cast<off_t>(count));
-    if (!buffer.write(data->data() + offset, nread))
-        return EFAULT;
+KResultOr<size_t> SysFSUSBDeviceInformation::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, OpenFileDescription* description) const
+{
+    dbgln_if(PROCFS_DEBUG, "SysFSUSBDeviceInformation @ {}: read_bytes offset: {} count: {}", name(), offset, count);
 
+    VERIFY(offset >= 0);
+    VERIFY(buffer.user_or_kernel_ptr());
+
+    if (!description)
+        return KResult(EIO);
+
+    MutexLocker locker(m_lock);
+
+    if (!description->data()) {
+        dbgln("SysFSUSBDeviceInformation: Do not have cached data!");
+        return KResult(EIO);
+    }
+
+    auto& typed_cached_data = static_cast<SysFSInodeData&>(*description->data());
+    auto& data_buffer = typed_cached_data.buffer;
+
+    if (!data_buffer || (size_t)offset >= data_buffer->size())
+        return 0;
+
+    ssize_t nread = min(static_cast<off_t>(data_buffer->size() - offset), static_cast<off_t>(count));
+    TRY(buffer.write(data_buffer->data() + offset, nread));
     return nread;
 }
 
 KResult SysFSUSBBusDirectory::traverse_as_directory(unsigned fsid, Function<bool(FileSystem::DirectoryEntryView const&)> callback) const
 {
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     // Note: if the parent directory is null, it means something bad happened as this should not happen for the USB directory.
     VERIFY(m_parent_directory);
     callback({ ".", { fsid, component_index() }, 0 });
@@ -72,7 +108,7 @@ KResult SysFSUSBBusDirectory::traverse_as_directory(unsigned fsid, Function<bool
 
 RefPtr<SysFSComponent> SysFSUSBBusDirectory::lookup(StringView name)
 {
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     for (auto& device_node : m_device_nodes) {
         if (device_node.name() == name) {
             return device_node;
@@ -93,7 +129,7 @@ RefPtr<SysFSUSBDeviceInformation> SysFSUSBBusDirectory::device_node_for(USB::Dev
 
 void SysFSUSBBusDirectory::plug(USB::Device& new_device)
 {
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     auto device_node = device_node_for(new_device);
     VERIFY(!device_node);
     m_device_nodes.append(SysFSUSBDeviceInformation::create(new_device));
@@ -101,7 +137,7 @@ void SysFSUSBBusDirectory::plug(USB::Device& new_device)
 
 void SysFSUSBBusDirectory::unplug(USB::Device& deleted_device)
 {
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     auto device_node = device_node_for(deleted_device);
     VERIFY(device_node);
     device_node->m_list_node.remove();

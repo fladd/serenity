@@ -14,9 +14,9 @@
 #include <AK/Traits.h>
 #include <AK/Types.h>
 #ifdef KERNEL
+#    include <Kernel/API/KResult.h>
 #    include <Kernel/Arch/x86/Processor.h>
 #    include <Kernel/Arch/x86/ScopedCritical.h>
-#    include <Kernel/KResult.h>
 #endif
 
 namespace AK {
@@ -154,18 +154,18 @@ public:
     {
     }
     template<typename U>
-    ALWAYS_INLINE RefPtr(const NonnullRefPtr<U>& other)
+    ALWAYS_INLINE RefPtr(const NonnullRefPtr<U>& other) requires(IsConvertible<U*, T*>)
         : m_bits(PtrTraits::as_bits(const_cast<U*>(other.add_ref())))
     {
     }
     template<typename U>
-    ALWAYS_INLINE RefPtr(NonnullRefPtr<U>&& other)
+    ALWAYS_INLINE RefPtr(NonnullRefPtr<U>&& other) requires(IsConvertible<U*, T*>)
         : m_bits(PtrTraits::as_bits(&other.leak_ref()))
     {
         VERIFY(!is_null());
     }
     template<typename U, typename P = RefPtrTraits<U>>
-    RefPtr(RefPtr<U, P>&& other)
+    RefPtr(RefPtr<U, P>&& other) requires(IsConvertible<U*, T*>)
         : m_bits(PtrTraits::template convert_from<U, P>(other.leak_ref_raw()))
     {
     }
@@ -174,7 +174,7 @@ public:
     {
     }
     template<typename U, typename P = RefPtrTraits<U>>
-    RefPtr(const RefPtr<U, P>& other)
+    RefPtr(const RefPtr<U, P>& other) requires(IsConvertible<U*, T*>)
         : m_bits(other.add_ref_raw())
     {
     }
@@ -182,10 +182,7 @@ public:
     {
         clear();
 #ifdef SANITIZE_PTRS
-        if constexpr (sizeof(T*) == 8)
-            m_bits.store(0xe0e0e0e0e0e0e0e0, AK::MemoryOrder::memory_order_relaxed);
-        else
-            m_bits.store(0xe0e0e0e0, AK::MemoryOrder::memory_order_relaxed);
+        m_bits.store(explode_byte(0xe0), AK::MemoryOrder::memory_order_relaxed);
 #endif
     }
 
@@ -206,7 +203,7 @@ public:
     }
 
     template<typename U, typename P = RefPtrTraits<U>>
-    void swap(RefPtr<U, P>& other)
+    void swap(RefPtr<U, P>& other) requires(IsConvertible<U*, T*>)
     {
         // NOTE: swap is not atomic!
         FlatPtr other_bits = P::exchange(other.m_bits, P::default_null_value);
@@ -222,14 +219,14 @@ public:
     }
 
     template<typename U, typename P = RefPtrTraits<U>>
-    ALWAYS_INLINE RefPtr& operator=(RefPtr<U, P>&& other)
+    ALWAYS_INLINE RefPtr& operator=(RefPtr<U, P>&& other) requires(IsConvertible<U*, T*>)
     {
         assign_raw(PtrTraits::template convert_from<U, P>(other.leak_ref_raw()));
         return *this;
     }
 
     template<typename U>
-    ALWAYS_INLINE RefPtr& operator=(NonnullRefPtr<U>&& other)
+    ALWAYS_INLINE RefPtr& operator=(NonnullRefPtr<U>&& other) requires(IsConvertible<U*, T*>)
     {
         assign_raw(PtrTraits::as_bits(&other.leak_ref()));
         return *this;
@@ -242,7 +239,7 @@ public:
     }
 
     template<typename U>
-    ALWAYS_INLINE RefPtr& operator=(const NonnullRefPtr<U>& other)
+    ALWAYS_INLINE RefPtr& operator=(const NonnullRefPtr<U>& other) requires(IsConvertible<U*, T*>)
     {
         assign_raw(PtrTraits::as_bits(other.add_ref()));
         return *this;
@@ -256,7 +253,7 @@ public:
     }
 
     template<typename U>
-    ALWAYS_INLINE RefPtr& operator=(const RefPtr<U>& other)
+    ALWAYS_INLINE RefPtr& operator=(const RefPtr<U>& other) requires(IsConvertible<U*, T*>)
     {
         assign_raw(other.add_ref_raw());
         return *this;
@@ -473,7 +470,7 @@ inline RefPtr<T> static_ptr_cast(const RefPtr<U>& ptr)
 }
 
 template<typename T, typename PtrTraitsT, typename U, typename PtrTraitsU>
-inline void swap(RefPtr<T, PtrTraitsT>& a, RefPtr<U, PtrTraitsU>& b)
+inline void swap(RefPtr<T, PtrTraitsT>& a, RefPtr<U, PtrTraitsU>& b) requires(IsConvertible<U*, T*>)
 {
     a.swap(b);
 }
@@ -487,14 +484,14 @@ inline RefPtr<T> adopt_ref_if_nonnull(T* object)
 }
 
 template<typename T, class... Args>
-requires(IsConstructible<T, Args...>) inline RefPtr<T> try_create(Args&&... args)
+requires(IsConstructible<T, Args...>) inline RefPtr<T> try_make_ref_counted(Args&&... args)
 {
     return adopt_ref_if_nonnull(new (nothrow) T(forward<Args>(args)...));
 }
 
 // FIXME: Remove once P0960R3 is available in Clang.
 template<typename T, class... Args>
-inline RefPtr<T> try_create(Args&&... args)
+inline RefPtr<T> try_make_ref_counted(Args&&... args)
 {
     return adopt_ref_if_nonnull(new (nothrow) T { forward<Args>(args)... });
 }
@@ -515,7 +512,7 @@ inline Kernel::KResultOr<NonnullRefPtr<T>> adopt_nonnull_ref_or_enomem(T* object
 using AK::adopt_ref_if_nonnull;
 using AK::RefPtr;
 using AK::static_ptr_cast;
-using AK::try_create;
+using AK::try_make_ref_counted;
 
 #ifdef KERNEL
 using AK::adopt_nonnull_ref_or_enomem;

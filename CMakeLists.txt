@@ -45,10 +45,11 @@ option(BUILD_LAGOM "Build parts of the system targeting the host OS for fuzzing/
 option(ENABLE_KERNEL_LTO "Build the kernel with link-time optimization" OFF)
 option(USE_CLANG_TOOLCHAIN "Build the kernel with the experimental Clang toolchain" OFF)
 
-include(Meta/CMake/wasm_spec_tests.cmake)
+# Meta target to run all code-gen steps in the build.
+add_custom_target(all_generated)
 
 add_custom_target(run
-    COMMAND ${CMAKE_COMMAND} -E env "SERENITY_ARCH=${SERENITY_ARCH}" ${CMAKE_SOURCE_DIR}/Meta/run.sh
+    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_ARCH=${SERENITY_ARCH}" "${SerenityOS_SOURCE_DIR}/Meta/run.sh"
     USES_TERMINAL
 )
 
@@ -72,40 +73,40 @@ set(GCC_VERSION 11.2.0)
 set(LLVM_VERSION 12.0.1)
 
 add_custom_target(qemu-image
-    COMMAND ${CMAKE_COMMAND} -E env "SERENITY_SOURCE_DIR=${CMAKE_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "USE_CLANG_TOOLCHAIN=$<BOOL:${USE_CLANG_TOOLCHAIN}>" "LLVM_VERSION=${LLVM_VERSION}" ${CMAKE_SOURCE_DIR}/Meta/build-image-qemu.sh
-    BYPRODUCTS ${CMAKE_BINARY_DIR}/_disk_image
+    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "USE_CLANG_TOOLCHAIN=$<BOOL:${USE_CLANG_TOOLCHAIN}>" "LLVM_VERSION=${LLVM_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-qemu.sh"
+    BYPRODUCTS "${CMAKE_BINARY_DIR}/_disk_image"
     USES_TERMINAL
 )
 add_custom_target(grub-image
-    COMMAND ${CMAKE_COMMAND} -E env "SERENITY_SOURCE_DIR=${CMAKE_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "USE_CLANG_TOOLCHAIN=$<BOOL:${USE_CLANG_TOOLCHAIN}>" "LLVM_VERSION=${LLVM_VERSION}" ${CMAKE_SOURCE_DIR}/Meta/build-image-grub.sh
+    COMMAND ${CMAKE_COMMAND} -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "USE_CLANG_TOOLCHAIN=$<BOOL:${USE_CLANG_TOOLCHAIN}>" "LLVM_VERSION=${LLVM_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-grub.sh"
     BYPRODUCTS ${CMAKE_BINARY_DIR}/grub_disk_image
     USES_TERMINAL
 )
 add_custom_target(extlinux-image
-    COMMAND ${CMAKE_COMMAND} -E env "SERENITY_SOURCE_DIR=${CMAKE_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "USE_CLANG_TOOLCHAIN=$<BOOL:${USE_CLANG_TOOLCHAIN}>" "LLVM_VERSION=${LLVM_VERSION}" ${CMAKE_SOURCE_DIR}/Meta/build-image-extlinux.sh
-    BYPRODUCTS ${CMAKE_BINARY_DIR}/extlinux_disk_image
+    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "USE_CLANG_TOOLCHAIN=$<BOOL:${USE_CLANG_TOOLCHAIN}>" "LLVM_VERSION=${LLVM_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-extlinux.sh"
+    BYPRODUCTS "${CMAKE_BINARY_DIR}/extlinux_disk_image"
     USES_TERMINAL
 )
 
 add_custom_target(lint-shell-scripts
-    COMMAND ${CMAKE_SOURCE_DIR}/Meta/lint-shell-scripts.sh
+    COMMAND "${SerenityOS_SOURCE_DIR}/Meta/lint-shell-scripts.sh"
     USES_TERMINAL
 )
 add_custom_target(check-style
-    COMMAND ${CMAKE_SOURCE_DIR}/Meta/check-style.sh
+    COMMAND "${SerenityOS_SOURCE_DIR}/Meta/check-style.sh"
     USES_TERMINAL
 )
 
 add_custom_target(install-ports
-    COMMAND ${CMAKE_COMMAND} -E env "SERENITY_SOURCE_DIR=${CMAKE_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" ${CMAKE_SOURCE_DIR}/Meta/install-ports-tree.sh
+    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "${SerenityOS_SOURCE_DIR}/Meta/install-ports-tree.sh"
     USES_TERMINAL
 )
 
 add_custom_target(configure-components
-    COMMAND ConfigureComponents
-    DEPENDS ConfigureComponents
+    COMMAND "$<TARGET_FILE:ConfigureComponents>"
     USES_TERMINAL
 )
+add_dependencies(configure-components ConfigureComponents)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -137,7 +138,7 @@ if (ENABLE_ALL_DEBUG_FACILITIES)
 endif()
 
 if (ENABLE_ALL_THE_DEBUG_MACROS)
-    include(${CMAKE_SOURCE_DIR}/Meta/CMake/all_the_debug_macros.cmake)
+    include("${SerenityOS_SOURCE_DIR}/Meta/CMake/all_the_debug_macros.cmake")
 endif(ENABLE_ALL_THE_DEBUG_MACROS)
 
 configure_file(AK/Debug.h.in AK/Debug.h @ONLY)
@@ -147,24 +148,17 @@ include_directories(Userland/Libraries)
 include_directories(.)
 include_directories(${CMAKE_BINARY_DIR})
 
-set(write_if_different ${CMAKE_SOURCE_DIR}/Meta/write-only-on-difference.sh)
-
 add_subdirectory(Meta/Lagom)
-
-if (ENABLE_UNDEFINED_SANITIZER)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined")
-endif()
-
-add_subdirectory(Userland/DevTools/IPCCompiler)
-add_subdirectory(Userland/DevTools/StateMachineGenerator)
-add_subdirectory(Userland/Libraries/LibUnicode/CodeGenerators)
-add_subdirectory(Userland/Libraries/LibWeb/CodeGenerators)
-add_subdirectory(Meta/CMake/ConfigureComponents)
 
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
     set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
 endif()
+
+# FIXME: With cmake 3.18, we can change unzip/untar steps to use
+#        file(ARCHIVE_EXTRACT) instead
+find_program(UNZIP unzip REQUIRED)
+find_program(TAR tar REQUIRED)
 
 unset(CMAKE_SYSROOT)
 set(CMAKE_STAGING_PREFIX ${CMAKE_BINARY_DIR}/Root)
@@ -189,7 +183,7 @@ elseif(USE_CLANG_TOOLCHAIN)
     # FIXME: Persuade LLVM maintainers to add `--update-section` to llvm-objcopy, as it's required for the kernel symbol map.
     set(CMAKE_OBJCOPY ${TOOLCHAIN_ROOT}/binutils/bin/${SERENITY_ARCH}-pc-serenity-objcopy)
 else()
-    set(TOOLCHAIN_ROOT ${CMAKE_SOURCE_DIR}/Toolchain/Local/${SERENITY_ARCH}/)
+    set(TOOLCHAIN_ROOT ${SerenityOS_SOURCE_DIR}/Toolchain/Local/${SERENITY_ARCH}/)
     set(TOOLCHAIN_PATH ${TOOLCHAIN_ROOT}/bin)
     set(TOOLCHAIN_PREFIX ${TOOLCHAIN_PATH}/${SERENITY_ARCH}-pc-serenity-)
 
@@ -223,8 +217,8 @@ endforeach()
 
 set(CMAKE_INSTALL_NAME_TOOL "")
 set(CMAKE_SHARED_LIBRARY_SUFFIX ".so")
-set(CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS "-shared -Wl,--hash-style=gnu,-z,relro,-z,now,-z,noexecstack")
-set(CMAKE_CXX_LINK_FLAGS "-Wl,--hash-style=gnu,-z,relro,-z,now,-z,noexecstack,-z,max-page-size=0x1000")
+set(CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS "-shared -Wl,--hash-style=gnu,-z,relro,-z,now,-z,noexecstack,-z,separate-code")
+set(CMAKE_CXX_LINK_FLAGS "-Wl,--hash-style=gnu,-z,relro,-z,now,-z,noexecstack,-z,max-page-size=0x1000,-z,separate-code")
 
 # We disable it completely because it makes cmake very spammy.
 # This will need to be revisited when the Loader supports RPATH/RUN_PATH.
@@ -263,7 +257,7 @@ add_compile_options(-Wno-unused-command-line-argument)
 add_compile_options(-Wwrite-strings)
 add_compile_options(-Wno-maybe-uninitialized)
 
-add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=.)
+add_compile_options(-ffile-prefix-map=${SerenityOS_SOURCE_DIR}=.)
 add_compile_options(-fno-exceptions)
 add_compile_options(-ftls-model=initial-exec)
 add_compile_options(-fno-semantic-interposition)
@@ -303,7 +297,7 @@ add_link_options(LINKER:-z,text)
 
 if("${SERENITY_ARCH}" STREQUAL "i686")
     add_compile_options(-march=i686)
-else()
+elseif("${SERENITY_ARCH}" STREQUAL "x86_64")
     add_compile_options(-march=x86-64)
 endif()
 
@@ -318,6 +312,8 @@ endif()
 add_link_options(--sysroot ${CMAKE_BINARY_DIR}/Root)
 add_link_options(-Wno-unused-command-line-argument)
 
+include_directories(.)
+include_directories(Userland/Libraries)
 include_directories(Userland/Libraries/LibC)
 include_directories(Userland/Libraries/LibCrypt)
 include_directories(Userland/Libraries/LibM)
@@ -332,17 +328,16 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR}/Userland)
 
 # FIXME: vptr sanitizing requires.. intense ABI wrangling of std::type_info
 #     And would be better served by porting ubsan_type_hash_itanium.cpp from compiler-rt
-# We don't set this along with the original fsanitize=undefined because for host tools, we can rely on
-# the host's libubsan to provide the ABI-specific vptr type cache.
-# This is not a problem for the Kernel, because it does not have RTTI enabled :^)
 if (ENABLE_UNDEFINED_SANITIZER)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-sanitize=vptr")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined -fno-sanitize=vptr")
 endif()
+
+include(Meta/CMake/wasm_spec_tests.cmake)
 
 add_custom_target(components ALL)
 option(BUILD_EVERYTHING "Build all optional components" ON)
 
-include(${CMAKE_SOURCE_DIR}/Meta/CMake/utils.cmake)
+include(Meta/CMake/utils.cmake)
 
 serenity_component(
     Tests
@@ -351,8 +346,10 @@ serenity_component(
 
 add_subdirectory(AK)
 add_subdirectory(Kernel)
-add_subdirectory(Userland)
-add_subdirectory(Tests)
+if(NOT "${SERENITY_ARCH}" STREQUAL "aarch64")
+    add_subdirectory(Userland)
+    add_subdirectory(Tests)
+endif()
 
 export_components("${CMAKE_BINARY_DIR}/components.ini")
 

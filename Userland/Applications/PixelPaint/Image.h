@@ -1,5 +1,7 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Mustafa Quraish <mustafa@cs.toronto.edu>
+ * Copyright (c) 2021, Tobias Christiansen <tobyase@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,6 +9,7 @@
 #pragma once
 
 #include <AK/HashTable.h>
+#include <AK/JsonObjectSerializer.h>
 #include <AK/NonnullRefPtrVector.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
@@ -15,6 +18,7 @@
 #include <LibCore/File.h>
 #include <LibGUI/Command.h>
 #include <LibGUI/Forward.h>
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/Size.h>
@@ -22,6 +26,7 @@
 namespace PixelPaint {
 
 class Layer;
+class Selection;
 
 class ImageClient {
 public:
@@ -31,6 +36,7 @@ public:
     virtual void image_did_modify_layer_bitmap(size_t) { }
     virtual void image_did_modify_layer_stack() { }
     virtual void image_did_change(Gfx::IntRect const&) { }
+    virtual void image_did_change_rect(Gfx::IntRect const&) { }
     virtual void image_select_layer(Layer*) { }
     virtual void image_did_change_title(String const&) { }
 
@@ -41,12 +47,14 @@ protected:
 class Image : public RefCounted<Image> {
 public:
     static RefPtr<Image> try_create_with_size(Gfx::IntSize const&);
-    static Result<NonnullRefPtr<Image>, String> try_create_from_fd_and_close(int fd, String const& file_path);
-    static Result<NonnullRefPtr<Image>, String> try_create_from_path(String const& file_path);
+    static Result<NonnullRefPtr<Image>, String> try_create_from_pixel_paint_json(JsonObject const&);
     static RefPtr<Image> try_create_from_bitmap(NonnullRefPtr<Gfx::Bitmap>);
+
+    static RefPtr<Gfx::Bitmap> try_decode_bitmap(const ReadonlyBytes& bitmap_data);
 
     // This generates a new Bitmap with the final image (all layers composed according to their attributes.)
     RefPtr<Gfx::Bitmap> try_compose_bitmap(Gfx::BitmapFormat format) const;
+    RefPtr<Gfx::Bitmap> try_copy_bitmap(Selection const&) const;
 
     size_t layer_count() const { return m_layers.size(); }
     Layer const& layer(size_t index) const { return m_layers.at(index); }
@@ -60,7 +68,8 @@ public:
     void restore_snapshot(Image const&);
 
     void paint_into(GUI::Painter&, Gfx::IntRect const& dest_rect) const;
-    Result<void, String> write_to_fd_and_close(int fd) const;
+
+    void serialize_as_json(JsonObjectSerializer<StringBuilder>& json) const;
     Result<void, String> write_to_file(String const& file_path) const;
     Result<void, String> export_bmp_to_fd_and_close(int fd, bool preserve_alpha_channel);
     Result<void, String> export_png_to_fd_and_close(int fd, bool preserve_alpha_channel);
@@ -74,6 +83,7 @@ public:
     void select_layer(Layer*);
     void flatten_all_layers();
     void merge_visible_layers();
+    void merge_active_layer_down(Layer& layer);
 
     void add_client(ImageClient&);
     void remove_client(ImageClient&);
@@ -89,14 +99,15 @@ public:
     String const& title() const { return m_title; }
     void set_title(String);
 
+    void flip(Gfx::Orientation orientation);
+    void rotate(Gfx::RotationDirection direction);
+    void crop(Gfx::IntRect const& rect);
+
 private:
     explicit Image(Gfx::IntSize const&);
 
-    static Result<NonnullRefPtr<Image>, String> try_create_from_pixel_paint_fd(int fd, String const& file_path);
-    static Result<NonnullRefPtr<Image>, String> try_create_from_pixel_paint_path(String const& file_path);
-    static Result<NonnullRefPtr<Image>, String> try_create_from_pixel_paint_file(Core::File& file, String const& file_path);
-
     void did_change(Gfx::IntRect const& modified_rect = {});
+    void did_change_rect(Gfx::IntRect const& modified_rect = {});
     void did_modify_layer_stack();
 
     String m_path;

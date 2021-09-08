@@ -11,14 +11,14 @@ namespace Kernel {
 
 AsyncDeviceRequest::AsyncDeviceRequest(Device& device)
     : m_device(device)
-    , m_process(*Process::current())
+    , m_process(Process::current())
 {
 }
 
 AsyncDeviceRequest::~AsyncDeviceRequest()
 {
     {
-        ScopedSpinLock lock(m_lock);
+        SpinlockLocker lock(m_lock);
         VERIFY(is_completed_result(m_result));
         VERIFY(m_sub_requests_pending.is_empty());
     }
@@ -63,7 +63,7 @@ auto AsyncDeviceRequest::wait(Time* timeout) -> RequestWaitResult
 
 auto AsyncDeviceRequest::get_request_result() const -> RequestResult
 {
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     return m_result;
 }
 
@@ -74,7 +74,7 @@ void AsyncDeviceRequest::add_sub_request(NonnullRefPtr<AsyncDeviceRequest> sub_r
     VERIFY(sub_request->m_parent_request == nullptr);
     sub_request->m_parent_request = this;
 
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     VERIFY(!is_completed_result(m_result));
     m_sub_requests_pending.append(sub_request);
     if (m_result == Started)
@@ -85,7 +85,7 @@ void AsyncDeviceRequest::sub_request_finished(AsyncDeviceRequest& sub_request)
 {
     bool all_completed;
     {
-        ScopedSpinLock lock(m_lock);
+        SpinlockLocker lock(m_lock);
         VERIFY(m_result == Started);
 
         if (m_sub_requests_pending.contains(sub_request)) {
@@ -131,11 +131,11 @@ void AsyncDeviceRequest::complete(RequestResult result)
     VERIFY(result == Success || result == Failure || result == MemoryFault);
     ScopedCritical critical;
     {
-        ScopedSpinLock lock(m_lock);
+        SpinlockLocker lock(m_lock);
         VERIFY(m_result == Started);
         m_result = result;
     }
-    if (Processor::current().in_irq()) {
+    if (Processor::current_in_irq()) {
         ref(); // Make sure we don't get freed
         Processor::deferred_call_queue([this]() {
             request_finished();

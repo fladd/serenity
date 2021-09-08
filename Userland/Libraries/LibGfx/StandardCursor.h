@@ -26,6 +26,8 @@ enum class StandardCursor {
     Move,
     Wait,
     Disallowed,
+    Eyedropper,
+    Zoom,
     __Count,
 };
 

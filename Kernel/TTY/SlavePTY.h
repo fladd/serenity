@@ -23,7 +23,7 @@ public:
 
     time_t time_of_last_write() const { return m_time_of_last_write; }
 
-    virtual FileBlockCondition& block_condition() override;
+    virtual FileBlockerSet& blocker_set() override;
 
 private:
     // ^TTY
@@ -32,14 +32,11 @@ private:
     virtual void echo(u8) override;
 
     // ^CharacterDevice
-    virtual bool can_read(const FileDescription&, size_t) const override;
-    virtual KResultOr<size_t> read(FileDescription&, u64, UserOrKernelBuffer&, size_t) override;
-    virtual bool can_write(const FileDescription&, size_t) const override;
+    virtual bool can_read(const OpenFileDescription&, size_t) const override;
+    virtual KResultOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override;
+    virtual bool can_write(const OpenFileDescription&, size_t) const override;
     virtual StringView class_name() const override { return "SlavePTY"; }
     virtual KResult close() override;
-
-    // ^Device
-    virtual String device_name() const override;
 
     friend class MasterPTY;
     SlavePTY(MasterPTY&, unsigned index);
@@ -53,7 +50,7 @@ private:
 
 public:
     using List = IntrusiveList<SlavePTY, RawPtr<SlavePTY>, &SlavePTY::m_list_node>;
-    static SpinLockProtectedValue<SlavePTY::List>& all_instances();
+    static SpinlockProtected<SlavePTY::List>& all_instances();
 };
 
 }

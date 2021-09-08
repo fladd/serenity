@@ -43,8 +43,8 @@ Region::~Region()
     MM.unregister_region(*this);
 
     if (m_page_directory) {
-        ScopedSpinLock page_lock(m_page_directory->get_lock());
-        ScopedSpinLock lock(s_mm_lock);
+        SpinlockLocker page_lock(m_page_directory->get_lock());
+        SpinlockLocker lock(s_mm_lock);
         unmap(ShouldDeallocateVirtualRange::Yes);
         VERIFY(!m_page_directory);
     }
@@ -52,7 +52,7 @@ Region::~Region()
 
 KResultOr<NonnullOwnPtr<Region>> Region::try_clone()
 {
-    VERIFY(Process::current());
+    VERIFY(Process::has_current());
 
     if (m_shared) {
         VERIFY(!m_stack);
@@ -60,14 +60,13 @@ KResultOr<NonnullOwnPtr<Region>> Region::try_clone()
             VERIFY(vmobject().is_shared_inode());
 
         // Create a new region backed by the same VMObject.
-        auto maybe_region = Region::try_create_user_accessible(
-            m_range, m_vmobject, m_offset_in_vmobject, m_name ? m_name->try_clone() : OwnPtr<KString> {}, access(), m_cacheable ? Cacheable::Yes : Cacheable::No, m_shared);
-        if (maybe_region.is_error()) {
-            dbgln("Region::clone: Unable to allocate new Region");
-            return maybe_region.error();
-        }
 
-        auto region = maybe_region.release_value();
+        OwnPtr<KString> region_name;
+        if (m_name)
+            region_name = TRY(m_name->try_clone());
+
+        auto region = TRY(Region::try_create_user_accessible(
+            m_range, m_vmobject, m_offset_in_vmobject, move(region_name), access(), m_cacheable ? Cacheable::Yes : Cacheable::No, m_shared));
         region->set_mmap(m_mmap);
         region->set_shared(m_shared);
         region->set_syscall_region(is_syscall_region());
@@ -77,20 +76,17 @@ KResultOr<NonnullOwnPtr<Region>> Region::try_clone()
     if (vmobject().is_inode())
         VERIFY(vmobject().is_private_inode());
 
-    auto maybe_vmobject_clone = vmobject().try_clone();
-    if (maybe_vmobject_clone.is_error())
-        return maybe_vmobject_clone.error();
-    auto vmobject_clone = maybe_vmobject_clone.release_value();
+    auto vmobject_clone = TRY(vmobject().try_clone());
 
     // Set up a COW region. The parent (this) region becomes COW as well!
     remap();
-    auto maybe_clone_region = Region::try_create_user_accessible(
-        m_range, vmobject_clone, m_offset_in_vmobject, m_name ? m_name->try_clone() : OwnPtr<KString> {}, access(), m_cacheable ? Cacheable::Yes : Cacheable::No, m_shared);
-    if (maybe_clone_region.is_error()) {
-        dbgln("Region::clone: Unable to allocate new Region for COW");
-        return maybe_clone_region.error();
-    }
-    auto clone_region = maybe_clone_region.release_value();
+
+    OwnPtr<KString> clone_region_name;
+    if (m_name)
+        clone_region_name = TRY(m_name->try_clone());
+
+    auto clone_region = TRY(Region::try_create_user_accessible(
+        m_range, vmobject_clone, m_offset_in_vmobject, move(clone_region_name), access(), m_cacheable ? Cacheable::Yes : Cacheable::No, m_shared));
 
     if (m_stack) {
         VERIFY(is_readable());
@@ -174,7 +170,7 @@ void Region::set_should_cow(size_t page_index, bool cow)
 
 bool Region::map_individual_page_impl(size_t page_index)
 {
-    VERIFY(m_page_directory->get_lock().own_lock());
+    VERIFY(m_page_directory->get_lock().is_locked_by_current_processor());
     auto page_vaddr = vaddr_from_page_index(page_index);
 
     bool user_allowed = page_vaddr.get() >= 0x00800000 && is_user_address(page_vaddr);
@@ -183,7 +179,7 @@ bool Region::map_individual_page_impl(size_t page_index)
     }
 
     // NOTE: We have to take the MM lock for PTE's to stay valid while we use them.
-    ScopedSpinLock mm_locker(s_mm_lock);
+    SpinlockLocker mm_locker(s_mm_lock);
 
     auto* pte = MM.ensure_pte(*m_page_directory, page_vaddr);
     if (!pte)
@@ -208,12 +204,12 @@ bool Region::map_individual_page_impl(size_t page_index)
 
 bool Region::do_remap_vmobject_page(size_t page_index, bool with_flush)
 {
-    ScopedSpinLock lock(vmobject().m_lock);
+    SpinlockLocker lock(vmobject().m_lock);
     if (!m_page_directory)
         return true; // not an error, region may have not yet mapped it
     if (!translate_vmobject_page(page_index))
         return true; // not an error, region doesn't map this page
-    ScopedSpinLock page_lock(m_page_directory->get_lock());
+    SpinlockLocker page_lock(m_page_directory->get_lock());
     VERIFY(physical_page(page_index));
     bool success = map_individual_page_impl(page_index);
     if (with_flush)
@@ -236,8 +232,8 @@ void Region::unmap(ShouldDeallocateVirtualRange deallocate_range)
 {
     if (!m_page_directory)
         return;
-    ScopedSpinLock page_lock(m_page_directory->get_lock());
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker page_lock(m_page_directory->get_lock());
+    SpinlockLocker lock(s_mm_lock);
     size_t count = page_count();
     for (size_t i = 0; i < count; ++i) {
         auto vaddr = vaddr_from_page_index(i);
@@ -253,14 +249,14 @@ void Region::unmap(ShouldDeallocateVirtualRange deallocate_range)
 void Region::set_page_directory(PageDirectory& page_directory)
 {
     VERIFY(!m_page_directory || m_page_directory == &page_directory);
-    VERIFY(s_mm_lock.own_lock());
+    VERIFY(s_mm_lock.is_locked_by_current_processor());
     m_page_directory = page_directory;
 }
 
-bool Region::map(PageDirectory& page_directory, ShouldFlushTLB should_flush_tlb)
+KResult Region::map(PageDirectory& page_directory, ShouldFlushTLB should_flush_tlb)
 {
-    ScopedSpinLock page_lock(page_directory.get_lock());
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker page_lock(page_directory.get_lock());
+    SpinlockLocker lock(s_mm_lock);
 
     // FIXME: Find a better place for this sanity check(?)
     if (is_user() && !is_shared()) {
@@ -277,15 +273,18 @@ bool Region::map(PageDirectory& page_directory, ShouldFlushTLB should_flush_tlb)
     if (page_index > 0) {
         if (should_flush_tlb == ShouldFlushTLB::Yes)
             MM.flush_tlb(m_page_directory, vaddr(), page_index);
-        return page_index == page_count();
+        if (page_index == page_count())
+            return KSuccess;
     }
-    return false;
+    return ENOMEM;
 }
 
 void Region::remap()
 {
     VERIFY(m_page_directory);
-    map(*m_page_directory);
+    auto result = map(*m_page_directory);
+    if (result.is_error())
+        TODO();
 }
 
 PageFaultResponse Region::handle_fault(PageFault const& fault)
@@ -310,7 +309,8 @@ PageFaultResponse Region::handle_fault(PageFault const& fault)
             auto page_index_in_vmobject = translate_to_vmobject_page(page_index_in_region);
             VERIFY(m_vmobject->is_anonymous());
             page_slot = static_cast<AnonymousVMObject&>(*m_vmobject).allocate_committed_page({});
-            remap_vmobject_page(page_index_in_vmobject);
+            if (!remap_vmobject_page(page_index_in_vmobject))
+                return PageFaultResponse::OutOfMemory;
             return PageFaultResponse::Continue;
         }
         dbgln("BUG! Unexpected NP fault at {}", fault.vaddr());
@@ -338,7 +338,7 @@ PageFaultResponse Region::handle_zero_fault(size_t page_index_in_region)
     auto& page_slot = physical_page_slot(page_index_in_region);
     auto page_index_in_vmobject = translate_to_vmobject_page(page_index_in_region);
 
-    ScopedSpinLock locker(vmobject().m_lock);
+    SpinlockLocker locker(vmobject().m_lock);
 
     if (!page_slot.is_null() && !page_slot->is_shared_zero_page() && !page_slot->is_lazy_committed_page()) {
         dbgln_if(PAGE_FAULT_DEBUG, "MM: zero_page() but page already present. Fine with me!");
@@ -392,8 +392,8 @@ PageFaultResponse Region::handle_inode_fault(size_t page_index_in_region)
 {
     VERIFY_INTERRUPTS_DISABLED();
     VERIFY(vmobject().is_inode());
-    VERIFY(!s_mm_lock.own_lock());
-    VERIFY(!g_scheduler_lock.own_lock());
+    VERIFY(!s_mm_lock.is_locked_by_current_processor());
+    VERIFY(!g_scheduler_lock.is_locked_by_current_processor());
 
     auto& inode_vmobject = static_cast<InodeVMObject&>(vmobject());
 
@@ -401,7 +401,7 @@ PageFaultResponse Region::handle_inode_fault(size_t page_index_in_region)
     auto& vmobject_physical_page_entry = inode_vmobject.physical_pages()[page_index_in_vmobject];
 
     {
-        ScopedSpinLock locker(inode_vmobject.m_lock);
+        SpinlockLocker locker(inode_vmobject.m_lock);
         if (!vmobject_physical_page_entry.is_null()) {
             dbgln_if(PAGE_FAULT_DEBUG, "handle_inode_fault: Page faulted in by someone else before reading, remapping.");
             if (!remap_vmobject_page(page_index_in_vmobject))
@@ -433,7 +433,7 @@ PageFaultResponse Region::handle_inode_fault(size_t page_index_in_region)
         memset(page_buffer + nread, 0, PAGE_SIZE - nread);
     }
 
-    ScopedSpinLock locker(inode_vmobject.m_lock);
+    SpinlockLocker locker(inode_vmobject.m_lock);
 
     if (!vmobject_physical_page_entry.is_null()) {
         // Someone else faulted in this page while we were reading from the inode.
@@ -451,11 +451,16 @@ PageFaultResponse Region::handle_inode_fault(size_t page_index_in_region)
         return PageFaultResponse::OutOfMemory;
     }
 
-    u8* dest_ptr = MM.quickmap_page(*vmobject_physical_page_entry);
-    memcpy(dest_ptr, page_buffer, PAGE_SIZE);
-    MM.unquickmap_page();
+    {
+        SpinlockLocker mm_locker(s_mm_lock);
+        u8* dest_ptr = MM.quickmap_page(*vmobject_physical_page_entry);
+        memcpy(dest_ptr, page_buffer, PAGE_SIZE);
+        MM.unquickmap_page();
+    }
 
-    remap_vmobject_page(page_index_in_vmobject);
+    if (!remap_vmobject_page(page_index_in_vmobject))
+        return PageFaultResponse::OutOfMemory;
+
     return PageFaultResponse::Continue;
 }
 

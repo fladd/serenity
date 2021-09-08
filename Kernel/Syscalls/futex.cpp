@@ -13,7 +13,7 @@ namespace Kernel {
 
 void Process::clear_futex_queues_on_exec()
 {
-    ScopedSpinLock lock(m_futex_lock);
+    SpinlockLocker lock(m_futex_lock);
     for (auto& it : m_futex_queues) {
         bool did_wake_all;
         it.value->wake_all(did_wake_all);
@@ -25,9 +25,7 @@ void Process::clear_futex_queues_on_exec()
 KResultOr<FlatPtr> Process::sys$futex(Userspace<const Syscall::SC_futex_params*> user_params)
 {
     VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
-    Syscall::SC_futex_params params;
-    if (!copy_from_user(&params, user_params))
-        return EFAULT;
+    auto params = TRY(copy_typed_from_user(user_params));
 
     Thread::BlockTimeout timeout;
     u32 cmd = params.futex_op & FUTEX_CMD_MASK;
@@ -43,12 +41,10 @@ KResultOr<FlatPtr> Process::sys$futex(Userspace<const Syscall::SC_futex_params*>
     case FUTEX_REQUEUE:
     case FUTEX_CMP_REQUEUE: {
         if (params.timeout) {
-            auto timeout_time = copy_time_from_user(params.timeout);
-            if (!timeout_time.has_value())
-                return EFAULT;
+            auto timeout_time = TRY(copy_time_from_user(params.timeout));
             bool is_absolute = cmd != FUTEX_WAIT;
             clockid_t clock_id = use_realtime_clock ? CLOCK_REALTIME_COARSE : CLOCK_MONOTONIC_COARSE;
-            timeout = Thread::BlockTimeout(is_absolute, &timeout_time.value(), nullptr, clock_id);
+            timeout = Thread::BlockTimeout(is_absolute, &timeout_time, nullptr, clock_id);
         }
         if (cmd == FUTEX_WAIT_BITSET && params.val3 == FUTEX_BITSET_MATCH_ANY)
             cmd = FUTEX_WAIT;
@@ -79,7 +75,6 @@ KResultOr<FlatPtr> Process::sys$futex(Userspace<const Syscall::SC_futex_params*>
     auto remove_futex_queue = [&](FlatPtr user_address) {
         if (auto it = m_futex_queues.find(user_address); it != m_futex_queues.end()) {
             if (it->value->try_remove()) {
-                it->value->did_remove();
                 m_futex_queues.remove(it);
             }
         }
@@ -88,7 +83,7 @@ KResultOr<FlatPtr> Process::sys$futex(Userspace<const Syscall::SC_futex_params*>
     auto do_wake = [&](FlatPtr user_address, u32 count, Optional<u32> bitmask) -> int {
         if (count == 0)
             return 0;
-        ScopedSpinLock locker(m_futex_lock);
+        SpinlockLocker locker(m_futex_lock);
         auto futex_queue = find_futex_queue(user_address, false);
         if (!futex_queue)
             return 0;
@@ -117,7 +112,7 @@ KResultOr<FlatPtr> Process::sys$futex(Userspace<const Syscall::SC_futex_params*>
             }
             atomic_thread_fence(AK::MemoryOrder::memory_order_acquire);
 
-            ScopedSpinLock locker(m_futex_lock);
+            SpinlockLocker locker(m_futex_lock);
             did_create = false;
             futex_queue = find_futex_queue(user_address, true, &did_create);
             VERIFY(futex_queue);
@@ -130,7 +125,7 @@ KResultOr<FlatPtr> Process::sys$futex(Userspace<const Syscall::SC_futex_params*>
 
         Thread::BlockResult block_result = futex_queue->wait_on(timeout, bitset);
 
-        ScopedSpinLock locker(m_futex_lock);
+        SpinlockLocker locker(m_futex_lock);
         if (futex_queue->is_empty_and_no_imminent_waits()) {
             // If there are no more waiters, we want to get rid of the futex!
             remove_futex_queue(user_address);
@@ -150,7 +145,7 @@ KResultOr<FlatPtr> Process::sys$futex(Userspace<const Syscall::SC_futex_params*>
         atomic_thread_fence(AK::MemoryOrder::memory_order_acquire);
 
         int woken_or_requeued = 0;
-        ScopedSpinLock locker(m_futex_lock);
+        SpinlockLocker locker(m_futex_lock);
         if (auto futex_queue = find_futex_queue(user_address, false)) {
             RefPtr<FutexQueue> target_futex_queue;
             bool is_empty, is_target_empty;

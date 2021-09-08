@@ -8,8 +8,8 @@
 
 #include <AK/BinaryBufferWriter.h>
 #include <AK/DistinctNumeric.h>
-#include <Kernel/Bus/VirtIO/VirtIO.h>
-#include <Kernel/Bus/VirtIO/VirtIOQueue.h>
+#include <Kernel/Bus/VirtIO/Device.h>
+#include <Kernel/Bus/VirtIO/Queue.h>
 #include <Kernel/Devices/BlockDevice.h>
 #include <Kernel/Graphics/VirtIOGPU/Protocol.h>
 
@@ -35,7 +35,7 @@ TYPEDEF_DISTINCT_ORDERED_ID(u32, ResourceID);
 TYPEDEF_DISTINCT_ORDERED_ID(u32, ScanoutID);
 
 class GPU final
-    : public VirtIODevice
+    : public VirtIO::Device
     , public RefCounted<GPU> {
     friend class FrameBufferDevice;
 
@@ -57,6 +57,8 @@ public:
         return IterationDecision::Continue;
     }
 
+    virtual void initialize() override;
+
     RefPtr<Console> default_console()
     {
         if (m_default_scanout.has_value())
@@ -77,6 +79,8 @@ public:
     void flush_dirty_rectangle(ScanoutID, Protocol::Rect const& dirty_rect, ResourceID);
 
 private:
+    virtual StringView class_name() const override { return "VirtIOGPU"; }
+
     struct Scanout {
         RefPtr<FrameBufferDevice> framebuffer;
         RefPtr<Console> console;
@@ -112,7 +116,7 @@ private:
     size_t m_num_scanouts { 0 };
     Scanout m_scanouts[VIRTIO_GPU_MAX_SCANOUTS];
 
-    Configuration const* m_device_configuration { nullptr };
+    VirtIO::Configuration const* m_device_configuration { nullptr };
     ResourceID m_resource_id_counter { 0 };
 
     // Synchronous commands

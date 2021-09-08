@@ -7,41 +7,34 @@
 #pragma once
 
 #include <AK/Atomic.h>
-#include <Kernel/Locking/SpinLock.h>
+#include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Thread.h>
 
 namespace Kernel {
 
-class WaitQueue : public Thread::BlockCondition {
+class WaitQueue final : public Thread::BlockerSet {
 public:
     u32 wake_one();
     u32 wake_n(u32 wake_count);
     u32 wake_all();
 
-    void should_block(bool block)
-    {
-        ScopedSpinLock lock(m_lock);
-        m_should_block = block;
-    }
-
     template<class... Args>
     Thread::BlockResult wait_on(const Thread::BlockTimeout& timeout, Args&&... args)
     {
-        return Thread::current()->block<Thread::QueueBlocker>(timeout, *this, forward<Args>(args)...);
+        return Thread::current()->block<Thread::WaitQueueBlocker>(timeout, *this, forward<Args>(args)...);
     }
 
     template<class... Args>
     void wait_forever(Args&&... args)
     {
-        (void)Thread::current()->block<Thread::QueueBlocker>({}, *this, forward<Args>(args)...);
+        (void)Thread::current()->block<Thread::WaitQueueBlocker>({}, *this, forward<Args>(args)...);
     }
 
 protected:
-    virtual bool should_add_blocker(Thread::Blocker& b, void* data) override;
+    virtual bool should_add_blocker(Thread::Blocker& b, void*) override;
 
 private:
     bool m_wake_requested { false };
-    bool m_should_block { true };
 };
 
 }

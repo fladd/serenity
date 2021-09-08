@@ -54,7 +54,7 @@ if [ "$USE_CLANG_TOOLCHAIN" = "1" ]; then
     $CP "$TOOLCHAIN_DIR"/lib/clang/"$LLVM_VERSION"/lib/serenity/* mnt/usr/lib/clang/"$LLVM_VERSION"/lib/serenity
     $CP "$TOOLCHAIN_DIR"/lib/libunwind* mnt/usr/lib
     $CP "$TOOLCHAIN_DIR"/lib/libc++* mnt/usr/lib
-else
+elif [ "$SERENITY_ARCH" != "aarch64" ]; then
     $CP "$SERENITY_SOURCE_DIR"/Toolchain/Local/"$SERENITY_ARCH"/"$SERENITY_ARCH"-pc-serenity/lib/libgcc_s.so mnt/usr/lib
 fi
 
@@ -155,6 +155,15 @@ cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibCpp/Tests/parser mnt/home/ano
 cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibCpp/Tests/preprocessor mnt/home/anon/cpp-tests/preprocessor
 cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibWasm/Tests mnt/home/anon/wasm-tests
 cp -r "$SERENITY_SOURCE_DIR"/Userland/Libraries/LibJS/Tests/test-common.js mnt/home/anon/wasm-tests
+
+if [ -n "$SERENITY_COPY_SOURCE" ] ; then
+  printf "\ncopying Serenity's source... "
+  rm -fr mnt/home/anon/Source/serenity
+  mkdir -p mnt/home/anon/Source/serenity
+  git clone --depth=1 file://"$SERENITY_SOURCE_DIR" mnt/home/anon/Source/serenity
+  rm -fr mnt/home/anon/Source/serenity/.git
+fi
+
 chmod 700 mnt/root
 chmod 700 mnt/home/anon
 chmod 700 mnt/home/nona

@@ -5,7 +5,7 @@
  */
 
 #include <Kernel/Debug.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Storage/Partition/DiskPartition.h>
 
 namespace Kernel {
@@ -33,43 +33,42 @@ const DiskPartitionMetadata& DiskPartition::metadata() const
 
 void DiskPartition::start_request(AsyncBlockDeviceRequest& request)
 {
-    request.add_sub_request(m_device->make_request<AsyncBlockDeviceRequest>(request.request_type(),
-        request.block_index() + m_metadata.start_block(), request.block_count(), request.buffer(), request.buffer_size()));
+    auto device = m_device.strong_ref();
+    if (!device)
+        request.complete(AsyncBlockDeviceRequest::RequestResult::Failure);
+    auto sub_request_or_error = device->try_make_request<AsyncBlockDeviceRequest>(request.request_type(),
+        request.block_index() + m_metadata.start_block(), request.block_count(), request.buffer(), request.buffer_size());
+    if (sub_request_or_error.is_error())
+        TODO();
+    request.add_sub_request(sub_request_or_error.release_value());
 }
 
-KResultOr<size_t> DiskPartition::read(FileDescription& fd, u64 offset, UserOrKernelBuffer& outbuf, size_t len)
+KResultOr<size_t> DiskPartition::read(OpenFileDescription& fd, u64 offset, UserOrKernelBuffer& outbuf, size_t len)
 {
     unsigned adjust = m_metadata.start_block() * block_size();
     dbgln_if(OFFD_DEBUG, "DiskPartition::read offset={}, adjust={}, len={}", fd.offset(), adjust, len);
-    return m_device->read(fd, offset + adjust, outbuf, len);
+    return m_device.strong_ref()->read(fd, offset + adjust, outbuf, len);
 }
 
-bool DiskPartition::can_read(const FileDescription& fd, size_t offset) const
+bool DiskPartition::can_read(const OpenFileDescription& fd, size_t offset) const
 {
     unsigned adjust = m_metadata.start_block() * block_size();
     dbgln_if(OFFD_DEBUG, "DiskPartition::can_read offset={}, adjust={}", offset, adjust);
-    return m_device->can_read(fd, offset + adjust);
+    return m_device.strong_ref()->can_read(fd, offset + adjust);
 }
 
-KResultOr<size_t> DiskPartition::write(FileDescription& fd, u64 offset, const UserOrKernelBuffer& inbuf, size_t len)
+KResultOr<size_t> DiskPartition::write(OpenFileDescription& fd, u64 offset, const UserOrKernelBuffer& inbuf, size_t len)
 {
     unsigned adjust = m_metadata.start_block() * block_size();
     dbgln_if(OFFD_DEBUG, "DiskPartition::write offset={}, adjust={}, len={}", offset, adjust, len);
-    return m_device->write(fd, offset + adjust, inbuf, len);
+    return m_device.strong_ref()->write(fd, offset + adjust, inbuf, len);
 }
 
-bool DiskPartition::can_write(const FileDescription& fd, size_t offset) const
+bool DiskPartition::can_write(const OpenFileDescription& fd, size_t offset) const
 {
     unsigned adjust = m_metadata.start_block() * block_size();
     dbgln_if(OFFD_DEBUG, "DiskPartition::can_write offset={}, adjust={}", offset, adjust);
-    return m_device->can_write(fd, offset + adjust);
-}
-
-String DiskPartition::device_name() const
-{
-    // FIXME: Try to not hardcode a maximum of 16 partitions per drive!
-    size_t partition_index = minor() % 16;
-    return String::formatted("{}{}", m_device->device_name(), partition_index + 1);
+    return m_device.strong_ref()->can_write(fd, offset + adjust);
 }
 
 StringView DiskPartition::class_name() const

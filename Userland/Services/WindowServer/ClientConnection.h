@@ -38,6 +38,7 @@ public:
     ~ClientConnection() override;
 
     bool is_unresponsive() const { return m_unresponsive; }
+    bool does_global_mouse_tracking() const { return m_does_global_mouse_tracking; }
 
     static ClientConnection* from_client_id(int client_id);
     static void for_each_client(Function<void(ClientConnection&)>);
@@ -112,7 +113,7 @@ private:
     virtual Messages::WindowServer::GetAppletRectOnScreenResponse get_applet_rect_on_screen(i32) override;
     virtual void invalidate_rect(i32, Vector<Gfx::IntRect> const&, bool) override;
     virtual void did_finish_painting(i32, Vector<Gfx::IntRect> const&) override;
-    virtual void set_global_cursor_tracking(i32, bool) override;
+    virtual void set_global_mouse_tracking(bool) override;
     virtual void set_window_opacity(i32, float) override;
     virtual void set_window_backing_store(i32, i32, i32, IPC::File const&, i32, bool, Gfx::IntSize const&, bool) override;
     virtual void set_window_has_alpha_channel(i32, bool) override;
@@ -139,6 +140,8 @@ private:
     virtual Messages::WindowServer::StartDragResponse start_drag(String const&, HashMap<String, ByteBuffer> const&, Gfx::ShareableBitmap const&) override;
     virtual Messages::WindowServer::SetSystemThemeResponse set_system_theme(String const&, String const&) override;
     virtual Messages::WindowServer::GetSystemThemeResponse get_system_theme() override;
+    virtual void apply_cursor_theme(String const&) override;
+    virtual Messages::WindowServer::GetCursorThemeResponse get_cursor_theme() override;
     virtual Messages::WindowServer::SetSystemFontsResponse set_system_fonts(String const&, String const&) override;
     virtual void set_window_base_size_and_size_increment(i32, Gfx::IntSize const&, Gfx::IntSize const&) override;
     virtual void set_window_resize_aspect_ratio(i32, Optional<Gfx::IntSize> const&) override;
@@ -177,6 +180,7 @@ private:
     bool m_has_display_link { false };
     bool m_show_screen_number { false };
     bool m_unresponsive { false };
+    bool m_does_global_mouse_tracking { false };
 
     // Need this to get private client connection stuff
     friend WMClientConnection;

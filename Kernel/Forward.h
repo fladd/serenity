@@ -7,23 +7,24 @@
 #pragma once
 
 #include <AK/DistinctNumeric.h>
+#include <Kernel/API/POSIX/sys/types.h>
 
 namespace Kernel {
 
 class BlockDevice;
 class CharacterDevice;
-class CoreDump;
+class Coredump;
 class Custody;
-class DevFSDeviceInode;
-class DevFSDirectoryInode;
-class DevFSInode;
-class DevFSPtsDirectoryInode;
-class DevFSRootDirectoryInode;
+class DevTmpFSDeviceInode;
+class DevTmpFSDirectoryInode;
+class DevTmpFSInode;
+class DevTmpFSPtsDirectoryInode;
+class DevTmpFSRootDirectoryInode;
 class Device;
 class DiskCache;
 class DoubleBuffer;
 class File;
-class FileDescription;
+class OpenFileDescription;
 class FileSystem;
 class FutexQueue;
 class IPv4Socket;
@@ -48,7 +49,7 @@ class ProcFSSystemBoolean;
 class ProcFSSystemDirectory;
 class Process;
 class ProcessGroup;
-class RecursiveSpinLock;
+class RecursiveSpinlock;
 class Scheduler;
 class Socket;
 class SysFS;
@@ -83,10 +84,9 @@ class VirtualRange;
 class VirtualRangeAllocator;
 }
 
-template<typename BaseType>
-class SpinLock;
+class Spinlock;
 template<typename LockType>
-class ScopedSpinLock;
+class SpinlockLocker;
 template<typename T>
 class KResultOr;
 
@@ -97,5 +97,8 @@ TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ProcessID);
 TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ThreadID);
 TYPEDEF_DISTINCT_ORDERED_ID(pid_t, SessionID);
 TYPEDEF_DISTINCT_ORDERED_ID(pid_t, ProcessGroupID);
+
+TYPEDEF_DISTINCT_ORDERED_ID(uid_t, UserID);
+TYPEDEF_DISTINCT_ORDERED_ID(gid_t, GroupID);
 
 }

@@ -6,7 +6,7 @@
 
 #include <AK/StringView.h>
 #include <Kernel/Debug.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Net/IPv4Socket.h>
 #include <Kernel/Net/LocalSocket.h>
 #include <Kernel/Net/NetworkingManagement.h>
@@ -21,7 +21,7 @@ KResultOr<NonnullRefPtr<Socket>> Socket::create(int domain, int type, int protoc
 {
     switch (domain) {
     case AF_LOCAL:
-        return LocalSocket::create(type & SOCK_TYPE_MASK);
+        return TRY(LocalSocket::try_create(type & SOCK_TYPE_MASK));
     case AF_INET:
         return IPv4Socket::create(type & SOCK_TYPE_MASK, protocol);
     default:
@@ -34,8 +34,7 @@ Socket::Socket(int domain, int type, int protocol)
     , m_type(type)
     , m_protocol(protocol)
 {
-    auto& process = *Process::current();
-    m_origin = { process.pid().value(), process.uid(), process.gid() };
+    set_origin(Process::current());
 }
 
 Socket::~Socket()
@@ -51,16 +50,16 @@ void Socket::set_setup_state(SetupState new_setup_state)
 
 RefPtr<Socket> Socket::accept()
 {
-    MutexLocker locker(m_lock);
+    MutexLocker locker(mutex());
     if (m_pending.is_empty())
         return nullptr;
     dbgln_if(SOCKET_DEBUG, "Socket({}) de-queueing connection", this);
     auto client = m_pending.take_first();
     VERIFY(!client->is_connected());
-    auto& process = *Process::current();
-    client->m_acceptor = { process.pid().value(), process.uid(), process.gid() };
+    auto& process = Process::current();
+    client->set_acceptor(process);
     client->m_connected = true;
-    client->m_role = Role::Accepted;
+    client->set_role(Role::Accepted);
     if (!m_pending.is_empty())
         evaluate_block_conditions();
     return client;
@@ -69,7 +68,7 @@ RefPtr<Socket> Socket::accept()
 KResult Socket::queue_connection_from(NonnullRefPtr<Socket> peer)
 {
     dbgln_if(SOCKET_DEBUG, "Socket({}) queueing connection", this);
-    MutexLocker locker(m_lock);
+    MutexLocker locker(mutex());
     if (m_pending.size() >= m_backlog)
         return set_so_error(ECONNREFUSED);
     if (!m_pending.try_append(peer))
@@ -87,31 +86,19 @@ KResult Socket::setsockopt(int level, int option, Userspace<const void*> user_va
     case SO_SNDTIMEO:
         if (user_value_size != sizeof(timeval))
             return EINVAL;
-        {
-            auto timeout = copy_time_from_user(static_ptr_cast<const timeval*>(user_value));
-            if (!timeout.has_value())
-                return EFAULT;
-            m_send_timeout = timeout.value();
-        }
+        m_send_timeout = TRY(copy_time_from_user(static_ptr_cast<timeval const*>(user_value)));
         return KSuccess;
     case SO_RCVTIMEO:
         if (user_value_size != sizeof(timeval))
             return EINVAL;
-        {
-            auto timeout = copy_time_from_user(static_ptr_cast<const timeval*>(user_value));
-            if (!timeout.has_value())
-                return EFAULT;
-            m_receive_timeout = timeout.value();
-        }
+        m_receive_timeout = TRY(copy_time_from_user(static_ptr_cast<timeval const*>(user_value)));
         return KSuccess;
     case SO_BINDTODEVICE: {
         if (user_value_size != IFNAMSIZ)
             return EINVAL;
         auto user_string = static_ptr_cast<const char*>(user_value);
-        auto ifname_or_error = try_copy_kstring_from_user(user_string, user_value_size);
-        if (ifname_or_error.is_error())
-            return ifname_or_error.error();
-        auto device = NetworkingManagement::the().lookup_by_name(ifname_or_error.value()->view());
+        auto ifname = TRY(try_copy_kstring_from_user(user_string, user_value_size));
+        auto device = NetworkingManagement::the().lookup_by_name(ifname->view());
         if (!device)
             return ENODEV;
         m_bound_interface = device;
@@ -125,8 +112,7 @@ KResult Socket::setsockopt(int level, int option, Userspace<const void*> user_va
             return EINVAL;
         {
             int timestamp;
-            if (!copy_from_user(&timestamp, static_ptr_cast<const int*>(user_value)))
-                return EFAULT;
+            TRY(copy_from_user(&timestamp, static_ptr_cast<const int*>(user_value)));
             m_timestamp = timestamp;
         }
         if (m_timestamp && (domain() != AF_INET || type() == SOCK_STREAM)) {
@@ -141,11 +127,10 @@ KResult Socket::setsockopt(int level, int option, Userspace<const void*> user_va
     }
 }
 
-KResult Socket::getsockopt(FileDescription&, int level, int option, Userspace<void*> value, Userspace<socklen_t*> value_size)
+KResult Socket::getsockopt(OpenFileDescription&, int level, int option, Userspace<void*> value, Userspace<socklen_t*> value_size)
 {
     socklen_t size;
-    if (!copy_from_user(&size, value_size.unsafe_userspace_ptr()))
-        return EFAULT;
+    TRY(copy_from_user(&size, value_size.unsafe_userspace_ptr()));
 
     // FIXME: Add TCP_NODELAY, IPPROTO_TCP and IPPROTO_IP (used in OpenSSH)
     if (level != SOL_SOCKET) {
@@ -159,34 +144,26 @@ KResult Socket::getsockopt(FileDescription&, int level, int option, Userspace<vo
             return EINVAL;
         {
             timeval tv = m_send_timeout.to_timeval();
-            if (!copy_to_user(static_ptr_cast<timeval*>(value), &tv))
-                return EFAULT;
+            TRY(copy_to_user(static_ptr_cast<timeval*>(value), &tv));
         }
         size = sizeof(timeval);
-        if (!copy_to_user(value_size, &size))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(value_size, &size);
     case SO_RCVTIMEO:
         if (size < sizeof(timeval))
             return EINVAL;
         {
             timeval tv = m_send_timeout.to_timeval();
-            if (!copy_to_user(static_ptr_cast<timeval*>(value), &tv))
-                return EFAULT;
+            TRY(copy_to_user(static_ptr_cast<timeval*>(value), &tv));
         }
         size = sizeof(timeval);
-        if (!copy_to_user(value_size, &size))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(value_size, &size);
     case SO_ERROR: {
         if (size < sizeof(int))
             return EINVAL;
         int errno = so_error().error();
-        if (!copy_to_user(static_ptr_cast<int*>(value), &errno))
-            return EFAULT;
+        TRY(copy_to_user(static_ptr_cast<int*>(value), &errno));
         size = sizeof(int);
-        if (!copy_to_user(value_size, &size))
-            return EFAULT;
+        TRY(copy_to_user(value_size, &size));
         return set_so_error(KSuccess);
     }
     case SO_BINDTODEVICE:
@@ -195,35 +172,28 @@ KResult Socket::getsockopt(FileDescription&, int level, int option, Userspace<vo
         if (m_bound_interface) {
             const auto& name = m_bound_interface->name();
             auto length = name.length() + 1;
-            if (!copy_to_user(static_ptr_cast<char*>(value), name.characters(), length))
-                return EFAULT;
+            TRY(copy_to_user(static_ptr_cast<char*>(value), name.characters(), length));
             size = length;
-            if (!copy_to_user(value_size, &size))
-                return EFAULT;
-            return KSuccess;
+            return copy_to_user(value_size, &size);
         } else {
             size = 0;
-            if (!copy_to_user(value_size, &size))
-                return EFAULT;
-
+            TRY(copy_to_user(value_size, &size));
+            // FIXME: This return value looks suspicious.
             return EFAULT;
         }
     case SO_TIMESTAMP:
         if (size < sizeof(int))
             return EINVAL;
-        if (!copy_to_user(static_ptr_cast<int*>(value), &m_timestamp))
-            return EFAULT;
+        TRY(copy_to_user(static_ptr_cast<int*>(value), &m_timestamp));
         size = sizeof(int);
-        if (!copy_to_user(value_size, &size))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(value_size, &size);
     default:
         dbgln("setsockopt({}) at SOL_SOCKET not implemented.", option);
         return ENOPROTOOPT;
     }
 }
 
-KResultOr<size_t> Socket::read(FileDescription& description, u64, UserOrKernelBuffer& buffer, size_t size)
+KResultOr<size_t> Socket::read(OpenFileDescription& description, u64, UserOrKernelBuffer& buffer, size_t size)
 {
     if (is_shut_down_for_reading())
         return 0;
@@ -231,7 +201,7 @@ KResultOr<size_t> Socket::read(FileDescription& description, u64, UserOrKernelBu
     return recvfrom(description, buffer, size, 0, {}, 0, t);
 }
 
-KResultOr<size_t> Socket::write(FileDescription& description, u64, const UserOrKernelBuffer& data, size_t size)
+KResultOr<size_t> Socket::write(OpenFileDescription& description, u64, const UserOrKernelBuffer& data, size_t size)
 {
     if (is_shut_down_for_writing())
         return set_so_error(EPIPE);
@@ -240,7 +210,7 @@ KResultOr<size_t> Socket::write(FileDescription& description, u64, const UserOrK
 
 KResult Socket::shutdown(int how)
 {
-    MutexLocker locker(lock());
+    MutexLocker locker(mutex());
     if (type() == SOCK_STREAM && !is_connected())
         return set_so_error(ENOTCONN);
     if (m_role == Role::Listener)
@@ -263,11 +233,21 @@ KResult Socket::stat(::stat& st) const
 
 void Socket::set_connected(bool connected)
 {
-    MutexLocker locker(lock());
+    MutexLocker locker(mutex());
     if (m_connected == connected)
         return;
     m_connected = connected;
     evaluate_block_conditions();
+}
+
+void Socket::set_origin(Process const& process)
+{
+    m_origin = { process.pid().value(), process.uid().value(), process.gid().value() };
+}
+
+void Socket::set_acceptor(Process const& process)
+{
+    m_acceptor = { process.pid().value(), process.uid().value(), process.gid().value() };
 }
 
 }

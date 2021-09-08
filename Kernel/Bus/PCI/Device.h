@@ -8,17 +8,27 @@
 
 #include <AK/Types.h>
 #include <Kernel/Bus/PCI/Definitions.h>
-#include <Kernel/Interrupts/IRQHandler.h>
 
 namespace Kernel {
-class PCI::Device : public IRQHandler {
+class PCI::Device {
 public:
     Address pci_address() const { return m_pci_address; };
 
+    virtual ~Device() = default;
+    void enable_pin_based_interrupts() const;
+    void disable_pin_based_interrupts() const;
+
+    bool is_msi_capable() const;
+    bool is_msix_capable() const;
+
+    void enable_message_signalled_interrupts();
+    void disable_message_signalled_interrupts();
+
+    void enable_extended_message_signalled_interrupts();
+    void disable_extended_message_signalled_interrupts();
+
 protected:
-    Device(Address pci_address);
-    Device(Address pci_address, u8 interrupt_vector);
-    ~Device();
+    explicit Device(Address pci_address);
 
 private:
     Address m_pci_address;

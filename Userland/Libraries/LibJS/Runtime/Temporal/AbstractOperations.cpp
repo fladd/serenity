@@ -7,8 +7,11 @@
 
 #include <AK/CharacterTypes.h>
 #include <AK/DateTimeLexer.h>
+#include <AK/Variant.h>
 #include <LibJS/Runtime/IteratorOperations.h>
+#include <LibJS/Runtime/PropertyName.h>
 #include <LibJS/Runtime/Temporal/AbstractOperations.h>
+#include <LibJS/Runtime/Temporal/Calendar.h>
 #include <LibJS/Runtime/Temporal/Duration.h>
 #include <LibJS/Runtime/Temporal/PlainDate.h>
 #include <LibJS/Runtime/Temporal/PlainTime.h>
@@ -97,8 +100,10 @@ Object* get_options_object(GlobalObject& global_object, Value options)
 }
 
 // 13.3 GetOption ( options, property, types, values, fallback ), https://tc39.es/proposal-temporal/#sec-getoption
-Value get_option(GlobalObject& global_object, Object& options, String const& property, Vector<OptionType> const& types, Vector<StringView> const& values, Value fallback)
+Value get_option(GlobalObject& global_object, Object& options, PropertyName const& property, Vector<OptionType> const& types, Vector<StringView> const& values, Value fallback)
 {
+    VERIFY(property.is_string());
+
     auto& vm = global_object.vm();
 
     // 1. Assert: Type(options) is Object.
@@ -138,7 +143,7 @@ Value get_option(GlobalObject& global_object, Object& options, String const& pro
             return {};
         // b. If value is NaN, throw a RangeError exception.
         if (value.is_nan()) {
-            vm.throw_exception<RangeError>(global_object, ErrorType::OptionIsNotValidValue, vm.names.NaN.as_string(), property);
+            vm.throw_exception<RangeError>(global_object, ErrorType::OptionIsNotValidValue, vm.names.NaN.as_string(), property.as_string());
             return {};
         }
     }
@@ -155,7 +160,7 @@ Value get_option(GlobalObject& global_object, Object& options, String const& pro
         VERIFY(value.is_string());
         // a. If values does not contain value, throw a RangeError exception.
         if (!values.contains_slow(value.as_string().string())) {
-            vm.throw_exception<RangeError>(global_object, ErrorType::OptionIsNotValidValue, value.as_string().string(), property);
+            vm.throw_exception<RangeError>(global_object, ErrorType::OptionIsNotValidValue, value.as_string().string(), property.as_string());
             return {};
         }
     }
@@ -164,13 +169,51 @@ Value get_option(GlobalObject& global_object, Object& options, String const& pro
     return value;
 }
 
+// 13.4 GetStringOrNumberOption ( options, property, stringValues, minimum, maximum, fallback ), https://tc39.es/proposal-temporal/#sec-getstringornumberoption
+template<typename NumberType>
+Optional<Variant<String, NumberType>> get_string_or_number_option(GlobalObject& global_object, Object& options, PropertyName const& property, Vector<StringView> const& string_values, NumberType minimum, NumberType maximum, Value fallback)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: Type(options) is Object.
+
+    // 2. Let value be ? GetOption(options, property, « Number, String », empty, fallback).
+    auto value = get_option(global_object, options, property, { OptionType::Number, OptionType::String }, {}, fallback);
+    if (vm.exception())
+        return {};
+
+    // 3. If Type(value) is Number, then
+    if (value.is_number()) {
+        // a. If value < minimum or value > maximum, throw a RangeError exception.
+        if (value.as_double() < minimum || value.as_double() > maximum) {
+            vm.template throw_exception<RangeError>(global_object, ErrorType::OptionIsNotValidValue, value.as_double(), property.as_string());
+            return {};
+        }
+
+        // b. Return floor(ℝ(value)).
+        return floor(value.as_double());
+    }
+
+    // 4. Assert: Type(value) is String.
+    VERIFY(value.is_string());
+
+    // 5. If stringValues does not contain value, throw a RangeError exception.
+    if (!string_values.contains_slow(value.as_string().string())) {
+        vm.template throw_exception<RangeError>(global_object, ErrorType::OptionIsNotValidValue, value.as_string().string(), property.as_string());
+        return {};
+    }
+
+    // 6. Return value.
+    return value.as_string().string();
+}
+
 // 13.6 ToTemporalOverflow ( normalizedOptions ), https://tc39.es/proposal-temporal/#sec-temporal-totemporaloverflow
 Optional<String> to_temporal_overflow(GlobalObject& global_object, Object& normalized_options)
 {
     auto& vm = global_object.vm();
 
     // 1. Return ? GetOption(normalizedOptions, "overflow", « String », « "constrain", "reject" », "constrain").
-    auto option = get_option(global_object, normalized_options, "overflow", { OptionType::String }, { "constrain"sv, "reject"sv }, js_string(vm, "constrain"));
+    auto option = get_option(global_object, normalized_options, vm.names.overflow, { OptionType::String }, { "constrain"sv, "reject"sv }, js_string(vm, "constrain"));
     if (vm.exception())
         return {};
 
@@ -183,7 +226,22 @@ Optional<String> to_temporal_rounding_mode(GlobalObject& global_object, Object& 
 {
     auto& vm = global_object.vm();
 
-    auto option = get_option(global_object, normalized_options, "roundingMode", { OptionType::String }, { "ceil"sv, "floor"sv, "trunc"sv, "halfExpand"sv }, js_string(vm, fallback));
+    // 1. Return ? GetOption(normalizedOptions, "roundingMode", « String », « "ceil", "floor", "trunc", "halfExpand" », fallback).
+    auto option = get_option(global_object, normalized_options, vm.names.roundingMode, { OptionType::String }, { "ceil"sv, "floor"sv, "trunc"sv, "halfExpand"sv }, js_string(vm, fallback));
+    if (vm.exception())
+        return {};
+
+    VERIFY(option.is_string());
+    return option.as_string().string();
+}
+
+// 13.11 ToShowCalendarOption ( normalizedOptions ), https://tc39.es/proposal-temporal/#sec-temporal-toshowcalendaroption
+Optional<String> to_show_calendar_option(GlobalObject& global_object, Object& normalized_options)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Return ? GetOption(normalizedOptions, "calendarName", « String », « "auto", "always", "never" », "auto").
+    auto option = get_option(global_object, normalized_options, vm.names.calendarName, { OptionType::String }, { "auto"sv, "always"sv, "never"sv }, js_string(vm, "auto"sv));
     if (vm.exception())
         return {};
 
@@ -219,7 +277,7 @@ u64 to_temporal_rounding_increment(GlobalObject& global_object, Object& normaliz
     }
 
     // 5. Let increment be ? GetOption(normalizedOptions, "roundingIncrement", « Number », empty, 1).
-    auto increment_value = get_option(global_object, normalized_options, "roundingIncrement", { OptionType::Number }, {}, Value(1));
+    auto increment_value = get_option(global_object, normalized_options, vm.names.roundingIncrement, { OptionType::Number }, {}, Value(1));
     if (vm.exception())
         return {};
     VERIFY(increment_value.is_number());
@@ -245,6 +303,88 @@ u64 to_temporal_rounding_increment(GlobalObject& global_object, Object& normaliz
     return floored_increment;
 }
 
+// 13.16 ToSecondsStringPrecision ( normalizedOptions ), https://tc39.es/proposal-temporal/#sec-temporal-tosecondsstringprecision
+Optional<SecondsStringPrecision> to_seconds_string_precision(GlobalObject& global_object, Object& normalized_options)
+{
+    auto& vm = global_object.vm();
+
+    // Let smallestUnit be ? ToSmallestTemporalUnit(normalizedOptions, « "year", "month", "week", "day", "hour" », undefined).
+    auto smallest_unit = to_smallest_temporal_unit(global_object, normalized_options, { "year"sv, "month"sv, "week"sv, "day"sv, "hour"sv }, {});
+    if (vm.exception())
+        return {};
+
+    // 2. If smallestUnit is "minute", then
+    if (smallest_unit == "minute"sv) {
+        // a. Return the Record { [[Precision]]: "minute", [[Unit]]: "minute", [[Increment]]: 1 }.
+        return SecondsStringPrecision { .precision = String { "minute"sv }, .unit = "minute"sv, .increment = 1 };
+    }
+
+    // 3. If smallestUnit is "second", then
+    if (smallest_unit == "second"sv) {
+        // a. Return the Record { [[Precision]]: 0, [[Unit]]: "second", [[Increment]]: 1 }.
+        return SecondsStringPrecision { .precision = 0, .unit = "second"sv, .increment = 1 };
+    }
+
+    // 4. If smallestUnit is "millisecond", then
+    if (smallest_unit == "millisecond"sv) {
+        // a. Return the Record { [[Precision]]: 3, [[Unit]]: "millisecond", [[Increment]]: 1 }.
+        return SecondsStringPrecision { .precision = 3, .unit = "millisecond"sv, .increment = 1 };
+    }
+
+    // 5. If smallestUnit is "microsecond", then
+    if (smallest_unit == "microsecond"sv) {
+        // a. Return the Record { [[Precision]]: 6, [[Unit]]: "microsecond", [[Increment]]: 1 }.
+        return SecondsStringPrecision { .precision = 6, .unit = "microsecond"sv, .increment = 1 };
+    }
+
+    // 6. If smallestUnit is "nanosecond", then
+    if (smallest_unit == "nanosecond"sv) {
+        // a. Return the Record { [[Precision]]: 9, [[Unit]]: "nanosecond", [[Increment]]: 1 }.
+        return SecondsStringPrecision { .precision = 9, .unit = "nanosecond"sv, .increment = 1 };
+    }
+
+    // 7. Assert: smallestUnit is undefined.
+    VERIFY(!smallest_unit.has_value());
+
+    // 8. Let digits be ? GetStringOrNumberOption(normalizedOptions, "fractionalSecondDigits", « "auto" », 0, 9, "auto").
+    auto digits_variant = get_string_or_number_option<u8>(global_object, normalized_options, vm.names.fractionalSecondDigits, { "auto"sv }, 0, 9, js_string(vm, "auto"sv));
+    if (vm.exception())
+        return {};
+
+    // 9. If digits is "auto", then
+    if (digits_variant->has<String>()) {
+        VERIFY(digits_variant->get<String>() == "auto"sv);
+        // a. Return the Record { [[Precision]]: "auto", [[Unit]]: "nanosecond", [[Increment]]: 1 }.
+        return SecondsStringPrecision { .precision = String { "auto"sv }, .unit = "nanosecond"sv, .increment = 1 };
+    }
+
+    auto digits = digits_variant->get<u8>();
+
+    // 10. If digits is 0, then
+    if (digits == 0) {
+        // a. Return the Record { [[Precision]]: 0, [[Unit]]: "second", [[Increment]]: 1 }.
+        return SecondsStringPrecision { .precision = 0, .unit = "second"sv, .increment = 1 };
+    }
+
+    // 11. If digits is 1, 2, or 3, then
+    if (digits == 1 || digits == 2 || digits == 3) {
+        // a. Return the Record { [[Precision]]: digits, [[Unit]]: "millisecond", [[Increment]]: 10^(3 − digits) }.
+        return SecondsStringPrecision { .precision = digits, .unit = "millisecond"sv, .increment = (u32)pow(10, 3 - digits) };
+    }
+
+    // 12. If digits is 4, 5, or 6, then
+    if (digits == 4 || digits == 5 || digits == 6) {
+        // a. Return the Record { [[Precision]]: digits, [[Unit]]: "microsecond", [[Increment]]: 10^(6 − digits) }.
+        return SecondsStringPrecision { .precision = digits, .unit = "microsecond"sv, .increment = (u32)pow(10, 6 - digits) };
+    }
+
+    // 13. Assert: digits is 7, 8, or 9.
+    VERIFY(digits == 7 || digits == 8 || digits == 9);
+
+    // 14. Return the Record { [[Precision]]: digits, [[Unit]]: "nanosecond", [[Increment]]: 10^(9 − digits) }.
+    return SecondsStringPrecision { .precision = digits, .unit = "nanosecond"sv, .increment = (u32)pow(10, 9 - digits) };
+}
+
 // https://tc39.es/proposal-temporal/#table-temporal-singular-and-plural-units
 static HashMap<StringView, StringView> plural_to_singular_units = {
     { "years"sv, "year"sv },
@@ -259,6 +399,46 @@ static HashMap<StringView, StringView> plural_to_singular_units = {
     { "nanoseconds"sv, "nanosecond"sv }
 };
 
+// 13.17 ToLargestTemporalUnit ( normalizedOptions, disallowedUnits, fallback [ , autoValue ] ), https://tc39.es/proposal-temporal/#sec-temporal-tolargesttemporalunit
+Optional<String> to_largest_temporal_unit(GlobalObject& global_object, Object& normalized_options, Vector<StringView> const& disallowed_units, String const& fallback, Optional<String> auto_value)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: disallowedUnits does not contain fallback.
+    // 2. Assert: disallowedUnits does not contain "auto".
+    // 3. Assert: autoValue is not present or fallback is "auto".
+    VERIFY(!auto_value.has_value() || fallback == "auto"sv);
+    // 4. Assert: autoValue is not present or disallowedUnits does not contain autoValue.
+
+    // 5. Let largestUnit be ? GetOption(normalizedOptions, "largestUnit", « String », « "auto", "year", "years", "month", "months", "week", "weeks", "day", "days", "hour", "hours", "minute", "minutes", "second", "seconds", "millisecond", "milliseconds", "microsecond", "microseconds", "nanosecond", "nanoseconds" », fallback).
+    auto largest_unit_value = get_option(global_object, normalized_options, vm.names.largestUnit, { OptionType::String }, { "auto"sv, "year"sv, "years"sv, "month"sv, "months"sv, "week"sv, "weeks"sv, "day"sv, "days"sv, "hour"sv, "hours"sv, "minute"sv, "minutes"sv, "second"sv, "seconds"sv, "millisecond"sv, "milliseconds"sv, "microsecond"sv, "microseconds"sv, "nanosecond"sv, "nanoseconds"sv }, js_string(vm, fallback));
+    if (vm.exception())
+        return {};
+    auto largest_unit = largest_unit_value.as_string().string();
+
+    // 6. If largestUnit is "auto" and autoValue is present, then
+    if (largest_unit == "auto"sv && auto_value.has_value()) {
+        // a. Return autoValue.
+        return auto_value;
+    }
+
+    // 7. If largestUnit is in the Plural column of Table 12, then
+    if (auto singular_unit = plural_to_singular_units.get(largest_unit); singular_unit.has_value()) {
+        // a. Set largestUnit to the corresponding Singular value of the same row.
+        largest_unit = singular_unit.value();
+    }
+
+    // 8. If disallowedUnits contains largestUnit, then
+    if (disallowed_units.contains_slow(largest_unit)) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::OptionIsNotValidValue, largest_unit, vm.names.largestUnit.as_string());
+        return {};
+    }
+
+    // 9. Return largestUnit.
+    return largest_unit;
+}
+
 // 13.18 ToSmallestTemporalUnit ( normalizedOptions, disallowedUnits, fallback ), https://tc39.es/proposal-temporal/#sec-temporal-tosmallesttemporalunit
 Optional<String> to_smallest_temporal_unit(GlobalObject& global_object, Object& normalized_options, Vector<StringView> const& disallowed_units, Optional<String> fallback)
 {
@@ -267,7 +447,7 @@ Optional<String> to_smallest_temporal_unit(GlobalObject& global_object, Object& 
     // 1. Assert: disallowedUnits does not contain fallback.
 
     // 2. Let smallestUnit be ? GetOption(normalizedOptions, "smallestUnit", « String », « "year", "years", "month", "months", "week", "weeks", "day", "days", "hour", "hours", "minute", "minutes", "second", "seconds", "millisecond", "milliseconds", "microsecond", "microseconds", "nanosecond", "nanoseconds" », fallback).
-    auto smallest_unit_value = get_option(global_object, normalized_options, "smallestUnit"sv, { OptionType::String }, { "year"sv, "years"sv, "month"sv, "months"sv, "week"sv, "weeks"sv, "day"sv, "days"sv, "hour"sv, "hours"sv, "minute"sv, "minutes"sv, "second"sv, "seconds"sv, "millisecond"sv, "milliseconds"sv, "microsecond"sv, "microseconds"sv, "nanosecond"sv, "nanoseconds"sv }, fallback.has_value() ? js_string(vm, *fallback) : js_undefined());
+    auto smallest_unit_value = get_option(global_object, normalized_options, vm.names.smallestUnit, { OptionType::String }, { "year"sv, "years"sv, "month"sv, "months"sv, "week"sv, "weeks"sv, "day"sv, "days"sv, "hour"sv, "hours"sv, "minute"sv, "minutes"sv, "second"sv, "seconds"sv, "millisecond"sv, "milliseconds"sv, "microsecond"sv, "microseconds"sv, "nanosecond"sv, "nanoseconds"sv }, fallback.has_value() ? js_string(vm, *fallback) : js_undefined());
     if (vm.exception())
         return {};
 
@@ -286,12 +466,185 @@ Optional<String> to_smallest_temporal_unit(GlobalObject& global_object, Object& 
     // 4. If disallowedUnits contains smallestUnit, then
     if (disallowed_units.contains_slow(smallest_unit)) {
         // a. Throw a RangeError exception.
-        vm.throw_exception<RangeError>(global_object, ErrorType::OptionIsNotValidValue, smallest_unit, "smallestUnit");
+        vm.throw_exception<RangeError>(global_object, ErrorType::OptionIsNotValidValue, smallest_unit, vm.names.smallestUnit.as_string());
         return {};
     }
 
     // 5. Return smallestUnit.
     return smallest_unit;
+}
+
+// 13.22 ValidateTemporalUnitRange ( largestUnit, smallestUnit ), https://tc39.es/proposal-temporal/#sec-temporal-validatetemporalunitrange
+void validate_temporal_unit_range(GlobalObject& global_object, String const& largest_unit, String const& smallest_unit)
+{
+    auto& vm = global_object.vm();
+
+    // 1. If smallestUnit is "year" and largestUnit is not "year", then
+    if (smallest_unit == "year"sv && largest_unit != "year"sv) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidUnitRange, smallest_unit, largest_unit);
+        return;
+    }
+    // 2. If smallestUnit is "month" and largestUnit is not "year" or "month", then
+    if (smallest_unit == "month"sv && !largest_unit.is_one_of("year"sv, "month"sv)) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidUnitRange, smallest_unit, largest_unit);
+        return;
+    }
+    // 3. If smallestUnit is "week" and largestUnit is not one of "year", "month", or "week", then
+    if (smallest_unit == "week"sv && !largest_unit.is_one_of("year"sv, "month"sv, "week"sv)) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidUnitRange, smallest_unit, largest_unit);
+        return;
+    }
+    // 4. If smallestUnit is "day" and largestUnit is not one of "year", "month", "week", or "day", then
+    if (smallest_unit == "day"sv && !largest_unit.is_one_of("year"sv, "month"sv, "week"sv, "day"sv)) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidUnitRange, smallest_unit, largest_unit);
+        return;
+    }
+    // 5. If smallestUnit is "hour" and largestUnit is not one of "year", "month", "week", "day", or "hour", then
+    if (smallest_unit == "hour"sv && !largest_unit.is_one_of("year"sv, "month"sv, "week"sv, "day"sv, "hour"sv)) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidUnitRange, smallest_unit, largest_unit);
+        return;
+    }
+    // 6. If smallestUnit is "minute" and largestUnit is "second", "millisecond", "microsecond", or "nanosecond", then
+    if (smallest_unit == "minute"sv && largest_unit.is_one_of("second"sv, "millisecond"sv, "microsecond"sv, "nanosecond"sv)) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidUnitRange, smallest_unit, largest_unit);
+        return;
+    }
+    // 7. If smallestUnit is "second" and largestUnit is "millisecond", "microsecond", or "nanosecond", then
+    if (smallest_unit == "second"sv && largest_unit.is_one_of("millisecond"sv, "microsecond"sv, "nanosecond"sv)) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidUnitRange, smallest_unit, largest_unit);
+        return;
+    }
+    // 8. If smallestUnit is "millisecond" and largestUnit is "microsecond" or "nanosecond", then
+    if (smallest_unit == "millisecond"sv && largest_unit.is_one_of("microsecond"sv, "nanosecond"sv)) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidUnitRange, smallest_unit, largest_unit);
+        return;
+    }
+    // 9. If smallestUnit is "microsecond" and largestUnit is "nanosecond", then
+    if (smallest_unit == "microsecond"sv && largest_unit == "nanosecond"sv) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidUnitRange, smallest_unit, largest_unit);
+        return;
+    }
+}
+
+// 13.23 LargerOfTwoTemporalUnits ( u1, u2 ), https://tc39.es/proposal-temporal/#sec-temporal-largeroftwotemporalunits
+String larger_of_two_temporal_units(StringView unit1, StringView unit2)
+{
+    // 1. If either u1 or u2 is "year", return "year".
+    if (unit1 == "year"sv || unit2 == "year"sv)
+        return "year"sv;
+    // 2. If either u1 or u2 is "month", return "month".
+    if (unit1 == "month"sv || unit2 == "month"sv)
+        return "month"sv;
+    // 3. If either u1 or u2 is "week", return "week".
+    if (unit1 == "week"sv || unit2 == "week"sv)
+        return "week"sv;
+    // 4. If either u1 or u2 is "day", return "day".
+    if (unit1 == "day"sv || unit2 == "day"sv)
+        return "day"sv;
+    // 5. If either u1 or u2 is "hour", return "hour".
+    if (unit1 == "hour"sv || unit2 == "hour"sv)
+        return "hour"sv;
+    // 6. If either u1 or u2 is "minute", return "minute".
+    if (unit1 == "minute"sv || unit2 == "minute"sv)
+        return "minute"sv;
+    // 7. If either u1 or u2 is "second", return "second".
+    if (unit1 == "second"sv || unit2 == "second"sv)
+        return "second"sv;
+    // 8. If either u1 or u2 is "millisecond", return "millisecond".
+    if (unit1 == "millisecond"sv || unit2 == "millisecond"sv)
+        return "millisecond"sv;
+    // 9. If either u1 or u2 is "microsecond", return "microsecond".
+    if (unit1 == "microsecond"sv || unit2 == "microsecond"sv)
+        return "microsecond"sv;
+    // 10. Return "nanosecond".
+    return "nanosecond"sv;
+}
+
+// 13.25 MaximumTemporalDurationRoundingIncrement ( unit ), https://tc39.es/proposal-temporal/#sec-temporal-maximumtemporaldurationroundingincrement
+Optional<u16> maximum_temporal_duration_rounding_increment(StringView unit)
+{
+    // 1. If unit is "year", "month", "week", or "day", then
+    if (unit.is_one_of("year"sv, "month"sv, "week"sv, "day"sv)) {
+        // a. Return undefined.
+        return {};
+    }
+
+    // 2. If unit is "hour", then
+    if (unit == "hour"sv) {
+        // a. Return 24.
+        return 24;
+    }
+
+    // 3. If unit is "minute" or "second", then
+    if (unit.is_one_of("minute"sv, "second"sv)) {
+        // a. Return 60.
+        return 60;
+    }
+
+    // 4. Assert: unit is one of "millisecond", "microsecond", or "nanosecond".
+    VERIFY(unit.is_one_of("millisecond"sv, "microsecond"sv, "nanosecond"sv));
+
+    // 5. Return 1000.
+    return 1000;
+}
+
+// 13.27 FormatSecondsStringPart ( second, millisecond, microsecond, nanosecond, precision ), https://tc39.es/proposal-temporal/#sec-temporal-formatsecondsstringpart
+String format_seconds_string_part(u8 second, u16 millisecond, u16 microsecond, u16 nanosecond, Variant<String, u8> const& precision)
+{
+    // 1. Assert: second, millisecond, microsecond and nanosecond are integers.
+
+    // Non-standard sanity check
+    if (precision.has<String>())
+        VERIFY(precision.get<String>().is_one_of("minute"sv, "auto"sv));
+
+    // 2. If precision is "minute", return "".
+    if (precision.has<String>() && precision.get<String>() == "minute"sv)
+        return String::empty();
+
+    // 3. Let secondsString be the string-concatenation of the code unit 0x003A (COLON) and second formatted as a two-digit decimal number, padded to the left with zeroes if necessary.
+    auto seconds_string = String::formatted(":{:02}", second);
+
+    // 4. Let fraction be millisecond × 10^6 + microsecond × 10^3 + nanosecond.
+    u32 fraction = millisecond * 1'000'000 + microsecond * 1'000 + nanosecond;
+
+    String fraction_string;
+
+    // 5. If precision is "auto", then
+    if (precision.has<String>() && precision.get<String>() == "auto"sv) {
+        // a. If fraction is 0, return secondsString.
+        if (fraction == 0)
+            return seconds_string;
+
+        // b. Set fraction to fraction formatted as a nine-digit decimal number, padded to the left with zeroes if necessary.
+        fraction_string = String::formatted("{:09}", fraction);
+
+        // c. Set fraction to the longest possible substring of fraction starting at position 0 and not ending with the code unit 0x0030 (DIGIT ZERO).
+        fraction_string = fraction_string.trim("0"sv, TrimMode::Right);
+    }
+    // 6. Else,
+    else {
+        // a. If precision is 0, return secondsString.
+        if (precision.get<u8>() == 0)
+            return seconds_string;
+
+        // b. Set fraction to fraction formatted as a nine-digit decimal number, padded to the left with zeroes if necessary.
+        fraction_string = String::formatted("{:09}", fraction);
+
+        // c. Set fraction to the substring of fraction from 0 to precision.
+        fraction_string = fraction_string.substring(0, precision.get<u8>());
+    }
+
+    // 7. Return the string-concatenation of secondsString, the code unit 0x002E (FULL STOP), and fraction.
+    return String::formatted("{}.{}", seconds_string, fraction_string);
 }
 
 // 13.29 ConstrainToRange ( x, minimum, maximum ), https://tc39.es/proposal-temporal/#sec-temporal-constraintorange
@@ -301,13 +654,13 @@ double constrain_to_range(double x, double minimum, double maximum)
 }
 
 // 13.32 RoundNumberToIncrement ( x, increment, roundingMode ), https://tc39.es/proposal-temporal/#sec-temporal-roundnumbertoincrement
-BigInt* round_number_to_increment(GlobalObject& global_object, BigInt const& x, u64 increment, String const& rounding_mode)
+BigInt* round_number_to_increment(GlobalObject& global_object, BigInt const& x, u64 increment, StringView rounding_mode)
 {
     auto& heap = global_object.heap();
 
     // 1. Assert: x and increment are mathematical values.
     // 2. Assert: roundingMode is "ceil", "floor", "trunc", or "halfExpand".
-    VERIFY(rounding_mode == "ceil" || rounding_mode == "floor" || rounding_mode == "trunc" || rounding_mode == "halfExpand");
+    VERIFY(rounding_mode == "ceil"sv || rounding_mode == "floor"sv || rounding_mode == "trunc"sv || rounding_mode == "halfExpand"sv);
 
     // OPTIMIZATION: If the increment is 1 the number is always rounded
     if (increment == 1)
@@ -323,19 +676,19 @@ BigInt* round_number_to_increment(GlobalObject& global_object, BigInt const& x, 
 
     Crypto::SignedBigInteger rounded = move(division_result.quotient);
     // 4. If roundingMode is "ceil", then
-    if (rounding_mode == "ceil") {
+    if (rounding_mode == "ceil"sv) {
         // a. Let rounded be −floor(−quotient).
         if (!division_result.remainder.is_negative())
             rounded = rounded.plus(Crypto::UnsignedBigInteger { 1 });
     }
     // 5. Else if roundingMode is "floor", then
-    else if (rounding_mode == "floor") {
+    else if (rounding_mode == "floor"sv) {
         // a. Let rounded be floor(quotient).
         if (division_result.remainder.is_negative())
             rounded = rounded.minus(Crypto::UnsignedBigInteger { 1 });
     }
     // 6. Else if roundingMode is "trunc", then
-    else if (rounding_mode == "trunc") {
+    else if (rounding_mode == "trunc"sv) {
         // a. Let rounded be the integral part of quotient, removing any fractional digits.
         // NOTE: This is a no-op
     }
@@ -484,16 +837,28 @@ Optional<TemporalInstant> parse_temporal_instant_string(GlobalObject& global_obj
     if (vm.exception())
         return {};
 
-    // 5. Assert: timeZoneResult.[[OffsetString]] is not undefined.
-    VERIFY(time_zone_result->offset.has_value());
+    // 5. Let offsetString be timeZoneResult.[[OffsetString]].
+    auto offset_string = time_zone_result->offset;
 
-    // 6. Return the Record { [[Year]]: result.[[Year]], [[Month]]: result.[[Month]], [[Day]]: result.[[Day]], [[Hour]]: result.[[Hour]], [[Minute]]: result.[[Minute]], [[Second]]: result.[[Second]], [[Millisecond]]: result.[[Millisecond]], [[Microsecond]]: result.[[Microsecond]], [[Nanosecond]]: result.[[Nanosecond]], [[TimeZoneOffsetString]]: timeZoneResult.[[OffsetString]] }.
+    // 6. If timeZoneResult.[[Z]] is true, then
+    if (time_zone_result->z) {
+        // a. Set offsetString to "+00:00".
+        offset_string = "+00:00"sv;
+    }
+
+    // 7. Assert: offsetString is not undefined.
+    VERIFY(offset_string.has_value());
+
+    // TODO: This is supposed to use `offset_string`, see https://github.com/tc39/proposal-temporal/pull/1799
+    // 8. Return the Record { [[Year]]: result.[[Year]], [[Month]]: result.[[Month]], [[Day]]: result.[[Day]], [[Hour]]: result.[[Hour]], [[Minute]]: result.[[Minute]], [[Second]]: result.[[Second]], [[Millisecond]]: result.[[Millisecond]], [[Microsecond]]: result.[[Microsecond]], [[Nanosecond]]: result.[[Nanosecond]], [[TimeZoneOffsetString]]: timeZoneResult.[[OffsetString]] }.
     return TemporalInstant { .year = result->year, .month = result->month, .day = result->day, .hour = result->hour, .minute = result->minute, .second = result->second, .millisecond = result->millisecond, .microsecond = result->microsecond, .nanosecond = result->nanosecond, .time_zone_offset = move(time_zone_result->offset) };
 }
 
 // 13.37 ParseTemporalCalendarString ( isoString ), https://tc39.es/proposal-temporal/#sec-temporal-parsetemporalcalendarstring
-Optional<String> parse_temporal_calendar_string([[maybe_unused]] GlobalObject& global_object, [[maybe_unused]] String const& iso_string)
+Optional<String> parse_temporal_calendar_string(GlobalObject& global_object, [[maybe_unused]] String const& iso_string)
 {
+    auto& vm = global_object.vm();
+
     // 1. Assert: Type(isoString) is String.
 
     // 2. If isoString does not satisfy the syntax of a TemporalCalendarString (see 13.33), then
@@ -508,7 +873,14 @@ Optional<String> parse_temporal_calendar_string([[maybe_unused]] GlobalObject& g
         return "iso8601";
     }
 
-    // 5. Return id.
+    // 5. If ! IsBuiltinCalendar(id) is false, then
+    if (!is_builtin_calendar(*id_part)) {
+        // a. Throw a RangeError exception.
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidCalendarIdentifier, *id_part);
+        return {};
+    }
+
+    // 6. Return id.
     return id_part.value();
 }
 
@@ -532,12 +904,52 @@ Optional<TemporalDate> parse_temporal_date_string(GlobalObject& global_object, S
     return TemporalDate { .year = result->year, .month = result->month, .day = result->day, .calendar = move(result->calendar) };
 }
 
+// 13.39 ParseTemporalDateTimeString ( isoString ), https://tc39.es/proposal-temporal/#sec-temporal-parsetemporaldatetimestring
+Optional<ISODateTime> parse_temporal_date_time_string(GlobalObject& global_object, String const& iso_string)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: Type(isoString) is String.
+
+    // 2. If isoString does not satisfy the syntax of a TemporalDateTimeString (see 13.33), then
+    // a. Throw a RangeError exception.
+    // TODO
+
+    // 3. Let result be ? ParseISODateTime(isoString).
+    auto result = parse_iso_date_time(global_object, iso_string);
+    if (vm.exception())
+        return {};
+
+    // 4. Return result.
+    return result;
+}
+
 // 13.40 ParseTemporalDurationString ( isoString ), https://tc39.es/proposal-temporal/#sec-temporal-parsetemporaldurationstring
 Optional<TemporalDuration> parse_temporal_duration_string(GlobalObject& global_object, String const& iso_string)
 {
     (void)global_object;
     (void)iso_string;
     TODO();
+}
+
+// 13.43 ParseTemporalTimeString ( isoString ), https://tc39.es/proposal-temporal/#sec-temporal-parsetemporaltimestring
+Optional<TemporalTime> parse_temporal_time_string(GlobalObject& global_object, [[maybe_unused]] String const& iso_string)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: Type(isoString) is String.
+
+    // 2. If isoString does not satisfy the syntax of a TemporalTimeString (see 13.33), then
+    // a. Throw a RangeError exception.
+    // TODO
+
+    // 3. Let result be ? ParseISODateTime(isoString).
+    auto result = parse_iso_date_time(global_object, iso_string);
+    if (vm.exception())
+        return {};
+
+    // 4. Return the Record { [[Hour]]: result.[[Hour]], [[Minute]]: result.[[Minute]], [[Second]]: result.[[Second]], [[Millisecond]]: result.[[Millisecond]], [[Microsecond]]: result.[[Microsecond]], [[Nanosecond]]: result.[[Nanosecond]], [[Calendar]]: result.[[Calendar]] }.
+    return TemporalTime { .hour = result->hour, .minute = result->minute, .second = result->second, .millisecond = result->millisecond, .microsecond = result->microsecond, .nanosecond = result->nanosecond, .calendar = move(result->calendar) };
 }
 
 // 13.44 ParseTemporalTimeZoneString ( isoString ), https://tc39.es/proposal-temporal/#sec-temporal-parsetemporaltimezonestring
@@ -561,8 +973,8 @@ Optional<TemporalTimeZone> parse_temporal_time_zone_string(GlobalObject& global_
 
     // 4. If z is not undefined, then
     if (z_part.has_value()) {
-        // a. Return the Record { [[Z]]: "Z", [[OffsetString]]: "+00:00", [[Name]]: undefined }.
-        return TemporalTimeZone { .z = true, .offset = "+00:00", .name = {} };
+        // a. Return the Record { [[Z]]: true, [[OffsetString]]: undefined, [[Name]]: name }.
+        return TemporalTimeZone { .z = true, .offset = {}, .name = name_part.has_value() ? String { *name_part } : Optional<String> {} };
     }
 
     Optional<String> offset;
@@ -629,35 +1041,28 @@ Optional<TemporalTimeZone> parse_temporal_time_zone_string(GlobalObject& global_
         name = canonicalize_time_zone_name(*name_part);
     }
 
-    // 8. Return the Record { [[Z]]: undefined, [[OffsetString]]: offsetString, [[Name]]: name }.
+    // 8. Return the Record { [[Z]]: false, [[OffsetString]]: offsetString, [[Name]]: name }.
     return TemporalTimeZone { .z = false, .offset = offset, .name = name };
 }
 
-// 13.46 ToPositiveIntegerOrInfinity ( argument ), https://tc39.es/proposal-temporal/#sec-temporal-topositiveintegerorinfinity
-double to_positive_integer_or_infinity(GlobalObject& global_object, Value argument)
+// 13.46 ToPositiveInteger ( argument ), https://tc39.es/proposal-temporal/#sec-temporal-topositiveinteger
+double to_positive_integer(GlobalObject& global_object, Value argument)
 {
     auto& vm = global_object.vm();
 
-    // 1. Let integer be ? ToIntegerOrInfinity(argument).
-    auto integer = argument.to_integer_or_infinity(global_object);
+    // 1. Let integer be ? ToIntegerThrowOnInfinity(argument).
+    auto integer = to_integer_throw_on_infinity(global_object, argument, ErrorType::TemporalPropertyMustBePositiveInteger);
     if (vm.exception())
         return {};
 
-    // 2. If integer is -∞𝔽, then
-    if (Value(integer).is_negative_infinity()) {
-        // a. Throw a RangeError exception.
-        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalPropertyMustBePositiveInteger);
-        return {};
-    }
-
-    // 3. If integer ≤ 0, then
+    // 2. If integer ≤ 0, then
     if (integer <= 0) {
         // a. Throw a RangeError exception.
         vm.throw_exception<RangeError>(global_object, ErrorType::TemporalPropertyMustBePositiveInteger);
         return {};
     }
 
-    // 4. Return integer.
+    // 3. Return integer.
     return integer;
 }
 
@@ -700,11 +1105,11 @@ Object* prepare_temporal_fields(GlobalObject& global_object, Object& fields, Vec
             // 1. Let Conversion represent the abstract operation named by the Conversion value of the same row.
             // 2. Set value to ? Conversion(value).
             if (property.is_one_of("year", "hour", "minute", "second", "millisecond", "microsecond", "nanosecond", "eraYear")) {
-                value = Value(value.to_integer_or_infinity(global_object));
+                value = Value(to_integer_throw_on_infinity(global_object, value, ErrorType::TemporalPropertyMustBeFinite));
                 if (vm.exception())
                     return {};
             } else if (property.is_one_of("month", "day")) {
-                value = Value(to_positive_integer_or_infinity(global_object, value));
+                value = Value(to_positive_integer(global_object, value));
                 if (vm.exception())
                     return {};
             } else if (property.is_one_of("monthCode", "offset", "era")) {

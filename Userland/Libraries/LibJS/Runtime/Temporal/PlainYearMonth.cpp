@@ -7,6 +7,7 @@
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Temporal/AbstractOperations.h>
+#include <LibJS/Runtime/Temporal/Calendar.h>
 #include <LibJS/Runtime/Temporal/PlainDate.h>
 #include <LibJS/Runtime/Temporal/PlainYearMonth.h>
 #include <LibJS/Runtime/Temporal/PlainYearMonthConstructor.h>
@@ -43,7 +44,7 @@ Optional<ISOYearMonth> regulate_iso_year_month(GlobalObject& global_object, doub
     // 3. If overflow is "constrain", then
     if (overflow == "constrain"sv) {
         // IMPLEMENTATION DEFINED: This is an optimization that allows us to treat `year` (a double) as normal integer from this point onwards.
-        // This does not change the exposed behaviour as the subsequent call to CreateTemporalYearMonth will check that its value is a valid ISO
+        // This does not change the exposed behavior as the subsequent call to CreateTemporalYearMonth will check that its value is a valid ISO
         // values (for years: -273975 - 273975) which is a subset of this check.
         // If RegulateISOYearMonth is ever used outside ISOYearMonthFromFields, this may need to be changed.
         if (!AK::is_within_range<i32>(year)) {
@@ -58,7 +59,7 @@ Optional<ISOYearMonth> regulate_iso_year_month(GlobalObject& global_object, doub
     // 4. If overflow is "reject", then
     if (overflow == "reject"sv) {
         // IMPLEMENTATION DEFINED: This is an optimization that allows us to treat these doubles as normal integers from this point onwards.
-        // This does not change the exposed behaviour as the call to IsValidISOMonth and subsequent call to CreateTemporalDateTime will check
+        // This does not change the exposed behavior as the call to IsValidISOMonth and subsequent call to CreateTemporalDateTime will check
         // that these values are valid ISO values (for years: -273975 - 273975, for months: 1 - 12) all of which are subsets of this check.
         if (!AK::is_within_range<i32>(year) || !AK::is_within_range<u8>(month)) {
             vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidPlainYearMonth);
@@ -184,6 +185,39 @@ PlainYearMonth* create_temporal_year_month(GlobalObject& global_object, i32 iso_
 
     // 11. Return object.
     return object;
+}
+
+// 9.5.8 TemporalYearMonthToString ( yearMonth, showCalendar ), https://tc39.es/proposal-temporal/#sec-temporal-temporalyearmonthtostring
+Optional<String> temporal_year_month_to_string(GlobalObject& global_object, PlainYearMonth& year_month, StringView show_calendar)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: Type(yearMonth) is Object.
+    // 2. Assert: yearMonth has an [[InitializedTemporalYearMonth]] internal slot.
+
+    // 3. Let year be ! PadISOYear(yearMonth.[[ISOYear]]).
+    // 4. Let month be yearMonth.[[ISOMonth]] formatted as a two-digit decimal number, padded to the left with a zero if necessary.
+    // 5. Let result be the string-concatenation of year, the code unit 0x002D (HYPHEN-MINUS), and month.
+    auto result = String::formatted("{}-{:02}", pad_iso_year(year_month.iso_year()), year_month.iso_month());
+
+    // 6. Let calendarID be ? ToString(yearMonth.[[Calendar]]).
+    auto calendar_id = Value(&year_month.calendar()).to_string(global_object);
+    if (vm.exception())
+        return {};
+
+    // 7. If calendarID is not "iso8601", then
+    if (calendar_id != "iso8601") {
+        // a. Let day be yearMonth.[[ISODay]] formatted as a two-digit decimal number, padded to the left with a zero if necessary.
+        // b. Set result to the string-concatenation of result, the code unit 0x002D (HYPHEN-MINUS), and day.
+        result = String::formatted("{}-{:02}", result, year_month.iso_day());
+    }
+
+    // 8. Let calendarString be ! FormatCalendarAnnotation(calendarID, showCalendar).
+    auto calendar_string = format_calendar_annotation(calendar_id, show_calendar);
+
+    // 9. Set result to the string-concatenation of result and calendarString.
+    // 10. Return result.
+    return String::formatted("{}{}", result, calendar_string);
 }
 
 }

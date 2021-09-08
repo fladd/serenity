@@ -13,14 +13,14 @@
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
 #include <AK/String.h>
+#include <Kernel/API/KResult.h>
 #include <Kernel/FileSystem/FileSystem.h>
 #include <Kernel/FileSystem/InodeIdentifier.h>
 #include <Kernel/FileSystem/InodeMetadata.h>
 #include <Kernel/FileSystem/Mount.h>
 #include <Kernel/FileSystem/UnveilNode.h>
 #include <Kernel/Forward.h>
-#include <Kernel/KResult.h>
-#include <Kernel/Locking/ProtectedValue.h>
+#include <Kernel/Locking/MutexProtected.h>
 
 namespace Kernel {
 
@@ -29,8 +29,8 @@ namespace Kernel {
 #define O_UNLINK_INTERNAL (1 << 30)
 
 struct UidAndGid {
-    uid_t uid;
-    gid_t gid;
+    UserID uid;
+    GroupID gid;
 };
 
 class VirtualFileSystem {
@@ -42,14 +42,14 @@ public:
     VirtualFileSystem();
     ~VirtualFileSystem();
 
-    bool mount_root(FileSystem&);
+    KResult mount_root(FileSystem&);
     KResult mount(FileSystem&, Custody& mount_point, int flags);
     KResult bind_mount(Custody& source, Custody& mount_point, int flags);
     KResult remount(Custody& mount_point, int new_flags);
     KResult unmount(Inode& guest_inode);
 
-    KResultOr<NonnullRefPtr<FileDescription>> open(StringView path, int options, mode_t mode, Custody& base, Optional<UidAndGid> = {});
-    KResultOr<NonnullRefPtr<FileDescription>> create(StringView path, int options, mode_t mode, Custody& parent_custody, Optional<UidAndGid> = {});
+    KResultOr<NonnullRefPtr<OpenFileDescription>> open(StringView path, int options, mode_t mode, Custody& base, Optional<UidAndGid> = {});
+    KResultOr<NonnullRefPtr<OpenFileDescription>> create(StringView path, int options, mode_t mode, Custody& parent_custody, Optional<UidAndGid> = {});
     KResult mkdir(StringView path, mode_t mode, Custody& base);
     KResult link(StringView old_path, StringView new_path, Custody& base);
     KResult unlink(StringView path, Custody& base);
@@ -57,8 +57,8 @@ public:
     KResult rmdir(StringView path, Custody& base);
     KResult chmod(StringView path, mode_t, Custody& base);
     KResult chmod(Custody&, mode_t);
-    KResult chown(StringView path, uid_t, gid_t, Custody& base);
-    KResult chown(Custody&, uid_t, gid_t);
+    KResult chown(StringView path, UserID, GroupID, Custody& base);
+    KResult chown(Custody&, UserID, GroupID);
     KResult access(StringView path, int mode, Custody& base);
     KResultOr<InodeMetadata> lookup_metadata(StringView path, Custody& base, int options = 0);
     KResult utime(StringView path, Custody& base, time_t atime, time_t mtime);
@@ -77,7 +77,7 @@ public:
     KResultOr<NonnullRefPtr<Custody>> resolve_path_without_veil(StringView path, Custody& base, RefPtr<Custody>* out_parent = nullptr, int options = 0, int symlink_recursion_level = 0);
 
 private:
-    friend class FileDescription;
+    friend class OpenFileDescription;
 
     UnveilNode const& find_matching_unveiled_path(StringView path);
     KResult validate_path_against_process_veil(Custody const& path, int options);
@@ -93,7 +93,7 @@ private:
     RefPtr<Inode> m_root_inode;
     RefPtr<Custody> m_root_custody;
 
-    ProtectedValue<Vector<Mount, 16>> m_mounts;
+    MutexProtected<Vector<Mount, 16>> m_mounts;
 };
 
 }

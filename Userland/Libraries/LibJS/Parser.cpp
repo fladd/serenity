@@ -44,7 +44,7 @@ public:
         if (m_mask & Let)
             m_parser.m_state.let_scopes.append(NonnullRefPtrVector<VariableDeclaration>());
 
-        m_parser.m_state.current_scope = create<Parser::Scope>(scope_type, m_parser.m_state.current_scope);
+        m_parser.m_state.current_scope = make_ref_counted<Parser::Scope>(scope_type, m_parser.m_state.current_scope);
     }
 
     ~ScopePusher()
@@ -210,7 +210,6 @@ constexpr OperatorPrecedenceTable g_operator_precedence;
 
 Parser::ParserState::ParserState(Lexer l, Program::Type program_type)
     : lexer(move(l))
-    , current_token(TokenType::Invalid, {}, {}, {}, {}, 0, 0, 0)
 {
     if (program_type == Program::Type::Module)
         lexer.disallow_html_comments();
@@ -366,7 +365,8 @@ NonnullRefPtr<Declaration> Parser::parse_declaration()
 NonnullRefPtr<Statement> Parser::parse_statement(AllowLabelledFunction allow_labelled_function)
 {
     auto rule_start = push_start();
-    switch (m_state.current_token.type()) {
+    auto type = m_state.current_token.type();
+    switch (type) {
     case TokenType::CurlyOpen:
         return parse_block_statement();
     case TokenType::Return:
@@ -405,14 +405,22 @@ NonnullRefPtr<Statement> Parser::parse_statement(AllowLabelledFunction allow_lab
         m_state.current_token = m_state.lexer.force_slash_as_regex();
         [[fallthrough]];
     default:
+        if (type == TokenType::EscapedKeyword
+            && (m_state.strict_mode
+                || (m_state.current_token.value() != "yield"sv && m_state.current_token.value() != "let"sv)))
+            syntax_error("Keyword must not contain escaped characters");
+
         if (match_identifier_name()) {
             auto result = try_parse_labelled_statement(allow_labelled_function);
             if (!result.is_null())
                 return result.release_nonnull();
         }
         if (match_expression()) {
-            if (match(TokenType::Function))
-                syntax_error("Function declaration not allowed in single-statement context");
+            if (match(TokenType::Function) || match(TokenType::Class))
+                syntax_error(String::formatted("{} declaration not allowed in single-statement context", m_state.current_token.name()));
+            if (match(TokenType::Let) && next_token().type() == TokenType::BracketOpen)
+                syntax_error(String::formatted("let followed by [ is not allowed in single-statement context"));
+
             auto expr = parse_expression(0);
             consume_or_insert_semicolon();
             return create_ast_node<ExpressionStatement>({ m_state.current_token.filename(), rule_start.position(), position() }, move(expr));
@@ -429,6 +437,13 @@ static bool is_strict_reserved_word(StringView str)
 {
     return any_of(strict_reserved_words, [&str](StringView const& word) {
         return word == str;
+    });
+}
+
+static bool is_simple_parameter_list(Vector<FunctionNode::Parameter> const& parameters)
+{
+    return all_of(parameters, [](FunctionNode::Parameter const& parameter) {
+        return !parameter.is_rest && parameter.default_value.is_null() && parameter.binding.has<FlyString>();
     });
 }
 
@@ -490,11 +505,8 @@ RefPtr<FunctionExpression> Parser::try_parse_arrow_function_expression(bool expe
         if (match(TokenType::CurlyOpen)) {
             // Parse a function body with statements
             ScopePusher scope(*this, ScopePusher::Var, Scope::Function);
-            bool has_binding = any_of(parameters, [](FunctionNode::Parameter const& parameter) {
-                return parameter.binding.has<NonnullRefPtr<BindingPattern>>();
-            });
 
-            auto body = parse_block_statement(is_strict, has_binding);
+            auto body = parse_block_statement(is_strict, !is_simple_parameter_list(parameters));
             scope.add_to_scope_node(body);
             return body;
         }
@@ -546,7 +558,7 @@ RefPtr<Statement> Parser::try_parse_labelled_statement(AllowLabelledFunction all
         load_state();
     };
 
-    if (match(TokenType::Yield) && (m_state.strict_mode || m_state.in_generator_function_context)) {
+    if (m_state.current_token.value() == "yield"sv && (m_state.strict_mode || m_state.in_generator_function_context)) {
         syntax_error("'yield' label not allowed in this context");
         return {};
     }
@@ -566,11 +578,11 @@ RefPtr<Statement> Parser::try_parse_labelled_statement(AllowLabelledFunction all
 
     if (m_state.labels_in_scope.contains(identifier))
         syntax_error(String::formatted("Label '{}' has already been declared", identifier));
-    m_state.labels_in_scope.set(identifier);
 
     RefPtr<Statement> labelled_statement;
 
     if (match(TokenType::Function)) {
+        m_state.labels_in_scope.set(identifier, false);
         auto function_declaration = parse_function_node<FunctionDeclaration>();
         m_state.current_scope->function_declarations.append(function_declaration);
         auto hoisting_target = m_state.current_scope->get_current_function_scope();
@@ -580,6 +592,8 @@ RefPtr<Statement> Parser::try_parse_labelled_statement(AllowLabelledFunction all
 
         labelled_statement = move(function_declaration);
     } else {
+        auto is_iteration_statement = match(TokenType::For) || match(TokenType::Do) || match(TokenType::While);
+        m_state.labels_in_scope.set(identifier, is_iteration_statement);
         labelled_statement = parse_statement();
     }
 
@@ -605,7 +619,8 @@ RefPtr<MetaProperty> Parser::try_parse_new_target_expression()
     consume();
     if (!match(TokenType::Identifier))
         return {};
-    if (consume().value() != "target")
+    // The string 'target' cannot have escapes so we check original value.
+    if (consume().original_value() != "target"sv)
         return {};
 
     state_rollback_guard.disarm();
@@ -628,6 +643,7 @@ NonnullRefPtr<ClassExpression> Parser::parse_class_expression(bool expect_class_
     consume(TokenType::Class);
 
     NonnullRefPtrVector<ClassMethod> methods;
+    NonnullRefPtrVector<ClassField> fields;
     RefPtr<Expression> super_class;
     RefPtr<FunctionExpression> constructor;
 
@@ -678,9 +694,9 @@ NonnullRefPtr<ClassExpression> Parser::parse_class_expression(bool expect_class_
             is_generator = true;
         }
 
+        StringView name;
         if (match_property_key()) {
-            StringView name;
-            if (!is_generator && m_state.current_token.value() == "static"sv) {
+            if (!is_generator && m_state.current_token.original_value() == "static"sv) {
                 if (match(TokenType::Identifier)) {
                     consume();
                     is_static = true;
@@ -692,12 +708,12 @@ NonnullRefPtr<ClassExpression> Parser::parse_class_expression(bool expect_class_
             }
 
             if (match(TokenType::Identifier)) {
-                auto identifier_name = m_state.current_token.value();
+                auto identifier_name = m_state.current_token.original_value();
 
-                if (identifier_name == "get") {
+                if (identifier_name == "get"sv) {
                     method_kind = ClassMethod::Kind::Getter;
                     consume();
-                } else if (identifier_name == "set") {
+                } else if (identifier_name == "set"sv) {
                     method_kind = ClassMethod::Kind::Setter;
                     consume();
                 }
@@ -725,7 +741,7 @@ NonnullRefPtr<ClassExpression> Parser::parse_class_expression(bool expect_class_
                 //   It is a Syntax Error if PropName of MethodDefinition is "prototype".
                 if (is_static && name == "prototype"sv)
                     syntax_error("Classes may not have a static property named 'prototype'");
-            } else if (match(TokenType::ParenOpen) && (is_static || method_kind != ClassMethod::Kind::Method)) {
+            } else if ((match(TokenType::ParenOpen) || match(TokenType::Equals)) && (is_static || method_kind != ClassMethod::Kind::Method)) {
                 switch (method_kind) {
                 case ClassMethod::Kind::Method:
                     VERIFY(is_static);
@@ -747,7 +763,7 @@ NonnullRefPtr<ClassExpression> Parser::parse_class_expression(bool expect_class_
             }
 
             // Constructor may be a StringLiteral or an Identifier.
-            if (!is_static && name == "constructor") {
+            if (!is_static && name == "constructor"sv) {
                 if (method_kind != ClassMethod::Kind::Method)
                     syntax_error("Class constructor may not be an accessor");
                 if (!constructor.is_null())
@@ -777,9 +793,29 @@ NonnullRefPtr<ClassExpression> Parser::parse_class_expression(bool expect_class_
             } else {
                 syntax_error("No key for class method");
             }
-        } else {
+        } else if (is_generator) {
             expected("ParenOpen");
             consume();
+        } else if (property_key.is_null()) {
+            expected("property key");
+            consume();
+        } else {
+            if (name == "constructor"sv)
+                syntax_error("Class cannot have field named 'constructor'");
+
+            RefPtr<Expression> initializer;
+
+            if (match(TokenType::Equals)) {
+                consume();
+
+                TemporaryChange super_property_access_rollback(m_state.allow_super_property_lookup, true);
+                TemporaryChange field_initializer_rollback(m_state.in_class_field_initializer, true);
+                initializer = parse_expression(2);
+            }
+
+            fields.append(create_ast_node<ClassField>({ m_state.current_token.filename(), rule_start.position(), position() }, property_key.release_nonnull(), move(initializer), is_static));
+
+            consume_or_insert_semicolon();
         }
     }
 
@@ -806,7 +842,7 @@ NonnullRefPtr<ClassExpression> Parser::parse_class_expression(bool expect_class_
         }
     }
 
-    return create_ast_node<ClassExpression>({ m_state.current_token.filename(), rule_start.position(), position() }, move(class_name), move(constructor), move(super_class), move(methods));
+    return create_ast_node<ClassExpression>({ m_state.current_token.filename(), rule_start.position(), position() }, move(class_name), move(constructor), move(super_class), move(methods), move(fields));
 }
 
 Parser::PrimaryExpressionParseResult Parser::parse_primary_expression()
@@ -848,6 +884,10 @@ Parser::PrimaryExpressionParseResult Parser::parse_primary_expression()
         if (!m_state.allow_super_property_lookup)
             syntax_error("'super' keyword unexpected here");
         return { create_ast_node<SuperExpression>({ m_state.current_token.filename(), rule_start.position(), position() }) };
+    case TokenType::EscapedKeyword:
+        if (m_state.strict_mode || (m_state.current_token.value() != "let"sv && (m_state.in_generator_function_context || m_state.current_token.value() != "yield"sv)))
+            syntax_error("Keyword must not contain escaped characters");
+        [[fallthrough]];
     case TokenType::Identifier: {
     read_as_identifier:;
         if (!try_parse_arrow_function_expression_failed_at_position(position())) {
@@ -857,11 +897,11 @@ Parser::PrimaryExpressionParseResult Parser::parse_primary_expression()
 
             set_try_parse_arrow_function_expression_failed_at_position(position(), true);
         }
-        auto string = consume().value();
+        auto string = m_state.current_token.value();
         // This could be 'eval' or 'arguments' and thus needs a custom check (`eval[1] = true`)
         if (m_state.strict_mode && (string == "let" || is_strict_reserved_word(string)))
             syntax_error(String::formatted("Identifier must not be a reserved word in strict mode ('{}')", string));
-        return { create_ast_node<Identifier>({ m_state.current_token.filename(), rule_start.position(), position() }, string) };
+        return { parse_identifier() };
     }
     case TokenType::NumericLiteral:
         return { create_ast_node<NumericLiteral>({ m_state.current_token.filename(), rule_start.position(), position() }, consume_and_validate_numeric_literal().double_value()) };
@@ -1076,16 +1116,16 @@ NonnullRefPtr<ObjectExpression> Parser::parse_object_expression()
             property_name = parse_property_key();
             function_kind = FunctionKind ::Generator;
         } else if (match_identifier()) {
-            auto identifier = consume().value();
-            if (identifier == "get" && match_property_key()) {
+            auto identifier = consume();
+            if (identifier.original_value() == "get"sv && match_property_key()) {
                 property_type = ObjectProperty::Type::Getter;
                 property_name = parse_property_key();
-            } else if (identifier == "set" && match_property_key()) {
+            } else if (identifier.original_value() == "set"sv && match_property_key()) {
                 property_type = ObjectProperty::Type::Setter;
                 property_name = parse_property_key();
             } else {
-                property_name = create_ast_node<StringLiteral>({ m_state.current_token.filename(), rule_start.position(), position() }, identifier);
-                property_value = create_ast_node<Identifier>({ m_state.current_token.filename(), rule_start.position(), position() }, identifier);
+                property_name = create_ast_node<StringLiteral>({ m_state.current_token.filename(), rule_start.position(), position() }, identifier.value());
+                property_value = create_ast_node<Identifier>({ m_state.current_token.filename(), rule_start.position(), position() }, identifier.value());
             }
         } else {
             property_name = parse_property_key();
@@ -1231,7 +1271,7 @@ NonnullRefPtr<TemplateLiteral> Parser::parse_template_literal(bool is_tagged)
             auto token = consume();
             expressions.append(parse_string_literal(token, true));
             if (is_tagged)
-                raw_strings.append(create_ast_node<StringLiteral>({ m_state.current_token.filename(), rule_start.position(), position() }, token.value()));
+                raw_strings.append(create_ast_node<StringLiteral>({ m_state.current_token.filename(), rule_start.position(), position() }, token.raw_template_value()));
         } else if (match(TokenType::TemplateLiteralExprStart)) {
             consume(TokenType::TemplateLiteralExprStart);
             if (match(TokenType::TemplateLiteralExprEnd)) {
@@ -1510,11 +1550,13 @@ NonnullRefPtr<AssignmentExpression> Parser::parse_assignment_expression(Assignme
             parser.m_state.allow_super_property_lookup = m_state.allow_super_property_lookup;
             parser.m_state.allow_super_constructor_call = m_state.allow_super_constructor_call;
             parser.m_state.in_function_context = m_state.in_function_context;
+            parser.m_state.in_formal_parameter_context = m_state.in_formal_parameter_context;
             parser.m_state.in_generator_function_context = m_state.in_generator_function_context;
             parser.m_state.in_arrow_function_context = m_state.in_arrow_function_context;
             parser.m_state.in_break_context = m_state.in_break_context;
             parser.m_state.in_continue_context = m_state.in_continue_context;
             parser.m_state.string_legacy_octal_escape_sequence_in_scope = m_state.string_legacy_octal_escape_sequence_in_scope;
+            parser.m_state.in_class_field_initializer = m_state.in_class_field_initializer;
 
             auto result = parser.parse_binding_pattern();
             if (parser.has_errors())
@@ -1557,12 +1599,14 @@ NonnullRefPtr<Identifier> Parser::parse_identifier()
 {
     auto identifier_start = position();
     auto token = consume_identifier();
+    if (m_state.in_class_field_initializer && token.value() == "arguments"sv)
+        syntax_error("'arguments' is not allowed in class field initializer");
     return create_ast_node<Identifier>(
         { m_state.current_token.filename(), identifier_start, position() },
         token.value());
 }
 
-NonnullRefPtr<CallExpression> Parser::parse_call_expression(NonnullRefPtr<Expression> lhs)
+NonnullRefPtr<Expression> Parser::parse_call_expression(NonnullRefPtr<Expression> lhs)
 {
     auto rule_start = push_start();
     if (!m_state.allow_super_constructor_call && is<SuperExpression>(*lhs))
@@ -1623,6 +1667,10 @@ NonnullRefPtr<NewExpression> Parser::parse_new_expression()
 NonnullRefPtr<YieldExpression> Parser::parse_yield_expression()
 {
     auto rule_start = push_start();
+
+    if (m_state.in_formal_parameter_context)
+        syntax_error("'Yield' expression is not allowed in formal parameters of generator function");
+
     consume(TokenType::Yield);
     RefPtr<Expression> argument;
     bool yield_from = false;
@@ -1669,7 +1717,7 @@ NonnullRefPtr<BlockStatement> Parser::parse_block_statement()
     return parse_block_statement(dummy);
 }
 
-NonnullRefPtr<BlockStatement> Parser::parse_block_statement(bool& is_strict, bool error_on_binding)
+NonnullRefPtr<BlockStatement> Parser::parse_block_statement(bool& is_strict, bool function_with_non_simple_parameter_list)
 {
     auto rule_start = push_start();
     ScopePusher scope(*this, ScopePusher::Let, Parser::Scope::Block);
@@ -1698,8 +1746,8 @@ NonnullRefPtr<BlockStatement> Parser::parse_block_statement(bool& is_strict, boo
                 if (m_state.string_legacy_octal_escape_sequence_in_scope)
                     syntax_error("Octal escape sequence in string literal not allowed in strict mode");
 
-                if (error_on_binding) {
-                    syntax_error("Illegal 'use strict' directive in function with non-simple parameter list");
+                if (function_with_non_simple_parameter_list) {
+                    syntax_error("Illegal 'use strict' directive in function with non-simple parameter list", statement->source_range().start);
                 }
             }
 
@@ -1733,6 +1781,7 @@ NonnullRefPtr<FunctionNodeType> Parser::parse_function_node(u8 parse_options)
     TemporaryChange super_constructor_call_rollback(m_state.allow_super_constructor_call, !!(parse_options & FunctionNodeParseOptions::AllowSuperConstructorCall));
     TemporaryChange break_context_rollback(m_state.in_break_context, false);
     TemporaryChange continue_context_rollback(m_state.in_continue_context, false);
+    TemporaryChange class_field_initializer_rollback(m_state.in_class_field_initializer, false);
 
     ScopePusher scope(*this, ScopePusher::Var, Parser::Scope::Function);
 
@@ -1775,12 +1824,8 @@ NonnullRefPtr<FunctionNodeType> Parser::parse_function_node(u8 parse_options)
 
     m_state.function_parameters.append(parameters);
 
-    bool has_binding = any_of(parameters, [](FunctionNode::Parameter const& parameter) {
-        return parameter.binding.has<NonnullRefPtr<BindingPattern>>();
-    });
-
     bool is_strict = false;
-    auto body = parse_block_statement(is_strict, has_binding);
+    auto body = parse_block_statement(is_strict, !is_simple_parameter_list(parameters));
 
     // If the function contains 'use strict' we need to check the parameters (again).
     if (is_strict || is_generator) {
@@ -1833,6 +1878,7 @@ Vector<FunctionNode::Parameter> Parser::parse_formal_parameters(int& function_le
     auto rule_start = push_start();
     bool has_default_parameter = false;
     bool has_rest_parameter = false;
+    TemporaryChange formal_parameter_context_change { m_state.in_formal_parameter_context, true };
 
     Vector<FunctionNode::Parameter> parameters;
 
@@ -1906,8 +1952,6 @@ Vector<FunctionNode::Parameter> Parser::parse_formal_parameters(int& function_le
             bool is_generator = parse_options & FunctionNodeParseOptions::IsGeneratorFunction;
             if ((is_generator || m_state.strict_mode) && default_value && default_value->fast_is<Identifier>() && static_cast<Identifier&>(*default_value).string() == "yield"sv)
                 syntax_error("Generator function parameter initializer cannot contain a reference to an identifier named \"yield\"");
-            if (default_value && is<YieldExpression>(*default_value))
-                syntax_error("Yield expression not allowed in formal parameter");
         }
         parameters.append({ move(parameter), default_value, is_rest });
         if (match(TokenType::ParenClose))
@@ -2267,7 +2311,9 @@ NonnullRefPtr<BreakStatement> Parser::parse_break_statement()
     } else {
         if (match(TokenType::Identifier) && !m_state.current_token.trivia_contains_line_terminator()) {
             target_label = consume().value();
-            if (!m_state.labels_in_scope.contains(target_label))
+
+            auto label = m_state.labels_in_scope.find(target_label);
+            if (label == m_state.labels_in_scope.end())
                 syntax_error(String::formatted("Label '{}' not found", target_label));
         }
         consume_or_insert_semicolon();
@@ -2293,8 +2339,10 @@ NonnullRefPtr<ContinueStatement> Parser::parse_continue_statement()
     }
     if (match(TokenType::Identifier) && !m_state.current_token.trivia_contains_line_terminator()) {
         target_label = consume().value();
-        if (!m_state.labels_in_scope.contains(target_label))
-            syntax_error(String::formatted("Label '{}' not found", target_label));
+
+        auto label = m_state.labels_in_scope.find(target_label);
+        if (label == m_state.labels_in_scope.end() || !label->value)
+            syntax_error(String::formatted("Label '{}' not found or invalid", target_label));
     }
     consume_or_insert_semicolon();
     return create_ast_node<ContinueStatement>({ m_state.current_token.filename(), rule_start.position(), position() }, target_label);
@@ -2491,9 +2539,15 @@ NonnullRefPtr<IfStatement> Parser::parse_if_statement()
         // Code matching this production is processed as if each matching occurrence of
         // FunctionDeclaration[?Yield, ?Await, ~Default] was the sole StatementListItem
         // of a BlockStatement occupying that position in the source code.
+        VERIFY(match(TokenType::Function));
         ScopePusher scope(*this, ScopePusher::Let, Parser::Scope::Block);
         auto block = create_ast_node<BlockStatement>({ m_state.current_token.filename(), rule_start.position(), position() });
-        block->append(parse_declaration());
+        auto declaration = parse_declaration();
+        VERIFY(is<FunctionDeclaration>(*declaration));
+        auto& function_declaration = static_cast<FunctionDeclaration const&>(*declaration);
+        if (function_declaration.kind() == FunctionKind::Generator)
+            syntax_error("Generator functions can only be declared in top-level or within a block");
+        block->append(move(declaration));
         scope.add_to_scope_node(block);
         return block;
     };
@@ -2524,7 +2578,7 @@ NonnullRefPtr<Statement> Parser::parse_for_statement()
 {
     auto rule_start = push_start();
     auto match_for_in_of = [&]() {
-        return match(TokenType::In) || (match(TokenType::Identifier) && m_state.current_token.value() == "of");
+        return match(TokenType::In) || (match(TokenType::Identifier) && m_state.current_token.original_value() == "of");
     };
 
     consume(TokenType::For);
@@ -2641,6 +2695,7 @@ bool Parser::match_expression() const
         || type == TokenType::NullLiteral
         || match_identifier()
         || type == TokenType::New
+        || type == TokenType::Class
         || type == TokenType::CurlyOpen
         || type == TokenType::BracketOpen
         || type == TokenType::ParenOpen
@@ -2765,22 +2820,26 @@ bool Parser::match_declaration()
         || type == TokenType::Let;
 }
 
+Token Parser::next_token()
+{
+    save_state();
+
+    consume();
+    auto token_after = m_state.current_token;
+
+    load_state();
+    return token_after;
+}
+
 bool Parser::try_match_let_declaration()
 {
     VERIFY(m_state.current_token.type() == TokenType::Let);
+    auto token_after = next_token();
 
-    save_state();
-
-    ScopeGuard state_rollback = [&] {
-        load_state();
-    };
-
-    consume(TokenType::Let);
-
-    if (match_identifier_name() && m_state.current_token.value() != "in"sv)
+    if (token_after.is_identifier_name() && token_after.value() != "in"sv)
         return true;
 
-    if (match(TokenType::CurlyOpen) || match(TokenType::BracketOpen))
+    if (token_after.type() == TokenType::CurlyOpen || token_after.type() == TokenType::BracketOpen)
         return true;
 
     return false;
@@ -2801,8 +2860,17 @@ bool Parser::match_variable_declaration()
 
 bool Parser::match_identifier() const
 {
+    if (m_state.current_token.type() == TokenType::EscapedKeyword) {
+        if (m_state.current_token.value() == "let"sv)
+            return !m_state.strict_mode;
+        if (m_state.current_token.value() == "yield"sv)
+            return !m_state.strict_mode && !m_state.in_generator_function_context;
+        return true;
+    }
+
     return m_state.current_token.type() == TokenType::Identifier
         || (m_state.current_token.type() == TokenType::Let && !m_state.strict_mode)
+        || (m_state.current_token.type() == TokenType::Await && !m_state.strict_mode)
         || (m_state.current_token.type() == TokenType::Yield && !m_state.in_generator_function_context && !m_state.strict_mode); // See note in Parser::parse_identifier().
 }
 
@@ -2860,6 +2928,9 @@ Token Parser::consume_identifier()
     if (match(TokenType::Identifier))
         return consume(TokenType::Identifier);
 
+    if (match(TokenType::EscapedKeyword))
+        return consume(TokenType::EscapedKeyword);
+
     // Note that 'let' is not a reserved keyword, but our lexer considers it such
     // As it's pretty nice to have that (for syntax highlighting and such), we'll
     // special-case it here instead.
@@ -2884,6 +2955,16 @@ Token Parser::consume_identifier_reference()
 {
     if (match(TokenType::Identifier))
         return consume(TokenType::Identifier);
+
+    if (match(TokenType::EscapedKeyword)) {
+        auto name = m_state.current_token.value();
+        if (name == "await"sv)
+            syntax_error("Identifier reference may not be 'await'");
+        else if (m_state.strict_mode && (name == "let"sv || name == "yield"sv))
+            syntax_error(String::formatted("'{}' is not allowed as an identifier in strict mode", name));
+
+        return consume();
+    }
 
     // See note in Parser::parse_identifier().
     if (match(TokenType::Let)) {
@@ -3019,7 +3100,7 @@ NonnullRefPtr<ImportStatement> Parser::parse_import_statement(Program& program)
     };
 
     auto match_as = [&] {
-        return match(TokenType::Identifier) && m_state.current_token.value() == "as"sv;
+        return match(TokenType::Identifier) && m_state.current_token.original_value() == "as"sv;
     };
 
     bool continue_parsing = true;
@@ -3134,11 +3215,15 @@ NonnullRefPtr<ExportStatement> Parser::parse_export_statement(Program& program)
         syntax_error("Cannot use export statement outside a module");
 
     auto match_as = [&] {
-        return match(TokenType::Identifier) && m_state.current_token.value() == "as"sv;
+        return match(TokenType::Identifier) && m_state.current_token.original_value() == "as"sv;
     };
 
     auto match_from = [&] {
-        return match(TokenType::Identifier) && m_state.current_token.value() == "from"sv;
+        return match(TokenType::Identifier) && m_state.current_token.original_value() == "from"sv;
+    };
+
+    auto match_default = [&] {
+        return match(TokenType::Default) && m_state.current_token.original_value() == "default"sv;
     };
 
     consume(TokenType::Export);
@@ -3158,7 +3243,7 @@ NonnullRefPtr<ExportStatement> Parser::parse_export_statement(Program& program)
 
     RefPtr<ASTNode> expression = {};
 
-    if (match(TokenType::Default)) {
+    if (match_default()) {
         auto default_position = position();
         consume(TokenType::Default);
 

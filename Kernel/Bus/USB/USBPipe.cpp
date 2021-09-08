@@ -5,7 +5,7 @@
  */
 
 #include <Kernel/Bus/USB/PacketTypes.h>
-#include <Kernel/Bus/USB/UHCIController.h>
+#include <Kernel/Bus/USB/UHCI/UHCIController.h>
 #include <Kernel/Bus/USB/USBPipe.h>
 #include <Kernel/Bus/USB/USBTransfer.h>
 
@@ -13,11 +13,7 @@ namespace Kernel::USB {
 
 KResultOr<NonnullOwnPtr<Pipe>> Pipe::try_create_pipe(USBController const& controller, Type type, Direction direction, u8 endpoint_address, u16 max_packet_size, i8 device_address, u8 poll_interval)
 {
-    auto pipe = adopt_own_if_nonnull(new (nothrow) Pipe(controller, type, direction, endpoint_address, max_packet_size, poll_interval, device_address));
-    if (!pipe)
-        return ENOMEM;
-
-    return pipe.release_nonnull();
+    return adopt_nonnull_own_or_enomem(new (nothrow) Pipe(controller, type, direction, endpoint_address, max_packet_size, poll_interval, device_address));
 }
 
 Pipe::Pipe(USBController const& controller, Type type, Pipe::Direction direction, u16 max_packet_size)
@@ -61,20 +57,11 @@ KResultOr<size_t> Pipe::control_transfer(u8 request_type, u8 request, u16 value,
     usb_request.index = index;
     usb_request.length = length;
 
-    auto transfer = Transfer::try_create(*this, length);
-
-    if (!transfer)
-        return ENOMEM;
-
+    auto transfer = TRY(Transfer::try_create(*this, length));
     transfer->set_setup_packet(usb_request);
 
     dbgln_if(USB_DEBUG, "Pipe: Transfer allocated @ {}", transfer->buffer_physical());
-    auto transfer_len_or_error = m_controller->submit_control_transfer(*transfer);
-
-    if (transfer_len_or_error.is_error())
-        return transfer_len_or_error.error();
-
-    auto transfer_length = transfer_len_or_error.release_value();
+    auto transfer_length = TRY(m_controller->submit_control_transfer(*transfer));
 
     // TODO: Check transfer for completion and copy data from transfer buffer into data
     if (length > 0)

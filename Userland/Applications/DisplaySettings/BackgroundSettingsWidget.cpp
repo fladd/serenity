@@ -9,9 +9,11 @@
 #include <AK/StringBuilder.h>
 #include <Applications/DisplaySettings/BackgroundSettingsGML.h>
 #include <LibCore/ConfigFile.h>
+#include <LibDesktop/Launcher.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
+#include <LibGUI/Clipboard.h>
 #include <LibGUI/ComboBox.h>
 #include <LibGUI/Desktop.h>
 #include <LibGUI/FilePicker.h>
@@ -21,6 +23,9 @@
 #include <LibGUI/WindowServerConnection.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/SystemTheme.h>
+
+// Including this after to avoid LibIPC errors
+#include <LibConfig/Client.h>
 
 namespace DisplaySettings {
 
@@ -59,6 +64,23 @@ void BackgroundSettingsWidget::create_frame()
         m_monitor_widget->set_wallpaper(path);
     };
 
+    m_context_menu = GUI::Menu::construct();
+    m_show_in_file_manager_action = GUI::Action::create("Show in File Manager", Gfx::Bitmap::try_load_from_file("/res/icons/16x16/app-file-manager.png"), [this](GUI::Action const&) {
+        LexicalPath path { m_monitor_widget->wallpaper() };
+        Desktop::Launcher::open(URL::create_with_file_protocol(path.dirname(), path.basename()));
+    });
+    m_context_menu->add_action(*m_show_in_file_manager_action);
+
+    m_context_menu->add_separator();
+    m_copy_action = GUI::CommonActions::make_copy_action([this](auto&) { GUI::Clipboard::the().set_plain_text(m_monitor_widget->wallpaper()); }, this);
+    m_context_menu->add_action(*m_copy_action);
+
+    m_wallpaper_view->on_context_menu_request = [&](const GUI::ModelIndex& index, const GUI::ContextMenuEvent& event) {
+        if (index.is_valid()) {
+            m_context_menu->popup(event.screen_position(), m_show_in_file_manager_action);
+        }
+    };
+
     auto& button = *find_descendant_of_type_named<GUI::Button>("wallpaper_open_button");
     button.on_click = [this](auto) {
         auto path = GUI::FilePicker::get_open_filepath(window(), "Select wallpaper from file system", "/res/wallpapers");
@@ -86,9 +108,8 @@ void BackgroundSettingsWidget::create_frame()
 void BackgroundSettingsWidget::load_current_settings()
 {
     auto ws_config = Core::ConfigFile::open("/etc/WindowServer.ini");
-    auto wm_config = Core::ConfigFile::get_for_app("WindowManager");
 
-    auto selected_wallpaper = wm_config->read_entry("Background", "Wallpaper", "");
+    auto selected_wallpaper = Config::read_string("WindowManager", "Background", "Wallpaper", "");
     if (!selected_wallpaper.is_empty()) {
         auto index = static_cast<GUI::FileSystemModel*>(m_wallpaper_view->model())->index(selected_wallpaper, m_wallpaper_view->model_column());
         m_wallpaper_view->set_cursor(index, GUI::AbstractView::SelectionUpdate::Set);
@@ -118,8 +139,7 @@ void BackgroundSettingsWidget::load_current_settings()
 
 void BackgroundSettingsWidget::apply_settings()
 {
-    auto wm_config = Core::ConfigFile::get_for_app("WindowManager");
-    wm_config->write_entry("Background", "Wallpaper", m_monitor_widget->wallpaper());
+    Config::write_string("WindowManager", "Background", "Wallpaper", m_monitor_widget->wallpaper());
 
     if (!m_monitor_widget->wallpaper().is_empty()) {
         GUI::Desktop::the().set_wallpaper(m_monitor_widget->wallpaper());

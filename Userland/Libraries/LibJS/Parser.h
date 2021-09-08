@@ -58,7 +58,7 @@ public:
 
     NonnullRefPtr<Statement> parse_statement(AllowLabelledFunction allow_labelled_function = AllowLabelledFunction::No);
     NonnullRefPtr<BlockStatement> parse_block_statement();
-    NonnullRefPtr<BlockStatement> parse_block_statement(bool& is_strict, bool error_on_binding = false);
+    NonnullRefPtr<BlockStatement> parse_block_statement(bool& is_strict, bool function_with_non_simple_parameter_list = false);
     NonnullRefPtr<ReturnStatement> parse_return_statement();
     NonnullRefPtr<VariableDeclaration> parse_variable_declaration(bool for_loop_variable_declaration = false);
     NonnullRefPtr<Statement> parse_for_statement();
@@ -85,7 +85,7 @@ public:
     NonnullRefPtr<StringLiteral> parse_string_literal(const Token& token, bool in_template_literal = false);
     NonnullRefPtr<TemplateLiteral> parse_template_literal(bool is_tagged);
     NonnullRefPtr<Expression> parse_secondary_expression(NonnullRefPtr<Expression>, int min_precedence, Associativity associate = Associativity::Right);
-    NonnullRefPtr<CallExpression> parse_call_expression(NonnullRefPtr<Expression>);
+    NonnullRefPtr<Expression> parse_call_expression(NonnullRefPtr<Expression>);
     NonnullRefPtr<NewExpression> parse_new_expression();
     NonnullRefPtr<ClassDeclaration> parse_class_declaration();
     NonnullRefPtr<ClassExpression> parse_class_expression(bool expect_class_name);
@@ -180,6 +180,8 @@ private:
     void discard_saved_state();
     Position position() const;
 
+    Token next_token();
+
     void check_identifier_name_for_assignment_validity(StringView, bool force_strict = false);
 
     bool try_parse_arrow_function_expression_failed_at_position(const Position&) const;
@@ -245,16 +247,18 @@ private:
 
         Vector<Vector<FunctionNode::Parameter>&> function_parameters;
 
-        HashTable<StringView> labels_in_scope;
+        HashMap<StringView, bool> labels_in_scope;
         bool strict_mode { false };
         bool allow_super_property_lookup { false };
         bool allow_super_constructor_call { false };
         bool in_function_context { false };
+        bool in_formal_parameter_context { false };
         bool in_generator_function_context { false };
         bool in_arrow_function_context { false };
         bool in_break_context { false };
         bool in_continue_context { false };
         bool string_legacy_octal_escape_sequence_in_scope { false };
+        bool in_class_field_initializer { false };
 
         ParserState(Lexer, Program::Type);
     };

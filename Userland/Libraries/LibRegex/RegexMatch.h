@@ -54,6 +54,8 @@ public:
     {
     }
 
+    explicit RegexStringView(String&&) = delete;
+
     StringView const& string_view() const
     {
         return m_view.get<StringView>();
@@ -487,7 +489,7 @@ public:
     }
 
     RegexStringView view { nullptr };
-    Optional<StringView> capture_group_name {};
+    Optional<FlyString> capture_group_name {};
     size_t line { 0 };
     size_t column { 0 };
     size_t global_offset { 0 };
@@ -511,6 +513,7 @@ struct MatchInput {
     mutable size_t fail_counter { 0 };
     mutable Vector<size_t> saved_positions;
     mutable Vector<size_t> saved_code_unit_positions;
+    mutable HashMap<u64, u64> checkpoints;
 };
 
 struct MatchState {

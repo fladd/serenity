@@ -28,7 +28,7 @@ void BarsVisualizationWidget::paint_event(GUI::PaintEvent& event)
     fft(m_sample_buffer, false);
     double max = AK::sqrt(m_sample_count * 2.);
 
-    double freq_bin = m_samplerate / m_sample_count;
+    double freq_bin = m_samplerate / (double)m_sample_count;
 
     constexpr int group_count = 60;
     Vector<double, group_count> groups;
@@ -41,10 +41,9 @@ void BarsVisualizationWidget::paint_event(GUI::PaintEvent& event)
     for (double& d : groups)
         d = 0.;
 
-    int bins_per_group = ceil_div((m_sample_count - 1) / 2, group_count) * freq_bin;
-
+    int bins_per_group = ceil_div((m_sample_count - 1) / 2, group_count);
     for (int i = 1; i < m_sample_count / 2; i++) {
-        groups[(i * freq_bin) / bins_per_group] += AK::fabs(m_sample_buffer.data()[i].real());
+        groups[i / bins_per_group] += AK::fabs(m_sample_buffer.data()[i].real());
     }
     for (int i = 0; i < group_count; i++)
         groups[i] /= max * freq_bin / (m_adjust_frequencies ? (clamp(AK::pow(AK::E<double>, (double)i / group_count * 3.) - 1.75, 1., 15.)) : 1.);
@@ -97,7 +96,10 @@ void BarsVisualizationWidget::set_buffer(RefPtr<Audio::Buffer> buffer, int sampl
     if (m_is_using_last)
         return;
     m_is_using_last = true;
-    VERIFY(buffer->sample_count() >= 256);
+    // FIXME: We should dynamically adapt to the sample count and e.g. perform the fft over multiple buffers.
+    // For now, the visualizer doesn't work with extremely low global sample rates.
+    if (buffer->sample_count() < 256)
+        return;
     m_sample_count = round_previous_power_of_2(samples_to_use);
     m_sample_buffer.resize(m_sample_count);
     for (int i = 0; i < m_sample_count; i++) {

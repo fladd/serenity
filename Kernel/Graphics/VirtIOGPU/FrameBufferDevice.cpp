@@ -35,7 +35,7 @@ KResult FrameBufferDevice::create_framebuffer()
     // Allocate frame buffer for both front and back
     auto& info = display_info();
     m_buffer_size = calculate_framebuffer_size(info.rect.width, info.rect.height);
-    m_framebuffer = MM.allocate_kernel_region(m_buffer_size * 2, String::formatted("VirtGPU FrameBuffer #{}", m_scanout.value()), Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow);
+    m_framebuffer = TRY(MM.allocate_kernel_region(m_buffer_size * 2, String::formatted("VirtGPU FrameBuffer #{}", m_scanout.value()), Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow));
     auto write_sink_page = MM.allocate_user_physical_page(Memory::MemoryManager::ShouldZeroFill::No).release_nonnull();
     auto num_needed_pages = m_framebuffer->vmobject().page_count();
 
@@ -43,10 +43,7 @@ KResult FrameBufferDevice::create_framebuffer()
     for (auto i = 0u; i < num_needed_pages; ++i) {
         pages.append(write_sink_page);
     }
-    auto maybe_framebuffer_sink_vmobject = Memory::AnonymousVMObject::try_create_with_physical_pages(pages.span());
-    if (maybe_framebuffer_sink_vmobject.is_error())
-        return maybe_framebuffer_sink_vmobject.error();
-    m_framebuffer_sink_vmobject = maybe_framebuffer_sink_vmobject.release_value();
+    m_framebuffer_sink_vmobject = TRY(Memory::AnonymousVMObject::try_create_with_physical_pages(pages.span()));
 
     MutexLocker locker(m_gpu.operation_lock());
     m_current_buffer = &buffer_from_index(m_last_set_buffer_index.load());
@@ -151,28 +148,23 @@ void FrameBufferDevice::set_buffer(int buffer_index)
     buffer.dirty_rect = {};
 }
 
-KResult FrameBufferDevice::ioctl(FileDescription&, unsigned request, Userspace<void*> arg)
+KResult FrameBufferDevice::ioctl(OpenFileDescription&, unsigned request, Userspace<void*> arg)
 {
     REQUIRE_PROMISE(video);
     switch (request) {
     case FB_IOCTL_GET_SIZE_IN_BYTES: {
         auto out = static_ptr_cast<size_t*>(arg);
         size_t value = m_buffer_size * 2;
-        if (!copy_to_user(out, &value))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(out, &value);
     }
     case FB_IOCTL_SET_RESOLUTION: {
         auto user_resolution = static_ptr_cast<FBResolution*>(arg);
         FBResolution resolution;
-        if (!copy_from_user(&resolution, user_resolution))
-            return EFAULT;
+        TRY(copy_from_user(&resolution, user_resolution));
         if (!try_to_set_resolution(resolution.width, resolution.height))
             return EINVAL;
         resolution.pitch = pitch();
-        if (!copy_to_user(user_resolution, &resolution))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(user_resolution, &resolution);
     }
     case FB_IOCTL_GET_RESOLUTION: {
         auto user_resolution = static_ptr_cast<FBResolution*>(arg);
@@ -180,9 +172,7 @@ KResult FrameBufferDevice::ioctl(FileDescription&, unsigned request, Userspace<v
         resolution.pitch = pitch();
         resolution.width = width();
         resolution.height = height();
-        if (!copy_to_user(user_resolution, &resolution))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(user_resolution, &resolution);
     }
     case FB_IOCTL_SET_BUFFER: {
         auto buffer_index = static_cast<int>(arg.ptr());
@@ -195,8 +185,7 @@ KResult FrameBufferDevice::ioctl(FileDescription&, unsigned request, Userspace<v
     case FB_IOCTL_FLUSH_BUFFERS: {
         auto user_flush_rects = static_ptr_cast<FBFlushRects*>(arg);
         FBFlushRects flush_rects;
-        if (!copy_from_user(&flush_rects, user_flush_rects))
-            return EFAULT;
+        TRY(copy_from_user(&flush_rects, user_flush_rects));
         if (!is_valid_buffer_index(flush_rects.buffer_index))
             return EINVAL;
         if (Checked<unsigned>::multiplication_would_overflow(flush_rects.count, sizeof(FBRect)))
@@ -206,8 +195,7 @@ KResult FrameBufferDevice::ioctl(FileDescription&, unsigned request, Userspace<v
             MutexLocker locker(m_gpu.operation_lock());
             for (unsigned i = 0; i < flush_rects.count; i++) {
                 FBRect user_dirty_rect;
-                if (!copy_from_user(&user_dirty_rect, &flush_rects.rects[i]))
-                    return EFAULT;
+                TRY(copy_from_user(&user_dirty_rect, &flush_rects.rects[i]));
                 Protocol::Rect dirty_rect {
                     .x = user_dirty_rect.x,
                     .y = user_dirty_rect.y,
@@ -238,21 +226,18 @@ KResult FrameBufferDevice::ioctl(FileDescription&, unsigned request, Userspace<v
     case FB_IOCTL_GET_BUFFER_OFFSET: {
         auto user_buffer_offset = static_ptr_cast<FBBufferOffset*>(arg);
         FBBufferOffset buffer_offset;
-        if (!copy_from_user(&buffer_offset, user_buffer_offset))
-            return EFAULT;
+        TRY(copy_from_user(&buffer_offset, user_buffer_offset));
         if (!is_valid_buffer_index(buffer_offset.buffer_index))
             return EINVAL;
         buffer_offset.offset = (size_t)buffer_offset.buffer_index * m_buffer_size;
-        if (!copy_to_user(user_buffer_offset, &buffer_offset))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(user_buffer_offset, &buffer_offset);
     }
     default:
         return EINVAL;
     };
 }
 
-KResultOr<Memory::Region*> FrameBufferDevice::mmap(Process& process, FileDescription&, Memory::VirtualRange const& range, u64 offset, int prot, bool shared)
+KResultOr<Memory::Region*> FrameBufferDevice::mmap(Process& process, OpenFileDescription&, Memory::VirtualRange const& range, u64 offset, int prot, bool shared)
 {
     REQUIRE_PROMISE(video);
     if (!shared)
@@ -268,28 +253,22 @@ KResultOr<Memory::Region*> FrameBufferDevice::mmap(Process& process, FileDescrip
 
     RefPtr<Memory::VMObject> vmobject;
     if (m_are_writes_active) {
-        auto maybe_vmobject = m_framebuffer->vmobject().try_clone();
-        if (maybe_vmobject.is_error())
-            return maybe_vmobject.error();
-
-        vmobject = maybe_vmobject.release_value();
+        vmobject = TRY(m_framebuffer->vmobject().try_clone());
     } else {
         vmobject = m_framebuffer_sink_vmobject;
         if (vmobject.is_null())
             return ENOMEM;
     }
 
-    auto result = process.address_space().allocate_region_with_vmobject(
+    m_userspace_mmap_region = TRY(process.address_space().allocate_region_with_vmobject(
         range,
         vmobject.release_nonnull(),
         0,
         "VirtIOGPU Framebuffer",
         prot,
-        shared);
-    if (result.is_error())
-        return result;
-    m_userspace_mmap_region = result.value();
-    return result;
+        shared));
+
+    return m_userspace_mmap_region.unsafe_ptr();
 }
 
 void FrameBufferDevice::deactivate_writes()

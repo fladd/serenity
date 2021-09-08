@@ -17,7 +17,7 @@ void __sanitizer_cov_trace_pc(void)
     if (g_in_early_boot) [[unlikely]]
         return;
 
-    if (Processor::current().in_irq()) [[unlikely]] {
+    if (Processor::current_in_irq()) [[unlikely]] {
         // Do not trace in interrupts.
         return;
     }
@@ -30,7 +30,7 @@ void __sanitizer_cov_trace_pc(void)
         return;
     }
     auto kcov_instance = maybe_kcov_instance.value();
-    if (kcov_instance->state < KCOVInstance::TRACING) [[likely]]
+    if (kcov_instance->state() < KCOVInstance::TRACING) [[likely]]
         return;
     kcov_instance->buffer_add_pc((u64)__builtin_return_address(0));
 }

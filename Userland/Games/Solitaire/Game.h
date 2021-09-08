@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2020, Till Mayer <till.mayer@web.de>
- * Copyright (c) 2021, Sam Atkins <atkinssj@gmail.com>
+ * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -39,6 +39,9 @@ public:
     Mode mode() const { return m_mode; }
     void setup(Mode);
     void perform_undo();
+
+    bool is_auto_collecting() const { return m_auto_collect; }
+    void set_auto_collect(bool collect) { m_auto_collect = collect; }
 
     Function<void(uint32_t)> on_score_update;
     Function<void()> on_game_start;
@@ -208,6 +211,8 @@ private:
 
     uint32_t m_score { 0 };
     uint8_t m_passes_left_before_punishment { 0 };
+
+    bool m_auto_collect { false };
 };
 
 }

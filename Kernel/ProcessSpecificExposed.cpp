@@ -24,7 +24,7 @@ KResultOr<size_t> Process::procfs_get_thread_stack(ThreadID thread_id, KBufferBu
     auto thread = Thread::from_tid(thread_id);
     if (!thread)
         return KResult(ESRCH);
-    bool show_kernel_addresses = Process::current()->is_superuser();
+    bool show_kernel_addresses = Process::current().is_superuser();
     bool kernel_address_added = false;
     for (auto address : Processor::capture_stack_trace(*thread, 1024)) {
         if (!show_kernel_addresses && !Memory::is_user_address(VirtualAddress { address })) {
@@ -79,11 +79,9 @@ KResultOr<NonnullRefPtr<Inode>> Process::lookup_stacks_directory(const ProcFS& p
 
 KResultOr<size_t> Process::procfs_get_file_description_link(unsigned fd, KBufferBuilder& builder) const
 {
-    auto file_description = m_fds.file_description(fd);
-    if (!file_description)
-        return EBADF;
+    auto file_description = TRY(m_fds.open_file_description(fd));
     auto data = file_description->absolute_path();
-    builder.append(data);
+    TRY(builder.append(data));
     return data.length();
 }
 
@@ -114,10 +112,7 @@ KResultOr<NonnullRefPtr<Inode>> Process::lookup_file_descriptions_directory(cons
     if (!fds().get_if_valid(*maybe_index))
         return ENOENT;
 
-    auto maybe_inode = ProcFSProcessPropertyInode::try_create_for_file_description_link(procfs, *maybe_index, pid());
-    if (maybe_inode.is_error())
-        return maybe_inode.error();
-    return maybe_inode.release_value();
+    return TRY(ProcFSProcessPropertyInode::try_create_for_file_description_link(procfs, *maybe_index, pid()));
 }
 
 KResult Process::procfs_get_pledge_stats(KBufferBuilder& builder) const
@@ -167,11 +162,11 @@ KResult Process::procfs_get_unveil_stats(KBufferBuilder& builder) const
 KResult Process::procfs_get_perf_events(KBufferBuilder& builder) const
 {
     InterruptDisabler disabler;
-    if (!const_cast<Process&>(*this).perf_events()) {
+    if (!perf_events()) {
         dbgln("ProcFS: No perf events for {}", pid());
         return KResult(ENOBUFS);
     }
-    return const_cast<Process&>(*this).perf_events()->to_json(builder) ? KSuccess : KResult(EINVAL);
+    return perf_events()->to_json(builder);
 }
 
 KResult Process::procfs_get_fds_stats(KBufferBuilder& builder) const
@@ -189,7 +184,7 @@ KResult Process::procfs_get_fds_stats(KBufferBuilder& builder) const
             return;
         }
         bool cloexec = file_description_metadata.flags() & FD_CLOEXEC;
-        RefPtr<FileDescription> description = file_description_metadata.description();
+        RefPtr<OpenFileDescription> description = file_description_metadata.description();
         auto description_object = array.add_object();
         description_object.add("fd", count);
         description_object.add("absolute_path", description->absolute_path());
@@ -211,9 +206,9 @@ KResult Process::procfs_get_virtual_memory_stats(KBufferBuilder& builder) const
 {
     JsonArraySerializer array { builder };
     {
-        ScopedSpinLock lock(address_space().get_lock());
+        SpinlockLocker lock(address_space().get_lock());
         for (auto& region : address_space().regions()) {
-            if (!region->is_user() && !Process::current()->is_superuser())
+            if (!region->is_user() && !Process::current().is_superuser())
                 continue;
             auto region_object = array.add_object();
             region_object.add("readable", region->is_readable());
@@ -254,8 +249,7 @@ KResult Process::procfs_get_virtual_memory_stats(KBufferBuilder& builder) const
 
 KResult Process::procfs_get_current_work_directory_link(KBufferBuilder& builder) const
 {
-    builder.append_bytes(const_cast<Process&>(*this).current_directory().absolute_path().bytes());
-    return KSuccess;
+    return builder.append_bytes(const_cast<Process&>(*this).current_directory().absolute_path().bytes());
 }
 
 mode_t Process::binary_link_required_mode() const
@@ -270,8 +264,7 @@ KResult Process::procfs_get_binary_link(KBufferBuilder& builder) const
     auto* custody = executable();
     if (!custody)
         return KResult(ENOEXEC);
-    builder.append(custody->absolute_path().bytes());
-    return KSuccess;
+    return builder.append(custody->absolute_path().bytes());
 }
 
 }

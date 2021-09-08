@@ -14,7 +14,7 @@
 #include <Kernel/Arch/x86/PageFault.h>
 #include <Kernel/Arch/x86/TrapFrame.h>
 #include <Kernel/Forward.h>
-#include <Kernel/Locking/SpinLock.h>
+#include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Memory/AllocationStrategy.h>
 #include <Kernel/Memory/PhysicalPage.h>
 #include <Kernel/Memory/PhysicalRegion.h>
@@ -93,14 +93,14 @@ struct PhysicalMemoryRange {
 struct MemoryManagerData {
     static ProcessorSpecificDataID processor_specific_data_id() { return ProcessorSpecificDataID::MemoryManager; }
 
-    SpinLock<u8> m_quickmap_in_use;
+    Spinlock m_quickmap_in_use;
     u32 m_quickmap_prev_flags;
 
     PhysicalAddress m_last_quickmap_pd;
     PhysicalAddress m_last_quickmap_pt;
 };
 
-extern RecursiveSpinLock s_mm_lock;
+extern RecursiveSpinlock s_mm_lock;
 
 // This class represents a set of committed physical pages.
 // When you ask MemoryManager to commit pages for you, you get one of these in return.
@@ -160,8 +160,8 @@ public:
     void unmap_text_after_init();
     void unmap_ksyms_after_init();
 
-    static void enter_process_paging_scope(Process&);
-    static void enter_space(AddressSpace&);
+    static void enter_process_address_space(Process&);
+    static void enter_address_space(AddressSpace&);
 
     bool validate_user_stack_no_lock(AddressSpace&, VirtualAddress) const;
     bool validate_user_stack(AddressSpace&, VirtualAddress) const;
@@ -171,7 +171,7 @@ public:
         Yes
     };
 
-    Optional<CommittedPhysicalPageSet> commit_user_physical_pages(size_t page_count);
+    KResultOr<CommittedPhysicalPageSet> commit_user_physical_pages(size_t page_count);
     void uncommit_user_physical_pages(Badge<CommittedPhysicalPageSet>, size_t page_count);
 
     NonnullRefPtr<PhysicalPage> allocate_committed_user_physical_page(Badge<CommittedPhysicalPageSet>, ShouldZeroFill = ShouldZeroFill::Yes);
@@ -180,11 +180,11 @@ public:
     NonnullRefPtrVector<PhysicalPage> allocate_contiguous_supervisor_physical_pages(size_t size);
     void deallocate_physical_page(PhysicalAddress);
 
-    OwnPtr<Region> allocate_contiguous_kernel_region(size_t, StringView name, Region::Access access, Region::Cacheable = Region::Cacheable::Yes);
-    OwnPtr<Region> allocate_kernel_region(size_t, StringView name, Region::Access access, AllocationStrategy strategy = AllocationStrategy::Reserve, Region::Cacheable = Region::Cacheable::Yes);
-    OwnPtr<Region> allocate_kernel_region(PhysicalAddress, size_t, StringView name, Region::Access access, Region::Cacheable = Region::Cacheable::Yes);
-    OwnPtr<Region> allocate_kernel_region_with_vmobject(VMObject&, size_t, StringView name, Region::Access access, Region::Cacheable = Region::Cacheable::Yes);
-    OwnPtr<Region> allocate_kernel_region_with_vmobject(VirtualRange const&, VMObject&, StringView name, Region::Access access, Region::Cacheable = Region::Cacheable::Yes);
+    KResultOr<NonnullOwnPtr<Region>> allocate_contiguous_kernel_region(size_t, StringView name, Region::Access access, Region::Cacheable = Region::Cacheable::Yes);
+    KResultOr<NonnullOwnPtr<Region>> allocate_kernel_region(size_t, StringView name, Region::Access access, AllocationStrategy strategy = AllocationStrategy::Reserve, Region::Cacheable = Region::Cacheable::Yes);
+    KResultOr<NonnullOwnPtr<Region>> allocate_kernel_region(PhysicalAddress, size_t, StringView name, Region::Access access, Region::Cacheable = Region::Cacheable::Yes);
+    KResultOr<NonnullOwnPtr<Region>> allocate_kernel_region_with_vmobject(VMObject&, size_t, StringView name, Region::Access access, Region::Cacheable = Region::Cacheable::Yes);
+    KResultOr<NonnullOwnPtr<Region>> allocate_kernel_region_with_vmobject(VirtualRange const&, VMObject&, StringView name, Region::Access access, Region::Cacheable = Region::Cacheable::Yes);
 
     struct SystemMemoryInfo {
         PhysicalSize user_physical_pages { 0 };
@@ -197,7 +197,7 @@ public:
 
     SystemMemoryInfo get_system_memory_info()
     {
-        ScopedSpinLock lock(s_mm_lock);
+        SpinlockLocker lock(s_mm_lock);
         return m_system_memory_info;
     }
 

@@ -35,29 +35,41 @@ Gfx::IntRect EraseTool::build_rect(Gfx::IntPoint const& pos, Gfx::IntRect const&
     return Gfx::IntRect(ex - eraser_radius, ey - eraser_radius, eraser_size, eraser_size).intersected(widget_rect);
 }
 
-void EraseTool::on_mousedown(Layer& layer, GUI::MouseEvent& event, GUI::MouseEvent&)
+void EraseTool::on_mousedown(Layer* layer, MouseEvent& event)
 {
-    if (event.button() != GUI::MouseButton::Left && event.button() != GUI::MouseButton::Right)
+    if (!layer)
         return;
-    Gfx::IntRect r = build_rect(event.position(), layer.rect());
-    GUI::Painter painter(layer.bitmap());
+
+    auto& layer_event = event.layer_event();
+    if (layer_event.button() != GUI::MouseButton::Left && layer_event.button() != GUI::MouseButton::Right)
+        return;
+    Gfx::IntRect r = build_rect(layer_event.position(), layer->rect());
+    GUI::Painter painter(layer->bitmap());
     painter.clear_rect(r, get_color());
-    layer.did_modify_bitmap(r.inflated(2, 2));
+    layer->did_modify_bitmap(r.inflated(2, 2));
 }
 
-void EraseTool::on_mousemove(Layer& layer, GUI::MouseEvent& event, GUI::MouseEvent&)
+void EraseTool::on_mousemove(Layer* layer, MouseEvent& event)
 {
-    if (event.buttons() & GUI::MouseButton::Left || event.buttons() & GUI::MouseButton::Right) {
-        Gfx::IntRect r = build_rect(event.position(), layer.rect());
-        GUI::Painter painter(layer.bitmap());
+    if (!layer)
+        return;
+
+    auto& layer_event = event.layer_event();
+    if (layer_event.buttons() & GUI::MouseButton::Left || layer_event.buttons() & GUI::MouseButton::Right) {
+        Gfx::IntRect r = build_rect(layer_event.position(), layer->rect());
+        GUI::Painter painter(layer->bitmap());
         painter.clear_rect(r, get_color());
-        layer.did_modify_bitmap(r.inflated(2, 2));
+        layer->did_modify_bitmap(r.inflated(2, 2));
     }
 }
 
-void EraseTool::on_mouseup(Layer&, GUI::MouseEvent& event, GUI::MouseEvent&)
+void EraseTool::on_mouseup(Layer* layer, MouseEvent& event)
 {
-    if (event.button() != GUI::MouseButton::Left && event.button() != GUI::MouseButton::Right)
+    if (!layer)
+        return;
+
+    auto& layer_event = event.layer_event();
+    if (layer_event.button() != GUI::MouseButton::Left && layer_event.button() != GUI::MouseButton::Right)
         return;
     m_editor->did_complete_action();
 }
@@ -90,6 +102,7 @@ GUI::Widget* EraseTool::get_properties_widget()
         thickness_slider.on_change = [&](int value) {
             m_thickness = value;
         };
+        set_primary_slider(&thickness_slider);
 
         auto& checkbox_container = m_properties_widget->add<GUI::Widget>();
         checkbox_container.set_fixed_height(20);

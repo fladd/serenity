@@ -121,7 +121,7 @@ TimeZone* create_temporal_time_zone(GlobalObject& global_object, String const& i
 // 11.6.3 GetISOPartsFromEpoch ( epochNanoseconds ), https://tc39.es/proposal-temporal/#sec-temporal-getisopartsfromepoch
 Optional<ISODateTime> get_iso_parts_from_epoch(BigInt const& epoch_nanoseconds)
 {
-    // 1. Let remainderNs be epochNanoseconds modulo 10^6.
+    // 1. Let remainderNs be remainder(epochNanoseconds, 10^6).
     auto remainder_ns_bigint = epoch_nanoseconds.big_integer().divided_by(Crypto::UnsignedBigInteger { 1'000'000 }).remainder;
     auto remainder_ns = remainder_ns_bigint.to_base(10).to_int<i64>().value();
 
@@ -416,12 +416,12 @@ double get_offset_nanoseconds_for(GlobalObject& global_object, Value time_zone, 
 }
 
 // 11.6.12 BuiltinTimeZoneGetOffsetStringFor ( timeZone, instant ), https://tc39.es/proposal-temporal/#sec-temporal-builtintimezonegetoffsetstringfor
-Optional<String> builtin_time_zone_get_offset_string_for(GlobalObject& global_object, Object& time_zone, Instant& instant)
+Optional<String> builtin_time_zone_get_offset_string_for(GlobalObject& global_object, Value time_zone, Instant& instant)
 {
     auto& vm = global_object.vm();
 
     // 1. Let offsetNanoseconds be ? GetOffsetNanosecondsFor(timeZone, instant).
-    auto offset_nanoseconds = get_offset_nanoseconds_for(global_object, &time_zone, instant);
+    auto offset_nanoseconds = get_offset_nanoseconds_for(global_object, time_zone, instant);
     if (vm.exception())
         return {};
 

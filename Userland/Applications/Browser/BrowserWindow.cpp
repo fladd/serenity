@@ -13,7 +13,7 @@
 #include "InspectorWidget.h"
 #include "Tab.h"
 #include <Applications/Browser/BrowserWindowGML.h>
-#include <LibCore/ConfigFile.h>
+#include <LibConfig/Client.h>
 #include <LibCore/StandardPaths.h>
 #include <LibGUI/AboutDialog.h>
 #include <LibGUI/Application.h>
@@ -175,62 +175,35 @@ void BrowserWindow::build_menus()
 
     m_copy_selection_action = GUI::CommonActions::make_copy_action([this](auto&) {
         auto& tab = active_tab();
-        String selected_text;
-
-        if (tab.m_type == Tab::Type::InProcessWebView)
-            selected_text = tab.m_page_view->selected_text();
-        else
-            selected_text = tab.m_web_content_view->selected_text();
-
+        auto selected_text = tab.m_web_content_view->selected_text();
         if (!selected_text.is_empty())
             GUI::Clipboard::the().set_plain_text(selected_text);
     });
 
     m_select_all_action = GUI::CommonActions::make_select_all_action([this](auto&) {
-        auto& tab = active_tab();
-
-        if (tab.m_type == Tab::Type::InProcessWebView)
-            tab.m_page_view->select_all();
-        else
-            tab.m_web_content_view->select_all();
+        active_tab().m_web_content_view->select_all();
     });
 
     m_view_source_action = GUI::Action::create(
         "View &Source", { Mod_Ctrl, Key_U }, [this](auto&) {
-            auto& tab = active_tab();
-            if (tab.m_type == Tab::Type::InProcessWebView) {
-                VERIFY(tab.m_page_view->document());
-                auto url = tab.m_page_view->document()->url();
-                auto source = tab.m_page_view->document()->source();
-                tab.view_source(url, source);
-            } else {
-                tab.m_web_content_view->get_source();
-            }
+            active_tab().m_web_content_view->get_source();
         },
         this);
     m_view_source_action->set_status_tip("View source code of the current page");
 
     m_inspect_dom_tree_action = GUI::Action::create(
         "Inspect &DOM Tree", { Mod_None, Key_F12 }, [this](auto&) {
-            auto& tab = active_tab();
-            if (tab.m_type == Tab::Type::InProcessWebView) {
-                if (!tab.m_dom_inspector_window) {
-                    tab.m_dom_inspector_window = GUI::Window::construct(this);
-                    tab.m_dom_inspector_window->resize(300, 500);
-                    tab.m_dom_inspector_window->set_title("DOM inspector");
-                    tab.m_dom_inspector_window->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/inspector-object.png"));
-                    tab.m_dom_inspector_window->set_main_widget<InspectorWidget>();
-                }
-                auto* inspector_widget = static_cast<InspectorWidget*>(tab.m_dom_inspector_window->main_widget());
-                inspector_widget->set_document(tab.m_page_view->document());
-                tab.m_dom_inspector_window->show();
-                tab.m_dom_inspector_window->move_to_front();
-            } else {
-                tab.m_web_content_view->inspect_dom_tree();
-            }
+            active_tab().show_inspector_window(Tab::InspectorTarget::Document);
         },
         this);
     m_inspect_dom_tree_action->set_status_tip("Open DOM inspector window for this page");
+
+    m_inspect_dom_node_action = GUI::Action::create(
+        "&Inspect Element", [this](auto&) {
+            active_tab().show_inspector_window(Tab::InspectorTarget::HoveredElement);
+        },
+        this);
+    m_inspect_dom_node_action->set_status_tip("Open DOM inspector for this element");
 
     auto& inspect_menu = add_menu("&Inspect");
     inspect_menu.add_action(*m_view_source_action);
@@ -238,36 +211,7 @@ void BrowserWindow::build_menus()
 
     auto js_console_action = GUI::Action::create(
         "Open &JS Console", { Mod_Ctrl, Key_I }, [this](auto&) {
-            auto& tab = active_tab();
-            if (tab.m_type == Tab::Type::InProcessWebView) {
-                if (!tab.m_console_window) {
-                    tab.m_console_window = GUI::Window::construct(this);
-                    tab.m_console_window->resize(500, 300);
-                    tab.m_console_window->set_title("JS Console");
-                    tab.m_console_window->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/filetype-javascript.png"));
-                    tab.m_console_window->set_main_widget<ConsoleWidget>();
-                }
-                auto* console_widget = static_cast<ConsoleWidget*>(tab.m_console_window->main_widget());
-                console_widget->set_interpreter(tab.m_page_view->document()->interpreter().make_weak_ptr());
-                tab.m_console_window->show();
-                tab.m_console_window->move_to_front();
-            } else {
-                if (!tab.m_console_window) {
-                    tab.m_console_window = GUI::Window::construct(this);
-                    tab.m_console_window->resize(500, 300);
-                    tab.m_console_window->set_title("JS Console");
-                    tab.m_console_window->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/filetype-javascript.png"));
-                    tab.m_console_window->set_main_widget<ConsoleWidget>();
-                }
-                auto* console_widget = static_cast<ConsoleWidget*>(tab.m_console_window->main_widget());
-                console_widget->on_js_input = [&tab](const String& js_source) {
-                    tab.m_web_content_view->js_console_input(js_source);
-                };
-                console_widget->clear_output();
-                tab.m_web_content_view->js_console_initialize();
-                tab.m_console_window->show();
-                tab.m_console_window->move_to_front();
-            }
+            active_tab().show_console_window();
         },
         this);
     js_console_action->set_status_tip("Open JavaScript console for this page");
@@ -277,11 +221,10 @@ void BrowserWindow::build_menus()
 
     m_change_homepage_action = GUI::Action::create(
         "Set Homepage URL", [this](auto&) {
-            auto config = Core::ConfigFile::get_for_app("Browser");
-            String homepage_url = config->read_entry("Preferences", "Home", "about:blank");
+            auto homepage_url = Config::read_string("Browser", "Preferences", "Home", "about:blank");
             if (GUI::InputBox::show(this, homepage_url, "Enter URL", "Change homepage URL") == GUI::InputBox::ExecOK) {
                 if (URL(homepage_url).is_valid()) {
-                    config->write_entry("Preferences", "Home", homepage_url);
+                    Config::write_string("Browser", "Preferences", "Home", homepage_url);
                     Browser::g_home_url = homepage_url;
                 } else {
                     GUI::MessageBox::show_error(this, "The URL you have entered is not valid");
@@ -300,8 +243,7 @@ void BrowserWindow::build_menus()
         auto action = GUI::Action::create_checkable(
             name, [&](auto&) {
                 g_search_engine = url_format;
-                auto config = Core::ConfigFile::get_for_app("Browser");
-                config->write_entry("Preferences", "SearchEngine", g_search_engine);
+                Config::write_string("Browser", "Preferences", "SearchEngine", g_search_engine);
             },
             this);
         search_engine_menu.add_action(action);
@@ -317,8 +259,7 @@ void BrowserWindow::build_menus()
     m_disable_search_engine_action = GUI::Action::create_checkable(
         "Disable", [](auto&) {
             g_search_engine = {};
-            auto config = Core::ConfigFile::get_for_app("Browser");
-            config->write_entry("Preferences", "SearchEngine", g_search_engine);
+            Config::write_string("Browser", "Preferences", "SearchEngine", g_search_engine);
         },
         this);
     search_engine_menu.add_action(*m_disable_search_engine_action);
@@ -347,8 +288,7 @@ void BrowserWindow::build_menus()
         }
 
         g_search_engine = search_engine;
-        auto config = Core::ConfigFile::get_for_app("Browser");
-        config->write_entry("Preferences", "SearchEngine", g_search_engine);
+        Config::write_string("Browser", "Preferences", "SearchEngine", g_search_engine);
         action.set_status_tip(search_engine);
     });
     search_engine_menu.add_action(custom_search_engine_action);
@@ -362,34 +302,17 @@ void BrowserWindow::build_menus()
     auto& debug_menu = add_menu("&Debug");
     debug_menu.add_action(GUI::Action::create(
         "Dump &DOM Tree", [this](auto&) {
-            auto& tab = active_tab();
-            if (tab.m_type == Tab::Type::InProcessWebView) {
-                Web::dump_tree(*tab.m_page_view->document());
-            } else {
-                tab.m_web_content_view->debug_request("dump-dom-tree");
-            }
+            active_tab().m_web_content_view->debug_request("dump-dom-tree");
         },
         this));
     debug_menu.add_action(GUI::Action::create(
         "Dump &Layout Tree", [this](auto&) {
-            auto& tab = active_tab();
-            if (tab.m_type == Tab::Type::InProcessWebView) {
-                Web::dump_tree(*tab.m_page_view->document()->layout_node());
-            } else {
-                tab.m_web_content_view->debug_request("dump-layout-tree");
-            }
+            active_tab().m_web_content_view->debug_request("dump-layout-tree");
         },
         this));
     debug_menu.add_action(GUI::Action::create(
         "Dump &Style Sheets", [this](auto&) {
-            auto& tab = active_tab();
-            if (tab.m_type == Tab::Type::InProcessWebView) {
-                for (auto& sheet : tab.m_page_view->document()->style_sheets().sheets()) {
-                    Web::dump_sheet(sheet);
-                }
-            } else {
-                tab.m_web_content_view->debug_request("dump-style-sheets");
-            }
+            active_tab().m_web_content_view->debug_request("dump-style-sheets");
         },
         this));
     debug_menu.add_action(GUI::Action::create("Dump &History", { Mod_Ctrl, Key_H }, [this](auto&) {
@@ -403,13 +326,7 @@ void BrowserWindow::build_menus()
     debug_menu.add_separator();
     auto line_box_borders_action = GUI::Action::create_checkable(
         "Line &Box Borders", [this](auto& action) {
-            auto& tab = active_tab();
-            if (tab.m_type == Tab::Type::InProcessWebView) {
-                tab.m_page_view->set_should_show_line_box_borders(action.is_checked());
-                tab.m_page_view->update();
-            } else {
-                tab.m_web_content_view->debug_request("set-line-box-borders", action.is_checked() ? "on" : "off");
-            }
+            active_tab().m_web_content_view->debug_request("set-line-box-borders", action.is_checked() ? "on" : "off");
         },
         this);
     line_box_borders_action->set_checked(false);
@@ -417,33 +334,16 @@ void BrowserWindow::build_menus()
 
     debug_menu.add_separator();
     debug_menu.add_action(GUI::Action::create("Collect &Garbage", { Mod_Ctrl | Mod_Shift, Key_G }, [this](auto&) {
-        auto& tab = active_tab();
-        if (tab.m_type == Tab::Type::InProcessWebView) {
-            if (auto* document = tab.m_page_view->document()) {
-                document->interpreter().heap().collect_garbage(JS::Heap::CollectionType::CollectGarbage, true);
-            }
-        } else {
-            tab.m_web_content_view->debug_request("collect-garbage");
-        }
+        active_tab().m_web_content_view->debug_request("collect-garbage");
     }));
     debug_menu.add_action(GUI::Action::create("Clear &Cache", { Mod_Ctrl | Mod_Shift, Key_C }, [this](auto&) {
-        auto& tab = active_tab();
-        if (tab.m_type == Tab::Type::InProcessWebView) {
-            Web::ResourceLoader::the().clear_cache();
-        } else {
-            tab.m_web_content_view->debug_request("clear-cache");
-        }
+        active_tab().m_web_content_view->debug_request("clear-cache");
     }));
 
     m_user_agent_spoof_actions.set_exclusive(true);
     auto& spoof_user_agent_menu = debug_menu.add_submenu("Spoof &User Agent");
     m_disable_user_agent_spoofing = GUI::Action::create_checkable("Disabled", [this](auto&) {
-        auto& tab = active_tab();
-        if (tab.m_type == Tab::Type::InProcessWebView) {
-            Web::ResourceLoader::the().set_user_agent(Web::default_user_agent);
-        } else {
-            tab.m_web_content_view->debug_request("spoof-user-agent", Web::default_user_agent);
-        }
+        active_tab().m_web_content_view->debug_request("spoof-user-agent", Web::default_user_agent);
     });
     m_disable_user_agent_spoofing->set_status_tip(Web::default_user_agent);
     spoof_user_agent_menu.add_action(*m_disable_user_agent_spoofing);
@@ -452,12 +352,7 @@ void BrowserWindow::build_menus()
 
     auto add_user_agent = [this, &spoof_user_agent_menu](auto& name, auto& user_agent) {
         auto action = GUI::Action::create_checkable(name, [this, user_agent](auto&) {
-            auto& tab = active_tab();
-            if (tab.m_type == Tab::Type::InProcessWebView) {
-                Web::ResourceLoader::the().set_user_agent(user_agent);
-            } else {
-                tab.m_web_content_view->debug_request("spoof-user-agent", user_agent);
-            }
+            active_tab().m_web_content_view->debug_request("spoof-user-agent", user_agent);
         });
         action->set_status_tip(user_agent);
         spoof_user_agent_menu.add_action(action);
@@ -471,17 +366,12 @@ void BrowserWindow::build_menus()
     add_user_agent("Safari iOS Mobile", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_4_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1");
 
     auto custom_user_agent = GUI::Action::create_checkable("Custom...", [this](auto& action) {
-        auto& tab = active_tab();
         String user_agent;
         if (GUI::InputBox::show(this, user_agent, "Enter User Agent:", "Custom User Agent") != GUI::InputBox::ExecOK || user_agent.is_empty() || user_agent.is_null()) {
             m_disable_user_agent_spoofing->activate();
             return;
         }
-        if (tab.m_type == Tab::Type::InProcessWebView) {
-            Web::ResourceLoader::the().set_user_agent(user_agent);
-        } else {
-            tab.m_web_content_view->debug_request("spoof-user-agent", user_agent);
-        }
+        active_tab().m_web_content_view->debug_request("spoof-user-agent", user_agent);
         action.set_status_tip(user_agent);
     });
     spoof_user_agent_menu.add_action(custom_user_agent);
@@ -510,8 +400,7 @@ void BrowserWindow::set_window_title_for_tab(Tab const& tab)
 
 void BrowserWindow::create_new_tab(URL url, bool activate)
 {
-    auto type = Browser::g_single_process ? Browser::Tab::Type::InProcessWebView : Browser::Tab::Type::OutOfProcessWebView;
-    auto& new_tab = m_tab_widget->add_tab<Browser::Tab>("New tab", *this, type);
+    auto& new_tab = m_tab_widget->add_tab<Browser::Tab>("New tab", *this);
 
     m_tab_widget->set_bar_visible(!is_fullscreen() && m_tab_widget->children().size() > 1);
 
@@ -530,7 +419,7 @@ void BrowserWindow::create_new_tab(URL url, bool activate)
     };
 
     new_tab.on_tab_close_request = [this](auto& tab) {
-        m_tab_widget->deferred_invoke([this, &tab](auto&) {
+        m_tab_widget->deferred_invoke([this, &tab] {
             m_tab_widget->remove_tab(tab);
             m_tab_widget->set_bar_visible(!is_fullscreen() && m_tab_widget->children().size() > 1);
             if (m_tab_widget->children().is_empty())
@@ -539,7 +428,7 @@ void BrowserWindow::create_new_tab(URL url, bool activate)
     };
 
     new_tab.on_tab_close_other_request = [this](auto& tab) {
-        m_tab_widget->deferred_invoke([this, &tab](auto&) {
+        m_tab_widget->deferred_invoke([this, &tab] {
             m_tab_widget->remove_all_tabs_except(tab);
             VERIFY(m_tab_widget->children().size() == 1);
             m_tab_widget->set_bar_visible(false);

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Sections.h>
 #include <Kernel/Storage/ATA.h>
 #include <Kernel/Storage/BMIDEChannel.h>
@@ -43,8 +44,19 @@ UNMAP_AFTER_INIT void BMIDEChannel::initialize()
     m_dma_buffer_page = MM.allocate_supervisor_physical_page();
     if (m_dma_buffer_page.is_null() || m_prdt_page.is_null())
         return;
-    m_prdt_region = MM.allocate_kernel_region(m_prdt_page->paddr(), PAGE_SIZE, "IDE PRDT", Memory::Region::Access::ReadWrite);
-    m_dma_buffer_region = MM.allocate_kernel_region(m_dma_buffer_page->paddr(), PAGE_SIZE, "IDE DMA region", Memory::Region::Access::ReadWrite);
+    {
+        auto region_or_error = MM.allocate_kernel_region(m_prdt_page->paddr(), PAGE_SIZE, "IDE PRDT", Memory::Region::Access::ReadWrite);
+        if (region_or_error.is_error())
+            TODO();
+        m_prdt_region = region_or_error.release_value();
+    }
+    {
+        auto region_or_error = MM.allocate_kernel_region(m_dma_buffer_page->paddr(), PAGE_SIZE, "IDE DMA region", Memory::Region::Access::ReadWrite);
+        if (region_or_error.is_error())
+            TODO();
+        m_dma_buffer_region = region_or_error.release_value();
+    }
+
     prdt().end_of_table = 0x8000;
 
     // clear bus master interrupt status
@@ -80,7 +92,7 @@ bool BMIDEChannel::handle_irq(const RegisterState&)
     // clear bus master interrupt status
     m_io_group.bus_master_base().value().offset(2).out<u8>(m_io_group.bus_master_base().value().offset(2).in<u8>() | 4);
 
-    ScopedSpinLock lock(m_request_lock);
+    SpinlockLocker lock(m_request_lock);
     dbgln_if(PATA_DEBUG, "BMIDEChannel: interrupt: DRQ={}, BSY={}, DRDY={}",
         (status & ATA_SR_DRQ) != 0,
         (status & ATA_SR_BSY) != 0,
@@ -116,14 +128,14 @@ void BMIDEChannel::complete_current_request(AsyncDeviceRequest::RequestResult re
     // before Processor::deferred_call_queue returns!
     g_io_work->queue([this, result]() {
         dbgln_if(PATA_DEBUG, "BMIDEChannel::complete_current_request result: {}", (int)result);
-        ScopedSpinLock lock(m_request_lock);
+        SpinlockLocker lock(m_request_lock);
         VERIFY(m_current_request);
         auto current_request = m_current_request;
         m_current_request.clear();
 
         if (result == AsyncDeviceRequest::Success) {
             if (current_request->request_type() == AsyncBlockDeviceRequest::Read) {
-                if (!current_request->write_to_buffer(current_request->buffer(), m_dma_buffer_region->vaddr().as_ptr(), 512 * current_request->block_count())) {
+                if (auto result = current_request->write_to_buffer(current_request->buffer(), m_dma_buffer_region->vaddr().as_ptr(), 512 * current_request->block_count()); result.is_error()) {
                     lock.unlock();
                     current_request->complete(AsyncDeviceRequest::MemoryFault);
                     return;
@@ -146,13 +158,13 @@ void BMIDEChannel::ata_write_sectors(bool slave_request, u16 capabilities)
     VERIFY(!m_current_request.is_null());
     VERIFY(m_current_request->block_count() <= 256);
 
-    ScopedSpinLock m_lock(m_request_lock);
+    SpinlockLocker m_lock(m_request_lock);
     dbgln_if(PATA_DEBUG, "BMIDEChannel::ata_write_sectors ({} x {})", m_current_request->block_index(), m_current_request->block_count());
 
     prdt().offset = m_dma_buffer_page->paddr().get();
     prdt().size = 512 * m_current_request->block_count();
 
-    if (!m_current_request->read_from_buffer(m_current_request->buffer(), m_dma_buffer_region->vaddr().as_ptr(), 512 * m_current_request->block_count())) {
+    if (auto result = m_current_request->read_from_buffer(m_current_request->buffer(), m_dma_buffer_region->vaddr().as_ptr(), 512 * m_current_request->block_count()); result.is_error()) {
         complete_current_request(AsyncDeviceRequest::MemoryFault);
         return;
     }
@@ -194,7 +206,7 @@ void BMIDEChannel::ata_read_sectors(bool slave_request, u16 capabilities)
     VERIFY(!m_current_request.is_null());
     VERIFY(m_current_request->block_count() <= 256);
 
-    ScopedSpinLock m_lock(m_request_lock);
+    SpinlockLocker m_lock(m_request_lock);
     dbgln_if(PATA_DEBUG, "BMIDEChannel::ata_read_sectors ({} x {})", m_current_request->block_index(), m_current_request->block_count());
 
     // Note: This is a fix for a quirk for an IDE controller on ICH7 machine.

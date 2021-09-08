@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Bus/PCI/IDs.h>
 #include <Kernel/Graphics/Console/GenericFramebufferConsole.h>
 #include <Kernel/Graphics/GraphicsManagement.h>
@@ -19,9 +20,10 @@ NonnullRefPtr<GraphicsAdapter> GraphicsAdapter::initialize(PCI::Address base_add
 }
 
 GraphicsAdapter::GraphicsAdapter(PCI::Address base_address)
-    : PCI::DeviceController(base_address)
+    : PCI::Device(base_address)
 {
     m_gpu_device = adopt_ref(*new GPU(base_address)).leak_ref();
+    m_gpu_device->initialize();
 }
 
 void GraphicsAdapter::initialize_framebuffer_devices()

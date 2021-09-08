@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, Tobias Christiansen <tobyase@serenityos.org>
- * Copyright (c) 2021, Sam Atkins <atkinssj@gmail.com>
+ * Copyright (c) 2021, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -219,6 +219,7 @@ public:
         Invalid,
         Inherit,
         Initial,
+        Unset,
         String,
         Length,
         Color,
@@ -245,6 +246,7 @@ public:
 
     bool is_inherit() const { return type() == Type::Inherit; }
     bool is_initial() const { return type() == Type::Initial; }
+    bool is_unset() const { return type() == Type::Unset; }
     bool is_color() const { return type() == Type::Color; }
     bool is_identifier() const { return type() == Type::Identifier || is_auto(); }
     bool is_image() const { return type() == Type::Image; }
@@ -266,15 +268,15 @@ public:
     bool is_overflow() const { return type() == Type::Overflow; }
     bool is_text_decoration() const { return type() == Type::TextDecoration; }
 
-    bool is_builtin() const { return is_inherit() || is_initial(); }
+    bool is_builtin() const { return is_inherit() || is_initial() || is_unset(); }
 
     bool is_builtin_or_dynamic() const
     {
-        return is_inherit() || is_initial() || is_custom_property() || is_calculated();
+        return is_builtin() || is_custom_property() || is_calculated();
     }
 
     virtual String to_string() const = 0;
-    virtual Length to_length() const { return Length::make_auto(); }
+    virtual Length to_length() const { return {}; }
     virtual Color to_color(const DOM::Document&) const { return {}; }
 
     CSS::ValueID to_identifier() const;
@@ -534,7 +536,11 @@ private:
 
 class InitialStyleValue final : public StyleValue {
 public:
-    static NonnullRefPtr<InitialStyleValue> create() { return adopt_ref(*new InitialStyleValue); }
+    static NonnullRefPtr<InitialStyleValue> the()
+    {
+        static NonnullRefPtr<InitialStyleValue> instance = adopt_ref(*new InitialStyleValue);
+        return instance;
+    }
     virtual ~InitialStyleValue() override { }
 
     String to_string() const override { return "initial"; }
@@ -548,7 +554,11 @@ private:
 
 class InheritStyleValue final : public StyleValue {
 public:
-    static NonnullRefPtr<InheritStyleValue> create() { return adopt_ref(*new InheritStyleValue); }
+    static NonnullRefPtr<InheritStyleValue> the()
+    {
+        static NonnullRefPtr<InheritStyleValue> instance = adopt_ref(*new InheritStyleValue);
+        return instance;
+    }
     virtual ~InheritStyleValue() override { }
 
     String to_string() const override { return "inherit"; }
@@ -556,6 +566,24 @@ public:
 private:
     InheritStyleValue()
         : StyleValue(Type::Inherit)
+    {
+    }
+};
+
+class UnsetStyleValue final : public StyleValue {
+public:
+    static NonnullRefPtr<UnsetStyleValue> the()
+    {
+        static NonnullRefPtr<UnsetStyleValue> instance = adopt_ref(*new UnsetStyleValue);
+        return instance;
+    }
+    virtual ~UnsetStyleValue() override { }
+
+    String to_string() const override { return "unset"; }
+
+private:
+    UnsetStyleValue()
+        : StyleValue(Type::Unset)
     {
     }
 };

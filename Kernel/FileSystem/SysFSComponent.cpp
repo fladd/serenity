@@ -9,19 +9,19 @@
 
 namespace Kernel {
 
-static SpinLock<u8> s_index_lock;
+static Spinlock s_index_lock;
 static InodeIndex s_next_inode_index { 0 };
 
 static size_t allocate_inode_index()
 {
-    ScopedSpinLock lock(s_index_lock);
+    SpinlockLocker lock(s_index_lock);
     s_next_inode_index = s_next_inode_index.value() + 1;
     VERIFY(s_next_inode_index > 0);
     return s_next_inode_index.value();
 }
 
 SysFSComponent::SysFSComponent(StringView name)
-    : m_name(KString::try_create(name).release_nonnull())
+    : m_name(KString::try_create(name).release_value()) // FIXME: Handle KString allocation failure.
     , m_component_index(allocate_inode_index())
 {
 }
@@ -61,14 +61,14 @@ SysFSDirectory::SysFSDirectory(StringView name, SysFSDirectory const& parent_dir
 {
 }
 
-NonnullRefPtr<Inode> SysFSDirectory::to_inode(SysFS const& sysfs_instance) const
+KResultOr<NonnullRefPtr<SysFSInode>> SysFSDirectory::to_inode(SysFS const& sysfs_instance) const
 {
-    return SysFSDirectoryInode::create(sysfs_instance, *this);
+    return TRY(SysFSDirectoryInode::try_create(sysfs_instance, *this));
 }
 
-NonnullRefPtr<Inode> SysFSComponent::to_inode(SysFS const& sysfs_instance) const
+KResultOr<NonnullRefPtr<SysFSInode>> SysFSComponent::to_inode(SysFS const& sysfs_instance) const
 {
-    return SysFSInode::create(sysfs_instance, *this);
+    return SysFSInode::try_create(sysfs_instance, *this);
 }
 
 }

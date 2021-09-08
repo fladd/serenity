@@ -286,18 +286,14 @@ void Window::set_minimum_size(const Gfx::IntSize& size)
 
 void Window::center_on_screen()
 {
-    auto window_rect = rect();
-    window_rect.center_within(Desktop::the().rect());
-    set_rect(window_rect);
+    set_rect(rect().centered_within(Desktop::the().rect()));
 }
 
 void Window::center_within(const Window& other)
 {
     if (this == &other)
         return;
-    auto window_rect = rect();
-    window_rect.center_within(other.rect());
-    set_rect(window_rect);
+    set_rect(rect().centered_within(other.rect()));
 }
 
 void Window::set_window_type(WindowType window_type)
@@ -351,13 +347,6 @@ void Window::handle_drop_event(DropEvent& event)
 
 void Window::handle_mouse_event(MouseEvent& event)
 {
-    if (m_global_cursor_tracking_widget) {
-        auto window_relative_rect = m_global_cursor_tracking_widget->window_relative_rect();
-        Gfx::IntPoint local_point { event.x() - window_relative_rect.x(), event.y() - window_relative_rect.y() };
-        auto local_event = MouseEvent((Event::Type)event.type(), local_point, event.buttons(), event.button(), event.modifiers(), event.wheel_delta());
-        m_global_cursor_tracking_widget->dispatch_event(local_event, this);
-        return;
-    }
     if (m_automatic_cursor_tracking_widget) {
         auto window_relative_rect = m_automatic_cursor_tracking_widget->window_relative_rect();
         Gfx::IntPoint local_point { event.x() - window_relative_rect.x(), event.y() - window_relative_rect.y() };
@@ -375,8 +364,7 @@ void Window::handle_mouse_event(MouseEvent& event)
     set_hovered_widget(result.widget);
     if (event.buttons() != 0 && !m_automatic_cursor_tracking_widget)
         m_automatic_cursor_tracking_widget = *result.widget;
-    if (result.widget != m_global_cursor_tracking_widget.ptr())
-        result.widget->dispatch_event(local_event, this);
+    result.widget->dispatch_event(local_event, this);
 
     if (!m_pending_paint_event_rects.is_empty()) {
         MultiPaintEvent paint_event(move(m_pending_paint_event_rects), size());
@@ -554,6 +542,22 @@ void Window::handle_screen_rects_change_event(ScreenRectsChangeEvent& event)
     screen_rects_change_event(event);
 }
 
+void Window::handle_applet_area_rect_change_event(AppletAreaRectChangeEvent& event)
+{
+    if (!m_main_widget)
+        return;
+    auto dispatch_applet_area_rect_change = [&](auto& widget, auto recursive) {
+        widget.dispatch_event(event, this);
+        widget.for_each_child_widget([&](auto& widget) -> IterationDecision {
+            widget.dispatch_event(event, this);
+            recursive(widget, recursive);
+            return IterationDecision::Continue;
+        });
+    };
+    dispatch_applet_area_rect_change(*m_main_widget.ptr(), dispatch_applet_area_rect_change);
+    applet_area_rect_change_event(event);
+}
+
 void Window::handle_drag_move_event(DragEvent& event)
 {
     if (!m_main_widget)
@@ -644,6 +648,9 @@ void Window::event(Core::Event& event)
     if (event.type() == Event::ScreenRectsChange)
         return handle_screen_rects_change_event(static_cast<ScreenRectsChangeEvent&>(event));
 
+    if (event.type() == Event::AppletAreaRectChange)
+        return handle_applet_area_rect_change_event(static_cast<AppletAreaRectChangeEvent&>(event));
+
     Core::Object::event(event);
 }
 
@@ -679,7 +686,7 @@ void Window::update(const Gfx::IntRect& a_rect)
     }
 
     if (m_pending_paint_event_rects.is_empty()) {
-        deferred_invoke([this](auto&) {
+        deferred_invoke([this] {
             auto rects = move(m_pending_paint_event_rects);
             if (rects.is_empty())
                 return;
@@ -738,13 +745,6 @@ void Window::set_focused_widget(Widget* widget, FocusSource source)
         if (m_focused_widget && m_focused_widget->on_focus_change)
             m_focused_widget->on_focus_change(m_focused_widget->is_focused(), source);
     }
-}
-
-void Window::set_global_cursor_tracking_widget(Widget* widget)
-{
-    if (widget == m_global_cursor_tracking_widget)
-        return;
-    m_global_cursor_tracking_widget = widget;
 }
 
 void Window::set_automatic_cursor_tracking_widget(Widget* widget)
@@ -882,6 +882,10 @@ void Window::screen_rects_change_event(ScreenRectsChangeEvent&)
 {
 }
 
+void Window::applet_area_rect_change_event(AppletAreaRectChangeEvent&)
+{
+}
+
 void Window::set_icon(const Gfx::Bitmap* icon)
 {
     if (m_icon == icon)
@@ -1010,7 +1014,7 @@ void Window::schedule_relayout()
     if (m_layout_pending)
         return;
     m_layout_pending = true;
-    deferred_invoke([this](auto&) {
+    deferred_invoke([this] {
         if (main_widget())
             main_widget()->do_layout();
         update();
@@ -1119,8 +1123,6 @@ void Window::did_remove_widget(Badge<Widget>, Widget& widget)
         m_focused_widget = nullptr;
     if (m_hovered_widget == &widget)
         m_hovered_widget = nullptr;
-    if (m_global_cursor_tracking_widget == &widget)
-        m_global_cursor_tracking_widget = nullptr;
     if (m_automatic_cursor_tracking_widget == &widget)
         m_automatic_cursor_tracking_widget = nullptr;
 }

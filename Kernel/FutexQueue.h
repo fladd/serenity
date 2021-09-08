@@ -8,15 +8,15 @@
 
 #include <AK/Atomic.h>
 #include <AK/RefCounted.h>
-#include <Kernel/Locking/SpinLock.h>
+#include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Memory/VMObject.h>
 #include <Kernel/Thread.h>
 
 namespace Kernel {
 
-class FutexQueue
+class FutexQueue final
     : public RefCounted<FutexQueue>
-    , public Thread::BlockCondition {
+    , public Thread::BlockerSet {
 public:
     FutexQueue();
     virtual ~FutexQueue();
@@ -32,18 +32,17 @@ public:
     }
 
     bool queue_imminent_wait();
-    void did_remove();
     bool try_remove();
 
     bool is_empty_and_no_imminent_waits()
     {
-        ScopedSpinLock lock(m_lock);
+        SpinlockLocker lock(m_lock);
         return is_empty_and_no_imminent_waits_locked();
     }
     bool is_empty_and_no_imminent_waits_locked();
 
 protected:
-    virtual bool should_add_blocker(Thread::Blocker& b, void* data) override;
+    virtual bool should_add_blocker(Thread::Blocker& b, void*) override;
 
 private:
     size_t m_imminent_waits { 1 }; // We only create this object if we're going to be waiting, so start out with 1

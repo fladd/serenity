@@ -25,6 +25,7 @@ extern "C" {
 // OpenGL related `defines`
 #define GL_TRUE 1
 #define GL_FALSE 0
+#define GL_NONE 0
 
 // Matrix Modes
 #define GL_MODELVIEW 0x0050
@@ -170,6 +171,8 @@ extern "C" {
 #define GL_ONE_MINUS_CONSTANT_ALPHA 0x8004
 
 // Polygon modes
+#define GL_POINT 0x1B00
+#define GL_LINE 0x1B01
 #define GL_FILL 0x1B02
 
 // Pixel formats
@@ -220,6 +223,39 @@ extern "C" {
 #define GL_TEXTURE29 0x84DD
 #define GL_TEXTURE30 0x84DE
 #define GL_TEXTURE31 0x84DF
+
+#define GL_TEXTURE0_ARB GL_TEXTURE0
+#define GL_TEXTURE1_ARB GL_TEXTURE1
+#define GL_TEXTURE2_ARB GL_TEXTURE2
+#define GL_TEXTURE3_ARB GL_TEXTURE3
+#define GL_TEXTURE4_ARB GL_TEXTURE4
+#define GL_TEXTURE5_ARB GL_TEXTURE5
+#define GL_TEXTURE6_ARB GL_TEXTURE6
+#define GL_TEXTURE7_ARB GL_TEXTURE7
+#define GL_TEXTURE8_ARB GL_TEXTURE8
+#define GL_TEXTURE9_ARB GL_TEXTURE9
+#define GL_TEXTURE10_ARB GL_TEXTURE10
+#define GL_TEXTURE11_ARB GL_TEXTURE11
+#define GL_TEXTURE12_ARB GL_TEXTURE12
+#define GL_TEXTURE13_ARB GL_TEXTURE13
+#define GL_TEXTURE14_ARB GL_TEXTURE14
+#define GL_TEXTURE15_ARB GL_TEXTURE15
+#define GL_TEXTURE16_ARB GL_TEXTURE16
+#define GL_TEXTURE17_ARB GL_TEXTURE17
+#define GL_TEXTURE18_ARB GL_TEXTURE18
+#define GL_TEXTURE19_ARB GL_TEXTURE19
+#define GL_TEXTURE20_ARB GL_TEXTURE20
+#define GL_TEXTURE21_ARB GL_TEXTURE21
+#define GL_TEXTURE22_ARB GL_TEXTURE22
+#define GL_TEXTURE23_ARB GL_TEXTURE23
+#define GL_TEXTURE24_ARB GL_TEXTURE24
+#define GL_TEXTURE25_ARB GL_TEXTURE25
+#define GL_TEXTURE26_ARB GL_TEXTURE26
+#define GL_TEXTURE27_ARB GL_TEXTURE27
+#define GL_TEXTURE28_ARB GL_TEXTURE28
+#define GL_TEXTURE29_ARB GL_TEXTURE29
+#define GL_TEXTURE30_ARB GL_TEXTURE30
+#define GL_TEXTURE31_ARB GL_TEXTURE31
 
 // Texture Environment and Parameters
 #define GL_MODULATE 0x2100
@@ -350,12 +386,15 @@ GLAPI void glShadeModel(GLenum mode);
 GLAPI void glAlphaFunc(GLenum func, GLclampf ref);
 GLAPI void glHint(GLenum target, GLenum mode);
 GLAPI void glReadBuffer(GLenum mode);
+GLAPI void glDrawBuffer(GLenum buffer);
 GLAPI void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid* pixels);
 GLAPI void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid* data);
+GLAPI void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* data);
 GLAPI void glTexCoord2f(GLfloat s, GLfloat t);
 GLAPI void glTexCoord4fv(const GLfloat* v);
 GLAPI void glTexParameteri(GLenum target, GLenum pname, GLint param);
 GLAPI void glTexParameterf(GLenum target, GLenum pname, GLfloat param);
+GLAPI void glTexEnvf(GLenum target, GLenum pname, GLfloat param);
 GLAPI void glBindTexture(GLenum target, GLuint texture);
 GLAPI void glActiveTexture(GLenum texture);
 GLAPI void glGetFloatv(GLenum pname, GLfloat* params);
@@ -371,6 +410,12 @@ GLAPI void glDrawArrays(GLenum mode, GLint first, GLsizei count);
 GLAPI void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices);
 GLAPI void glDepthRange(GLdouble nearVal, GLdouble farVal);
 GLAPI void glDepthFunc(GLenum func);
+GLAPI void glPolygonMode(GLenum face, GLenum mode);
+GLAPI void glPolygonOffset(GLfloat factor, GLfloat units);
+GLAPI void glFogfv(GLenum mode, GLfloat* params);
+GLAPI void glFogf(GLenum pname, GLfloat param);
+GLAPI void glFogi(GLenum pname, GLint param);
+GLAPI void glPixelStorei(GLenum pname, GLint param);
 
 #ifdef __cplusplus
 }

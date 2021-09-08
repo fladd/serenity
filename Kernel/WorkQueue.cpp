@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Locking/SpinLock.h>
+#include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Process.h>
 #include <Kernel/Sections.h>
 #include <Kernel/WaitQueue.h>
@@ -19,15 +19,18 @@ UNMAP_AFTER_INIT void WorkQueue::initialize()
     g_io_work = new WorkQueue("IO WorkQueue");
 }
 
-UNMAP_AFTER_INIT WorkQueue::WorkQueue(const char* name)
+UNMAP_AFTER_INIT WorkQueue::WorkQueue(StringView name)
 {
     RefPtr<Thread> thread;
-    Process::create_kernel_process(thread, name, [this] {
+    auto name_kstring = KString::try_create(name);
+    if (name_kstring.is_error())
+        TODO();
+    Process::create_kernel_process(thread, name_kstring.release_value(), [this] {
         for (;;) {
             WorkItem* item;
             bool have_more;
             {
-                ScopedSpinLock lock(m_lock);
+                SpinlockLocker lock(m_lock);
                 item = m_items.take_first();
                 have_more = !m_items.is_empty();
             }
@@ -48,7 +51,7 @@ UNMAP_AFTER_INIT WorkQueue::WorkQueue(const char* name)
 void WorkQueue::do_queue(WorkItem* item)
 {
     {
-        ScopedSpinLock lock(m_lock);
+        SpinlockLocker lock(m_lock);
         m_items.append(*item);
     }
     m_wait_queue.wake_one();

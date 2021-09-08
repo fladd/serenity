@@ -7,9 +7,11 @@
 #include <AK/TypeCasts.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/GlobalObject.h>
+#include <LibJS/Runtime/IteratorOperations.h>
 #include <LibJS/Runtime/Temporal/AbstractOperations.h>
 #include <LibJS/Runtime/Temporal/Calendar.h>
 #include <LibJS/Runtime/Temporal/CalendarPrototype.h>
+#include <LibJS/Runtime/Temporal/Duration.h>
 #include <LibJS/Runtime/Temporal/PlainDate.h>
 #include <LibJS/Runtime/Temporal/PlainDateTime.h>
 #include <LibJS/Runtime/Temporal/PlainMonthDay.h>
@@ -35,9 +37,10 @@ void CalendarPrototype::initialize(GlobalObject& global_object)
     define_native_accessor(vm.names.id, id_getter, {}, Attribute::Configurable);
 
     u8 attr = Attribute::Writable | Attribute::Configurable;
-    define_native_function(vm.names.dateFromFields, date_from_fields, 2, attr);
-    define_native_function(vm.names.yearMonthFromFields, year_month_from_fields, 2, attr);
-    define_native_function(vm.names.monthDayFromFields, month_day_from_fields, 2, attr);
+    define_native_function(vm.names.dateFromFields, date_from_fields, 1, attr);
+    define_native_function(vm.names.yearMonthFromFields, year_month_from_fields, 1, attr);
+    define_native_function(vm.names.monthDayFromFields, month_day_from_fields, 1, attr);
+    define_native_function(vm.names.dateAdd, date_add, 2, attr);
     define_native_function(vm.names.year, year, 1, attr);
     define_native_function(vm.names.month, month, 1, attr);
     define_native_function(vm.names.monthCode, month_code, 1, attr);
@@ -54,6 +57,8 @@ void CalendarPrototype::initialize(GlobalObject& global_object)
     define_native_function(vm.names.mergeFields, merge_fields, 2, attr);
     define_native_function(vm.names.toString, to_string, 0, attr);
     define_native_function(vm.names.toJSON, to_json, 0, attr);
+    define_native_function(vm.names.era, era, 1, attr);
+    define_native_function(vm.names.eraYear, era_year, 1, attr);
 }
 
 static Calendar* typed_this(GlobalObject& global_object)
@@ -79,7 +84,7 @@ JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::id_getter)
     return js_string(vm, calendar.to_string(global_object));
 }
 
-// 12.4.4 Temporal.Calendar.prototype.dateFromFields ( fields, options ), https://tc39.es/proposal-temporal/#sec-temporal.calendar.prototype.datefromfields
+// 12.4.4 Temporal.Calendar.prototype.dateFromFields ( fields [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal.calendar.prototype.datefromfields
 // NOTE: This is the minimum dateFromFields implementation for engines without ECMA-402.
 JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::date_from_fields)
 {
@@ -113,7 +118,7 @@ JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::date_from_fields)
     return create_temporal_date(global_object, result->year, result->month, result->day, *calendar);
 }
 
-// 12.4.5 Temporal.Calendar.prototype.yearMonthFromFields ( fields, options ), https://tc39.es/proposal-temporal/#sec-temporal.calendar.prototype.yearmonthfromfields
+// 12.4.5 Temporal.Calendar.prototype.yearMonthFromFields ( fields [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal.calendar.prototype.yearmonthfromfields
 // NOTE: This is the minimum yearMonthFromFields implementation for engines without ECMA-402.
 JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::year_month_from_fields)
 {
@@ -147,7 +152,7 @@ JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::year_month_from_fields)
     return create_temporal_year_month(global_object, result->year, result->month, *calendar, result->reference_iso_day);
 }
 
-// 12.4.6 Temporal.Calendar.prototype.monthDayFromFields ( fields, options ), https://tc39.es/proposal-temporal/#sec-temporal.calendar.prototype.monthdayfromfields
+// 12.4.6 Temporal.Calendar.prototype.monthDayFromFields ( fields [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal.calendar.prototype.monthdayfromfields
 // NOTE: This is the minimum monthDayFromFields implementation for engines without ECMA-402.
 JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::month_day_from_fields)
 {
@@ -179,6 +184,54 @@ JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::month_day_from_fields)
 
     // 7. Return ? CreateTemporalMonthDay(result.[[Month]], result.[[Day]], calendar, result.[[ReferenceISOYear]]).
     return create_temporal_month_day(global_object, result->month, result->day, *calendar, result->reference_iso_year);
+}
+
+// 12.4.7 Temporal.Calendar.prototype.dateAdd ( date, duration [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal.calendar.prototype.dateadd
+// NOTE: This is the minimum dateAdd implementation for engines without ECMA-402.
+JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::date_add)
+{
+    // 1. Let calendar be the this value.
+    // 2. Perform ? RequireInternalSlot(calendar, [[InitializedTemporalCalendar]]).
+    auto* calendar = typed_this(global_object);
+    if (vm.exception())
+        return {};
+
+    // 3. Assert: calendar.[[Identifier]] is "iso8601".
+    VERIFY(calendar->identifier() == "iso8601"sv);
+
+    // 4. Set date to ? ToTemporalDate(date).
+    auto* date = to_temporal_date(global_object, vm.argument(0));
+    if (vm.exception())
+        return {};
+
+    // 5. Set duration to ? ToTemporalDuration(duration).
+    auto* duration = to_temporal_duration(global_object, vm.argument(1));
+    if (vm.exception())
+        return {};
+
+    // 6. Set options to ? GetOptionsObject(options).
+    auto* options = get_options_object(global_object, vm.argument(2));
+    if (vm.exception())
+        return {};
+
+    // 7. Let overflow be ? ToTemporalOverflow(options).
+    auto overflow = to_temporal_overflow(global_object, *options);
+    if (vm.exception())
+        return {};
+
+    // FIXME: Narrowing conversion from 'double' to 'i64'
+    auto* nanoseconds = js_bigint(vm, Crypto::SignedBigInteger::create_from(duration->nanoseconds()));
+
+    // 8. Let balanceResult be ! BalanceDuration(duration.[[Days]], duration.[[Hours]], duration.[[Minutes]], duration.[[Seconds]], duration.[[Milliseconds]], duration.[[Microseconds]], duration.[[Nanoseconds]], "day").
+    auto balance_result = balance_duration(global_object, duration->days(), duration->hours(), duration->minutes(), duration->seconds(), duration->milliseconds(), duration->microseconds(), *nanoseconds, "day"sv);
+
+    // 9. Let result be ? AddISODate(date.[[ISOYear]], date.[[ISOMonth]], date.[[ISODay]], duration.[[Years]], duration.[[Months]], duration.[[Weeks]], balanceResult.[[Days]], overflow).
+    auto result = add_iso_date(global_object, date->iso_year(), date->iso_month(), date->iso_day(), duration->years(), duration->months(), duration->weeks(), balance_result->days, *overflow);
+    if (vm.exception())
+        return {};
+
+    // 10. Return ? CreateTemporalDate(result.[[Year]], result.[[Month]], result.[[Day]], calendar).
+    return create_temporal_date(global_object, result->year, result->month, result->day, *calendar);
 }
 
 // 12.4.9 Temporal.Calendar.prototype.year ( temporalDateLike ), https://tc39.es/proposal-temporal/#sec-temporal.calendar.prototype.year
@@ -500,12 +553,66 @@ JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::fields)
     // 3. Assert: calendar.[[Identifier]] is "iso8601".
     VERIFY(calendar->identifier() == "iso8601"sv);
 
-    // 4. Let fieldNames be ? IterableToListOfType(fields, « String »).
-    auto field_names = iterable_to_list_of_type(global_object, fields, { OptionType::String });
+    // 4. Let iteratorRecord be ? Getiterator(fields, sync).
+    auto* iterator_record = get_iterator(global_object, fields, IteratorHint::Sync);
     if (vm.exception())
         return {};
 
-    // 5. Return ! CreateArrayFromList(fieldNames).
+    // 5. Let fieldNames be a new empty List.
+    auto field_names = MarkedValueList { vm.heap() };
+
+    // 6. Let next be true.
+    // 7. Repeat, while next is not false,
+    while (true) {
+        // a. Set next to ? IteratorStep(iteratorRecord).
+        auto* next = iterator_step(global_object, *iterator_record);
+        if (vm.exception())
+            return {};
+
+        // b. If next is not false, then
+        if (!next)
+            break;
+
+        // i. Let nextValue be ? IteratorValue(next).
+        auto next_value = iterator_value(global_object, *next);
+        if (vm.exception())
+            return {};
+
+        // ii. If Type(nextValue) is not String, then
+        if (!next_value.is_string()) {
+            // 1. Let completion be ThrowCompletion(a newly created TypeError object).
+            vm.throw_exception<TypeError>(global_object, ErrorType::TemporalInvalidCalendarFieldValue, next_value.to_string_without_side_effects());
+
+            // 2. Return ? IteratorClose(iteratorRecord, completion).
+            iterator_close(*iterator_record);
+            return {};
+        }
+
+        // iii. If fieldNames contains nextValue, then
+        if (field_names.contains_slow(next_value)) {
+            // 1. Let completion be ThrowCompletion(a newly created RangeError object).
+            vm.throw_exception<RangeError>(global_object, ErrorType::TemporalDuplicateCalendarField, next_value.as_string().string());
+
+            // 2. Return ? IteratorClose(iteratorRecord, completion).
+            iterator_close(*iterator_record);
+            return {};
+        }
+
+        // iv. If nextValue is not one of "year", "month", "monthCode", "day", "hour", "minute", "second", "millisecond", "microsecond", "nanosecond", then
+        if (!next_value.as_string().string().is_one_of("year"sv, "month"sv, "monthCode"sv, "day"sv, "hour"sv, "minute"sv, "second"sv, "millisecond"sv, "microsecond"sv, "nanosecond"sv)) {
+            // 1. Let completion be ThrowCompletion(a newly created RangeError object).
+            vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidCalendarFieldName, next_value.as_string().string());
+
+            // 2. Return ? IteratorClose(iteratorRecord, completion).
+            iterator_close(*iterator_record);
+            return {};
+        }
+
+        // v. Append nextValue to the end of the List fieldNames.
+        field_names.append(next_value);
+    }
+
+    // 8. Return ! CreateArrayFromList(fieldNames).
     return Array::create_from(global_object, field_names);
 }
 
@@ -557,6 +664,70 @@ JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::to_json)
 
     // 2. Return ? ToString(calendar).
     return js_string(vm, calendar.to_string(global_object));
+}
+
+// 15.6.2.6 Temporal.Calendar.prototype.era ( temporalDateLike ), https://tc39.es/proposal-temporal/#sec-temporal.calendar.prototype.era
+JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::era)
+{
+    auto temporal_date_like = vm.argument(0);
+
+    // 1. Let calendar be the this value.
+    // 2. Perform ? RequireInternalSlot(calendar, [[InitializedTemporalCalendar]]).
+    auto* calendar = typed_this(global_object);
+    if (vm.exception())
+        return {};
+
+    // 3. If Type(temporalDateLike) is not Object or temporalDateLike does not have an [[InitializedTemporalDate]], [[InitializedTemporalDateTime]], or [[InitializedTemporalYearMonth]] internal slot, then
+    if (!temporal_date_like.is_object() || !(is<PlainDate>(temporal_date_like.as_object()) || is<PlainDateTime>(temporal_date_like.as_object()) || is<PlainYearMonth>(temporal_date_like.as_object()))) {
+        // a. Set temporalDateLike to ? ToTemporalDate(temporalDateLike).
+        temporal_date_like = to_temporal_date(global_object, temporal_date_like);
+        if (vm.exception())
+            return {};
+    }
+
+    // 4. If calendar.[[Identifier]] is "iso8601", then
+    if (calendar->identifier() == "iso8601"sv) {
+        // a. Return undefined.
+        return js_undefined();
+    }
+
+    // 5. Let era be the result of implementation-defined processing of temporalDateLike and calendar.[[Identifier]].
+    // 6. Return era.
+
+    // NOTE: No support for non-iso8601 calendars yet.
+    VERIFY_NOT_REACHED();
+}
+
+// 15.6.2.7 Temporal.Calendar.prototype.eraYear ( temporalDateLike ), https://tc39.es/proposal-temporal/#sec-temporal.calendar.prototype.erayear
+JS_DEFINE_NATIVE_FUNCTION(CalendarPrototype::era_year)
+{
+    auto temporal_date_like = vm.argument(0);
+
+    // 1. Let calendar be the this value.
+    // 2. Perform ? RequireInternalSlot(calendar, [[InitializedTemporalCalendar]]).
+    auto* calendar = typed_this(global_object);
+    if (vm.exception())
+        return {};
+
+    // 3. If Type(temporalDateLike) is not Object or temporalDateLike does not have an [[InitializedTemporalDate]], [[InitializedTemporalDateTime]], or [[InitializedTemporalYearMonth]] internal slot, then
+    if (!temporal_date_like.is_object() || !(is<PlainDate>(temporal_date_like.as_object()) || is<PlainDateTime>(temporal_date_like.as_object()) || is<PlainYearMonth>(temporal_date_like.as_object()))) {
+        // a. Set temporalDateLike to ? ToTemporalDate(temporalDateLike).
+        temporal_date_like = to_temporal_date(global_object, temporal_date_like);
+        if (vm.exception())
+            return {};
+    }
+
+    // 4. If calendar.[[Identifier]] is "iso8601", then
+    if (calendar->identifier() == "iso8601"sv) {
+        // a. Return undefined.
+        return js_undefined();
+    }
+
+    // 5. Let eraYear be the result of implementation-defined processing of temporalDateLike and calendar.[[Identifier]].
+    // 6. Return 𝔽(eraYear).
+
+    // NOTE: No support for non-iso8601 calendars yet.
+    VERIFY_NOT_REACHED();
 }
 
 }

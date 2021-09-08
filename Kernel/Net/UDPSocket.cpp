@@ -22,9 +22,9 @@ void UDPSocket::for_each(Function<void(const UDPSocket&)> callback)
     });
 }
 
-static Singleton<ProtectedValue<HashMap<u16, UDPSocket*>>> s_map;
+static Singleton<MutexProtected<HashMap<u16, UDPSocket*>>> s_map;
 
-ProtectedValue<HashMap<u16, UDPSocket*>>& UDPSocket::sockets_by_port()
+MutexProtected<HashMap<u16, UDPSocket*>>& UDPSocket::sockets_by_port()
 {
     return *s_map;
 }
@@ -54,12 +54,9 @@ UDPSocket::~UDPSocket()
     });
 }
 
-KResultOr<NonnullRefPtr<UDPSocket>> UDPSocket::create(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer)
+KResultOr<NonnullRefPtr<UDPSocket>> UDPSocket::try_create(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer)
 {
-    auto socket = adopt_ref_if_nonnull(new (nothrow) UDPSocket(protocol, move(receive_buffer)));
-    if (socket)
-        return socket.release_nonnull();
-    return ENOMEM;
+    return adopt_nonnull_ref_or_enomem(new (nothrow) UDPSocket(protocol, move(receive_buffer)));
 }
 
 KResultOr<size_t> UDPSocket::protocol_receive(ReadonlyBytes raw_ipv4_packet, UserOrKernelBuffer& buffer, size_t buffer_size, [[maybe_unused]] int flags)
@@ -68,8 +65,7 @@ KResultOr<size_t> UDPSocket::protocol_receive(ReadonlyBytes raw_ipv4_packet, Use
     auto& udp_packet = *static_cast<const UDPPacket*>(ipv4_packet.payload());
     VERIFY(udp_packet.length() >= sizeof(UDPPacket)); // FIXME: This should be rejected earlier.
     size_t read_size = min(buffer_size, udp_packet.length() - sizeof(UDPPacket));
-    if (!buffer.write(udp_packet.payload(), read_size))
-        return set_so_error(EFAULT);
+    SOCKET_TRY(buffer.write(udp_packet.payload(), read_size));
     return read_size;
 }
 
@@ -89,18 +85,16 @@ KResultOr<size_t> UDPSocket::protocol_send(const UserOrKernelBuffer& data, size_
     udp_packet.set_source_port(local_port());
     udp_packet.set_destination_port(peer_port());
     udp_packet.set_length(udp_buffer_size);
-    if (!data.read(udp_packet.payload(), data_length))
-        return set_so_error(EFAULT);
-
+    SOCKET_TRY(data.read(udp_packet.payload(), data_length));
     routing_decision.adapter->fill_in_ipv4_header(*packet, local_address(), routing_decision.next_hop,
         peer_address(), IPv4Protocol::UDP, udp_buffer_size, ttl());
     routing_decision.adapter->send_packet(packet->bytes());
     return data_length;
 }
 
-KResult UDPSocket::protocol_connect(FileDescription&, ShouldBlock)
+KResult UDPSocket::protocol_connect(OpenFileDescription&, ShouldBlock)
 {
-    m_role = Role::Connected;
+    set_role(Role::Connected);
     set_connected(true);
     return KSuccess;
 }

@@ -152,13 +152,17 @@ void TerminalWrapper::kill_running_command()
     [[maybe_unused]] auto rc = killpg(m_pid, SIGTERM);
 }
 
+void TerminalWrapper::clear_including_history()
+{
+    m_terminal_widget->clear_including_history();
+}
+
 TerminalWrapper::TerminalWrapper(bool user_spawned)
     : m_user_spawned(user_spawned)
 {
     set_layout<GUI::VerticalBoxLayout>();
 
-    RefPtr<Core::ConfigFile> config = Core::ConfigFile::get_for_app("Terminal");
-    m_terminal_widget = add<VT::TerminalWidget>(-1, false, config);
+    m_terminal_widget = add<VT::TerminalWidget>(-1, false);
 
     if (user_spawned)
         run_command("Shell");

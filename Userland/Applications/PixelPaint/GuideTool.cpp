@@ -5,6 +5,7 @@
  */
 
 #include "GuideTool.h"
+#include "EditGuideDialog.h"
 #include "ImageEditor.h"
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
@@ -49,21 +50,23 @@ RefPtr<Guide> GuideTool::closest_guide(const Gfx::IntPoint& point)
     return nullptr;
 }
 
-void GuideTool::on_mousedown(Layer&, GUI::MouseEvent& mouse_event, GUI::MouseEvent& image_event)
+void GuideTool::on_mousedown(Layer*, MouseEvent& event)
 {
     if (!m_editor)
         return;
 
-    if (mouse_event.button() != GUI::MouseButton::Left)
+    auto& image_event = event.image_event();
+
+    if (image_event.button() != GUI::MouseButton::Left)
         return;
 
     m_editor->set_guide_visibility(true);
 
     RefPtr<Guide> new_guide;
     if (image_event.position().x() < 0 || image_event.position().x() > editor()->image().size().width()) {
-        new_guide = Guide::construct(Guide::Orientation::Vertical, image_event.position().x());
+        new_guide = make_ref_counted<Guide>(Guide::Orientation::Vertical, image_event.position().x());
     } else if (image_event.position().y() < 0 || image_event.position().y() > editor()->image().size().height()) {
-        new_guide = Guide::construct(Guide::Orientation::Horizontal, image_event.position().y());
+        new_guide = make_ref_counted<Guide>(Guide::Orientation::Horizontal, image_event.position().y());
     }
 
     if (new_guide) {
@@ -83,7 +86,7 @@ void GuideTool::on_mousedown(Layer&, GUI::MouseEvent& mouse_event, GUI::MouseEve
     }
 }
 
-void GuideTool::on_mouseup(Layer&, GUI::MouseEvent&, GUI::MouseEvent&)
+void GuideTool::on_mouseup(Layer*, MouseEvent&)
 {
     m_guide_origin = 0;
     m_event_origin = { 0, 0 };
@@ -102,11 +105,12 @@ void GuideTool::on_mouseup(Layer&, GUI::MouseEvent&, GUI::MouseEvent&)
     m_selected_guide = nullptr;
 }
 
-void GuideTool::on_mousemove(Layer&, GUI::MouseEvent&, GUI::MouseEvent& image_event)
+void GuideTool::on_mousemove(Layer*, MouseEvent& event)
 {
     if (!m_selected_guide)
         return;
 
+    auto& image_event = event.image_event();
     auto delta = image_event.position() - m_event_origin;
 
     auto relevant_offset = 0;
@@ -129,7 +133,7 @@ void GuideTool::on_mousemove(Layer&, GUI::MouseEvent&, GUI::MouseEvent& image_ev
     editor()->layers_did_change();
 }
 
-void GuideTool::on_context_menu(Layer&, GUI::ContextMenuEvent& event)
+void GuideTool::on_context_menu(Layer*, GUI::ContextMenuEvent& event)
 {
     if (!m_editor)
         return;
@@ -138,6 +142,24 @@ void GuideTool::on_context_menu(Layer&, GUI::ContextMenuEvent& event)
 
     if (!m_context_menu) {
         m_context_menu = GUI::Menu::construct();
+        m_context_menu->add_action(GUI::Action::create(
+            "Set &Offset", Gfx::Bitmap::try_load_from_file("/res/icons/16x16/gear.png"), [this](auto&) {
+                if (!m_context_menu_guide)
+                    return;
+                auto dialog = EditGuideDialog::construct(
+                    editor()->window(),
+                    String::formatted("{}", m_context_menu_guide->offset()),
+                    m_context_menu_guide->orientation());
+                if (dialog->exec() != GUI::Dialog::ExecOK)
+                    return;
+                auto offset = dialog->offset_as_pixel(*editor());
+                if (!offset.has_value())
+                    return;
+                m_context_menu_guide->set_offset(offset.release_value());
+                m_context_menu_guide->set_orientation(dialog->orientation());
+                editor()->layers_did_change();
+            },
+            editor()));
         m_context_menu->add_action(GUI::Action::create(
             "&Delete Guide", Gfx::Bitmap::try_load_from_file("/res/icons/16x16/delete.png"), [this](auto&) {
                 if (!m_context_menu_guide)
@@ -184,6 +206,7 @@ GUI::Widget* GuideTool::get_properties_widget()
         snapping_slider.on_change = [&](int value) {
             m_snap_size = value;
         };
+        set_primary_slider(&snapping_slider);
     }
 
     return m_properties_widget.ptr();

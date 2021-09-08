@@ -485,6 +485,18 @@ TEST_CASE(simple_period_end_benchmark)
     EXPECT_EQ(re.search("hello?", m), true);
 }
 
+TEST_CASE(posix_extended_nested_capture_group)
+{
+    Regex<PosixExtended> re("(h(e(?<llo>llo)))"); // group 0 -> "hello", group 1 -> "ello", group 2/"llo" -> "llo"
+    auto result = re.match("hello");
+    EXPECT(result.success);
+    EXPECT_EQ(result.capture_group_matches.size(), 1u);
+    EXPECT_EQ(result.capture_group_matches[0].size(), 3u);
+    EXPECT_EQ(result.capture_group_matches[0][0].view, "hello"sv);
+    EXPECT_EQ(result.capture_group_matches[0][1].view, "ello"sv);
+    EXPECT_EQ(result.capture_group_matches[0][2].view, "llo"sv);
+}
+
 TEST_CASE(ECMA262_parse)
 {
     struct _test {
@@ -660,6 +672,7 @@ TEST_CASE(ECMA262_match)
         { "[\\0]"sv, "\0"sv, true, ECMAScriptFlags::BrowserExtended },
         { "[\\0]"sv, "\0"sv, true, combine_flags(ECMAScriptFlags::Unicode, ECMAScriptFlags::BrowserExtended) },
         { "[\\01]"sv, "\1"sv, true, ECMAScriptFlags::BrowserExtended },
+        { "(\0|a)"sv, "a"sv, true }, // #9686, Should allow null bytes in pattern
     };
     // clang-format on
 
@@ -687,6 +700,8 @@ TEST_CASE(ECMA262_unicode_match)
         ECMAScriptFlags options {};
     };
     _test tests[] {
+        { "\xf0\x9d\x8c\x86"sv, "abcdef"sv, false, ECMAScriptFlags::Unicode },
+        { "[\xf0\x9d\x8c\x86]"sv, "abcdef"sv, false, ECMAScriptFlags::Unicode },
         { "\\ud83d"sv, "😀"sv, true },
         { "\\ud83d"sv, "😀"sv, false, ECMAScriptFlags::Unicode },
         { "\\ude00"sv, "😀"sv, true },
@@ -698,6 +713,9 @@ TEST_CASE(ECMA262_unicode_match)
         { "\\ud83d\\ud83d"sv, "\xed\xa0\xbd\xed\xa0\xbd"sv, true, ECMAScriptFlags::Unicode },
         { "(?<=.{3})f"sv, "abcdef"sv, true, ECMAScriptFlags::Unicode },
         { "(?<=.{3})f"sv, "abc😀ef"sv, true, ECMAScriptFlags::Unicode },
+        { "(?<𝓑𝓻𝓸𝔀𝓷>brown)"sv, "brown"sv, true, ECMAScriptFlags::Unicode },
+        { "(?<\\u{1d4d1}\\u{1d4fb}\\u{1d4f8}\\u{1d500}\\u{1d4f7}>brown)"sv, "brown"sv, true, ECMAScriptFlags::Unicode },
+        { "(?<\\ud835\\udcd1\\ud835\\udcfb\\ud835\\udcf8\\ud835\\udd00\\ud835\\udcf7>brown)"sv, "brown"sv, true, ECMAScriptFlags::Unicode },
     };
 
     for (auto& test : tests) {
@@ -842,8 +860,23 @@ TEST_CASE(case_insensitive_match)
 TEST_CASE(extremely_long_fork_chain)
 {
     Regex<ECMA262> re("(?:aa)*");
-    auto result = re.match(String::repeated('a', 100'000));
+    auto result = re.match(String::repeated('a', 1000));
     EXPECT_EQ(result.success, true);
+}
+
+TEST_CASE(theoretically_infinite_loop)
+{
+    Array patterns {
+        "(a*)*"sv,  // Infinitely matching empty substrings, the outer loop should short-circuit.
+        "(a*?)*"sv, // Infinitely matching empty substrings, the outer loop should short-circuit.
+        "(a*)*?"sv, // Should match exactly nothing.
+        "(?:)*?"sv, // Should not generate an infinite fork loop.
+    };
+    for (auto& pattern : patterns) {
+        Regex<ECMA262> re(pattern);
+        auto result = re.match("");
+        EXPECT_EQ(result.success, true);
+    }
 }
 
 static auto g_lots_of_a_s = String::repeated('a', 10'000'000);

@@ -107,9 +107,6 @@ private:
     // ^CharacterDevice
     virtual StringView class_name() const override { return "VirtualConsole"; }
 
-    // ^Device
-    virtual String device_name() const override;
-
     void set_active(bool);
     void flush_dirty_lines();
 
@@ -130,7 +127,7 @@ private:
 
     Cell& cell_at(size_t column, size_t row);
 
-    typedef Vector<unsigned, 4> ParamVector;
+    using ParamVector = Vector<unsigned, 4>;
 
     void on_code_point(u32);
 

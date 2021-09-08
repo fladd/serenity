@@ -196,7 +196,7 @@ void TextNode::compute_text_for_rendering(bool collapse, bool previous_is_empty_
     m_text_for_rendering = builder.to_string();
 }
 
-void TextNode::split_into_lines_by_rules(InlineFormattingContext& context, LayoutMode layout_mode, bool do_collapse, bool do_wrap_lines, bool do_wrap_breaks)
+void TextNode::split_into_lines_by_rules(InlineFormattingContext& context, LayoutMode layout_mode, bool do_collapse, bool do_wrap_lines, bool do_respect_linebreaks)
 {
     auto& containing_block = context.containing_block();
 
@@ -207,7 +207,7 @@ void TextNode::split_into_lines_by_rules(InlineFormattingContext& context, Layou
     float available_width = context.available_width_at_line(line_boxes.size() - 1) - line_boxes.last().width();
 
     compute_text_for_rendering(do_collapse, line_boxes.last().is_empty_or_ends_in_whitespace());
-    ChunkIterator iterator(m_text_for_rendering, layout_mode, do_wrap_lines, do_wrap_breaks);
+    ChunkIterator iterator(m_text_for_rendering, layout_mode, do_wrap_lines, do_respect_linebreaks);
 
     for (;;) {
         auto chunk_opt = iterator.next();
@@ -251,7 +251,7 @@ void TextNode::split_into_lines_by_rules(InlineFormattingContext& context, Layou
             available_width = context.available_width_at_line(line_boxes.size() - 1);
         }
 
-        if (do_wrap_breaks && chunk.has_breaking_newline) {
+        if (do_respect_linebreaks && chunk.has_breaking_newline) {
             containing_block.add_line_box();
             available_width = context.available_width_at_line(line_boxes.size() - 1);
         }
@@ -262,27 +262,27 @@ void TextNode::split_into_lines(InlineFormattingContext& context, LayoutMode lay
 {
     bool do_collapse = true;
     bool do_wrap_lines = true;
-    bool do_wrap_breaks = false;
+    bool do_respect_linebreaks = false;
 
     if (computed_values().white_space() == CSS::WhiteSpace::Nowrap) {
         do_collapse = true;
         do_wrap_lines = false;
-        do_wrap_breaks = false;
+        do_respect_linebreaks = false;
     } else if (computed_values().white_space() == CSS::WhiteSpace::Pre) {
         do_collapse = false;
         do_wrap_lines = false;
-        do_wrap_breaks = true;
+        do_respect_linebreaks = true;
     } else if (computed_values().white_space() == CSS::WhiteSpace::PreLine) {
         do_collapse = true;
         do_wrap_lines = true;
-        do_wrap_breaks = true;
+        do_respect_linebreaks = true;
     } else if (computed_values().white_space() == CSS::WhiteSpace::PreWrap) {
         do_collapse = false;
         do_wrap_lines = true;
-        do_wrap_breaks = true;
+        do_respect_linebreaks = true;
     }
 
-    split_into_lines_by_rules(context, layout_mode, do_collapse, do_wrap_lines, do_wrap_breaks);
+    split_into_lines_by_rules(context, layout_mode, do_collapse, do_wrap_lines, do_respect_linebreaks);
 }
 
 bool TextNode::wants_mouse_events() const
@@ -317,12 +317,11 @@ void TextNode::handle_mousemove(Badge<EventHandler>, const Gfx::IntPoint& positi
     verify_cast<Label>(*parent()).handle_mousemove_on_label({}, position, button);
 }
 
-TextNode::ChunkIterator::ChunkIterator(StringView const& text, LayoutMode layout_mode, bool wrap_lines, bool wrap_breaks)
+TextNode::ChunkIterator::ChunkIterator(StringView const& text, LayoutMode layout_mode, bool wrap_lines, bool respect_linebreaks)
     : m_layout_mode(layout_mode)
     , m_wrap_lines(wrap_lines)
-    , m_wrap_breaks(wrap_breaks)
+    , m_respect_linebreaks(respect_linebreaks)
     , m_utf8_view(text)
-    , m_start_of_chunk(m_utf8_view.begin())
     , m_iterator(m_utf8_view.begin())
 {
     m_last_was_space = !text.is_empty() && is_ascii_space(*m_utf8_view.begin());
@@ -330,66 +329,88 @@ TextNode::ChunkIterator::ChunkIterator(StringView const& text, LayoutMode layout
 
 Optional<TextNode::Chunk> TextNode::ChunkIterator::next()
 {
+    if (m_iterator == m_utf8_view.end())
+        return {};
+
+    auto start_of_chunk = m_iterator;
     while (m_iterator != m_utf8_view.end()) {
-        auto guard = ScopeGuard([&] { ++m_iterator; });
-        if (m_layout_mode == LayoutMode::AllPossibleLineBreaks) {
-            if (auto result = try_commit_chunk(m_iterator, false); result.has_value())
-                return result.release_value();
-        }
+        ++m_iterator;
+
         if (m_last_was_newline) {
-            m_last_was_newline = false;
-            if (auto result = try_commit_chunk(m_iterator, true); result.has_value())
+            // NOTE: This expression looks out for the case where we have
+            //       multiple newlines in a row. Because every output next()
+            //       that's a newline newline must be prepared for in advance by
+            //       the previous next() call, we need to check whether the next
+            //       character is a newline here as well. Otherwise, the newline
+            //       becomes part of the next expression and causes rendering
+            //       issues.
+            m_last_was_newline = m_iterator != m_utf8_view.end() && *m_iterator == '\n';
+            if (auto result = try_commit_chunk(start_of_chunk, m_iterator, true); result.has_value())
                 return result.release_value();
         }
-        if (m_wrap_breaks && *m_iterator == '\n') {
+
+        if (m_layout_mode == LayoutMode::AllPossibleLineBreaks) {
+            if (auto result = try_commit_chunk(start_of_chunk, m_iterator, false); result.has_value()) {
+                return result.release_value();
+            }
+        }
+
+        // NOTE: The checks after this need to look at the current iterator
+        //       position, which depends on not being at the end.
+        if (m_iterator == m_utf8_view.end())
+            break;
+
+        // NOTE: When we're supposed to stop on linebreaks, we're actually
+        //       supposed to output two chunks: "content" and "\n". Since we
+        //       can't output two chunks at once, we store this information as a
+        //       flag to output the newline immediately at the earliest
+        //       opportunity.
+        if (m_respect_linebreaks && *m_iterator == '\n') {
             m_last_was_newline = true;
-            if (auto result = try_commit_chunk(m_iterator, false); result.has_value())
+            if (auto result = try_commit_chunk(start_of_chunk, m_iterator, false); result.has_value()) {
                 return result.release_value();
+            }
         }
+
         if (m_wrap_lines) {
             bool is_space = is_ascii_space(*m_iterator);
             if (is_space != m_last_was_space) {
                 m_last_was_space = is_space;
-                if (auto result = try_commit_chunk(m_iterator, false); result.has_value())
+                if (auto result = try_commit_chunk(start_of_chunk, m_iterator, false); result.has_value()) {
                     return result.release_value();
+                }
             }
         }
     }
 
-    if (m_last_was_newline) {
-        m_last_was_newline = false;
-        if (auto result = try_commit_chunk(m_utf8_view.end(), true); result.has_value())
-            return result.release_value();
-    }
-    if (m_start_of_chunk != m_utf8_view.end()) {
-        if (auto result = try_commit_chunk(m_utf8_view.end(), false, true); result.has_value())
+    if (start_of_chunk != m_utf8_view.end()) {
+        // Try to output whatever's left at the end of the text node.
+        if (auto result = try_commit_chunk(start_of_chunk, m_utf8_view.end(), false, true); result.has_value())
             return result.release_value();
     }
 
     return {};
 }
 
-Optional<TextNode::Chunk> TextNode::ChunkIterator::try_commit_chunk(Utf8View::Iterator const& it, bool has_breaking_newline, bool must_commit)
+Optional<TextNode::Chunk> TextNode::ChunkIterator::try_commit_chunk(Utf8View::Iterator const& start, Utf8View::Iterator const& end, bool has_breaking_newline, bool must_commit)
 {
     if (m_layout_mode == LayoutMode::OnlyRequiredLineBreaks && !must_commit)
         return {};
 
-    auto start = m_utf8_view.byte_offset_of(m_start_of_chunk);
-    auto length = m_utf8_view.byte_offset_of(it) - m_utf8_view.byte_offset_of(m_start_of_chunk);
+    auto byte_offset = m_utf8_view.byte_offset_of(start);
+    auto byte_length = m_utf8_view.byte_offset_of(end) - byte_offset;
 
-    if (has_breaking_newline || length > 0) {
-        auto chunk_view = m_utf8_view.substring_view(start, length);
-        m_start_of_chunk = it;
+    if (byte_length > 0) {
+        auto chunk_view = m_utf8_view.substring_view(byte_offset, byte_length);
         return Chunk {
             .view = chunk_view,
-            .start = start,
-            .length = length,
+            .start = byte_offset,
+            .length = byte_length,
             .has_breaking_newline = has_breaking_newline,
             .is_all_whitespace = is_all_whitespace(chunk_view.as_string()),
         };
     }
 
-    m_start_of_chunk = it;
     return {};
 }
 

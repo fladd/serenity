@@ -72,7 +72,17 @@ set(SOURCES
     Runtime/GlobalEnvironment.cpp
     Runtime/GlobalObject.cpp
     Runtime/IndexedProperties.cpp
+    Runtime/Intl/AbstractOperations.cpp
+    Runtime/Intl/DisplayNames.cpp
+    Runtime/Intl/DisplayNamesConstructor.cpp
+    Runtime/Intl/DisplayNamesPrototype.cpp
     Runtime/Intl/Intl.cpp
+    Runtime/Intl/ListFormat.cpp
+    Runtime/Intl/ListFormatConstructor.cpp
+    Runtime/Intl/ListFormatPrototype.cpp
+    Runtime/Intl/Locale.cpp
+    Runtime/Intl/LocaleConstructor.cpp
+    Runtime/Intl/LocalePrototype.cpp
     Runtime/IteratorOperations.cpp
     Runtime/IteratorPrototype.cpp
     Runtime/JSONObject.cpp
@@ -98,6 +108,7 @@ set(SOURCES
     Runtime/PromiseJobs.cpp
     Runtime/PromisePrototype.cpp
     Runtime/PromiseReaction.cpp
+    Runtime/PromiseResolvingElementFunctions.cpp
     Runtime/PromiseResolvingFunction.cpp
     Runtime/PropertyDescriptor.cpp
     Runtime/ProxyConstructor.cpp

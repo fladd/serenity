@@ -19,7 +19,7 @@ class PageDirectory : public RefCounted<PageDirectory> {
     friend class MemoryManager;
 
 public:
-    static RefPtr<PageDirectory> try_create_for_userspace(VirtualRangeAllocator const* parent_range_allocator = nullptr);
+    static KResultOr<NonnullRefPtr<PageDirectory>> try_create_for_userspace(VirtualRangeAllocator const* parent_range_allocator = nullptr);
     static NonnullRefPtr<PageDirectory> must_create_kernel_page_directory();
     static RefPtr<PageDirectory> find_by_cr3(FlatPtr);
 
@@ -44,7 +44,7 @@ public:
 
     void set_space(Badge<AddressSpace>, AddressSpace& space) { m_space = &space; }
 
-    RecursiveSpinLock& get_lock() { return m_lock; }
+    RecursiveSpinlock& get_lock() { return m_lock; }
 
 private:
     PageDirectory();
@@ -61,7 +61,7 @@ private:
     RefPtr<PhysicalPage> m_directory_pages[4];
 #endif
     HashMap<FlatPtr, NonnullRefPtr<PhysicalPage>> m_page_tables;
-    RecursiveSpinLock m_lock;
+    RecursiveSpinlock m_lock;
 };
 
 }

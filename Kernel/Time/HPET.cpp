@@ -83,7 +83,7 @@ static_assert(__builtin_offsetof(HPETRegistersBlock, timers[1]) == 0x120);
 // Note: The HPET specification says it reserves the range of byte 0x160 to
 // 0x400 for comparators 3-31, but for implementing all 32 comparators the HPET
 // MMIO space has to be 1280 bytes and not 1024 bytes.
-static_assert(sizeof(HPETRegistersBlock) == 0x500);
+static_assert(AssertSize<HPETRegistersBlock, 0x500>());
 
 static u64 read_register_safe64(const HPETRegister& reg)
 {
@@ -119,12 +119,12 @@ UNMAP_AFTER_INIT bool HPET::test_and_initialize()
 {
     VERIFY(!HPET::initialized());
     hpet_initialized = true;
-    auto hpet = ACPI::Parser::the()->find_table("HPET");
-    if (hpet.is_null())
+    auto hpet_table = ACPI::Parser::the()->find_table("HPET");
+    if (!hpet_table.has_value())
         return false;
-    dmesgln("HPET @ {}", hpet);
+    dmesgln("HPET @ {}", hpet_table.value());
 
-    auto sdt = Memory::map_typed<ACPI::Structures::HPET>(hpet);
+    auto sdt = Memory::map_typed<ACPI::Structures::HPET>(hpet_table.value());
 
     // Note: HPET is only usable from System Memory
     VERIFY(sdt->event_timer_block.address_space == (u8)ACPI::GenericAddressStructure::AddressSpace::SystemMemory);
@@ -135,17 +135,17 @@ UNMAP_AFTER_INIT bool HPET::test_and_initialize()
             return false;
         }
     }
-    new HPET(PhysicalAddress(hpet));
+    new HPET(PhysicalAddress(hpet_table.value()));
     return true;
 }
 
 UNMAP_AFTER_INIT bool HPET::check_for_exisiting_periodic_timers()
 {
-    auto hpet = ACPI::Parser::the()->find_table("HPET");
-    if (hpet.is_null())
+    auto hpet_table = ACPI::Parser::the()->find_table("HPET");
+    if (!hpet_table.has_value())
         return false;
 
-    auto sdt = Memory::map_typed<ACPI::Structures::HPET>(hpet);
+    auto sdt = Memory::map_typed<ACPI::Structures::HPET>(hpet_table.value());
     VERIFY(sdt->event_timer_block.address_space == 0);
     auto registers = Memory::map_typed<HPETRegistersBlock>(PhysicalAddress(sdt->event_timer_block.address));
 
@@ -413,7 +413,7 @@ u64 HPET::ns_to_raw_counter_ticks(u64 ns) const
 UNMAP_AFTER_INIT HPET::HPET(PhysicalAddress acpi_hpet)
     : m_physical_acpi_hpet_table(acpi_hpet)
     , m_physical_acpi_hpet_registers(find_acpi_hpet_registers_block())
-    , m_hpet_mmio_region(MM.allocate_kernel_region(m_physical_acpi_hpet_registers.page_base(), PAGE_SIZE, "HPET MMIO", Memory::Region::Access::ReadWrite))
+    , m_hpet_mmio_region(MM.allocate_kernel_region(m_physical_acpi_hpet_registers.page_base(), PAGE_SIZE, "HPET MMIO", Memory::Region::Access::ReadWrite).release_value())
 {
     s_hpet = this; // Make available as soon as possible so that IRQs can use it
 

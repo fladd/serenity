@@ -27,16 +27,14 @@ public:
     static SB16& the();
 
     // ^CharacterDevice
-    virtual bool can_read(const FileDescription&, size_t) const override;
-    virtual KResultOr<size_t> read(FileDescription&, u64, UserOrKernelBuffer&, size_t) override;
-    virtual KResultOr<size_t> write(FileDescription&, u64, const UserOrKernelBuffer&, size_t) override;
-    virtual bool can_write(const FileDescription&, size_t) const override { return true; }
+    virtual bool can_read(const OpenFileDescription&, size_t) const override;
+    virtual KResultOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override;
+    virtual KResultOr<size_t> write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t) override;
+    virtual bool can_write(const OpenFileDescription&, size_t) const override { return true; }
 
     virtual StringView purpose() const override { return class_name(); }
 
-    // ^Device
-    virtual mode_t required_mode() const override { return 0220; }
-    virtual String device_name() const override { return "audio"; }
+    virtual KResult ioctl(OpenFileDescription&, unsigned, Userspace<void*>) override;
 
 private:
     // ^IRQHandler
@@ -57,6 +55,7 @@ private:
 
     OwnPtr<Memory::Region> m_dma_region;
     int m_major_version { 0 };
+    u16 m_sample_rate { 44100 };
 
     WaitQueue m_irq_queue;
 };

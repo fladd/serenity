@@ -5,25 +5,38 @@
  */
 
 #include "MailSettingsWindow.h"
+#include <LibConfig/Client.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Icon.h>
 #include <unistd.h>
 
 int main(int argc, char** argv)
 {
-    if (pledge("stdio rpath cpath wpath recvfd sendfd unix proc exec", nullptr) < 0) {
+    if (pledge("stdio rpath recvfd sendfd unix", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
 
     auto app = GUI::Application::construct(argc, argv);
 
-    if (pledge("stdio rpath cpath wpath recvfd sendfd proc exec", nullptr) < 0) {
+    Config::pledge_domains("Mail");
+
+    if (pledge("stdio rpath recvfd sendfd", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
 
-    auto app_icon = GUI::Icon::default_icon("app-mail-settings");
+    if (unveil("/res", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil(nullptr, nullptr)) {
+        perror("unveil");
+        return 1;
+    }
+
+    auto app_icon = GUI::Icon::default_icon("app-mail");
 
     auto window = MailSettingsWindow::construct();
     window->set_title("Mail Settings");

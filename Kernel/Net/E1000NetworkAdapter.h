@@ -17,7 +17,8 @@
 namespace Kernel {
 
 class E1000NetworkAdapter : public NetworkAdapter
-    , public PCI::Device {
+    , public PCI::Device
+    , public IRQHandler {
 public:
     static RefPtr<E1000NetworkAdapter> try_to_initialize(PCI::Address);
 

@@ -6,40 +6,54 @@
 
 #pragma once
 
-#include <AK/String.h>
+#include <AK/StringView.h>
 #include <Kernel/KBuffer.h>
 #include <stdarg.h>
 
 namespace Kernel {
 
 class KBufferBuilder {
+    AK_MAKE_NONCOPYABLE(KBufferBuilder);
+
 public:
     using OutputType = KBuffer;
 
-    KBufferBuilder();
+    static KResultOr<KBufferBuilder> try_create();
+
     KBufferBuilder(KBufferBuilder&&) = default;
+    KBufferBuilder& operator=(KBufferBuilder&&) = default;
     ~KBufferBuilder() = default;
 
-    void append(const StringView&);
-    void append(char);
-    void append(const char*, int);
+    KResult append(const StringView&);
+    KResult append(char);
+    KResult append(const char*, int);
 
-    void append_escaped_for_json(const StringView&);
-    void append_bytes(ReadonlyBytes);
+    KResult append_escaped_for_json(const StringView&);
+    KResult append_bytes(ReadonlyBytes);
 
     template<typename... Parameters>
-    void appendff(CheckedFormatString<Parameters...>&& fmtstr, const Parameters&... parameters)
+    KResult appendff(CheckedFormatString<Parameters...>&& fmtstr, const Parameters&... parameters)
     {
         // FIXME: This really not ideal, but vformat expects StringBuilder.
         StringBuilder builder;
-        vformat(builder, fmtstr.view(), AK::VariadicFormatParams { parameters... });
-        append_bytes(builder.string_view().bytes());
+        AK::VariadicFormatParams variadic_format_params { parameters... };
+        vformat(builder, fmtstr.view(), variadic_format_params);
+        return append_bytes(builder.string_view().bytes());
     }
 
     bool flush();
     OwnPtr<KBuffer> build();
 
+    ReadonlyBytes bytes() const
+    {
+        if (!m_buffer)
+            return {};
+        return ReadonlyBytes { m_buffer->data(), m_buffer->size() };
+    }
+
 private:
+    explicit KBufferBuilder(NonnullOwnPtr<KBuffer>);
+
     bool check_expand(size_t);
     u8* insertion_ptr()
     {
@@ -48,7 +62,7 @@ private:
         return m_buffer->data() + m_size;
     }
 
-    RefPtr<KBufferImpl> m_buffer;
+    OwnPtr<KBuffer> m_buffer;
     size_t m_size { 0 };
 };
 

@@ -307,7 +307,7 @@ template<typename V, typename T>
 MakeSigned<T> BytecodeInterpreter::checked_signed_truncate(V value)
 {
     if (isnan(value) || isinf(value)) { // "undefined", let's just trap.
-        m_trap = Trap { "Signed truncation undefined behaviour" };
+        m_trap = Trap { "Signed truncation undefined behavior" };
         return 0;
     }
 
@@ -330,7 +330,7 @@ template<typename V, typename T>
 MakeUnsigned<T> BytecodeInterpreter::checked_unsigned_truncate(V value)
 {
     if (isnan(value) || isinf(value)) { // "undefined", let's just trap.
-        m_trap = Trap { "Unsigned truncation undefined behaviour" };
+        m_trap = Trap { "Unsigned truncation undefined behavior" };
         return 0;
     }
     double truncated;
@@ -808,7 +808,7 @@ void BytecodeInterpreter::interpret(Configuration& configuration, InstructionPoi
     case Instructions::i64_shrs.value():
         return binary_numeric_operation<i64, i64, Operators::BitShiftRight>(configuration);
     case Instructions::i64_shru.value():
-        return binary_numeric_operation<u64, i64, Operators::BitShiftLeft>(configuration);
+        return binary_numeric_operation<u64, i64, Operators::BitShiftRight>(configuration);
     case Instructions::i64_rotl.value():
         return binary_numeric_operation<u64, i64, Operators::BitRotateLeft>(configuration);
     case Instructions::i64_rotr.value():
@@ -824,7 +824,7 @@ void BytecodeInterpreter::interpret(Configuration& configuration, InstructionPoi
     case Instructions::f32_trunc.value():
         return unary_operation<float, float, Operators::Truncate>(configuration);
     case Instructions::f32_nearest.value():
-        return unary_operation<float, float, Operators::Round>(configuration);
+        return unary_operation<float, float, Operators::NearbyIntegral>(configuration);
     case Instructions::f32_sqrt.value():
         return unary_operation<float, float, Operators::SquareRoot>(configuration);
     case Instructions::f32_add.value():
@@ -852,7 +852,7 @@ void BytecodeInterpreter::interpret(Configuration& configuration, InstructionPoi
     case Instructions::f64_trunc.value():
         return unary_operation<double, double, Operators::Truncate>(configuration);
     case Instructions::f64_nearest.value():
-        return unary_operation<double, double, Operators::Round>(configuration);
+        return unary_operation<double, double, Operators::NearbyIntegral>(configuration);
     case Instructions::f64_sqrt.value():
         return unary_operation<double, double, Operators::SquareRoot>(configuration);
     case Instructions::f64_add.value():

@@ -8,6 +8,7 @@
 #include "Lexer.h"
 #include <AK/CharacterTypes.h>
 #include <AK/Debug.h>
+#include <AK/GenericLexer.h>
 #include <AK/HashMap.h>
 #include <AK/Utf8View.h>
 #include <LibUnicode/CharacterTypes.h>
@@ -200,7 +201,7 @@ void Lexer::consume()
             char_size = 4;
         }
 
-        VERIFY(char_size > 1);
+        VERIFY(char_size >= 1);
         --char_size;
 
         m_position += char_size;
@@ -350,6 +351,8 @@ u32 Lexer::current_code_point() const
     if (m_position == 0)
         return REPLACEMENT_CHARACTER;
     Utf8View utf_8_view { m_source.substring_view(m_position - 1) };
+    if (utf_8_view.is_empty())
+        return REPLACEMENT_CHARACTER;
     return *utf_8_view.begin();
 }
 
@@ -360,7 +363,7 @@ bool Lexer::is_whitespace() const
     if (!is_unicode_character())
         return false;
     auto code_point = current_code_point();
-    if (code_point == NO_BREAK_SPACE)
+    if (code_point == NO_BREAK_SPACE || code_point == ZERO_WIDTH_NO_BREAK_SPACE)
         return true;
 
     static auto space_separator_category = Unicode::general_category_from_string("Space_Separator"sv);
@@ -369,30 +372,74 @@ bool Lexer::is_whitespace() const
     return false;
 }
 
-bool Lexer::is_identifier_start() const
+// UnicodeEscapeSequence :: https://tc39.es/ecma262/#prod-UnicodeEscapeSequence
+//          u Hex4Digits
+//          u{ CodePoint }
+Optional<u32> Lexer::is_identifier_unicode_escape(size_t& identifier_length) const
 {
-    if (!is_unicode_character())
-        return is_ascii_alpha(m_current_char) || m_current_char == '_' || m_current_char == '$';
-    auto code_point = current_code_point();
+    GenericLexer lexer(source().substring_view(m_position - 1));
 
-    static auto id_start_category = Unicode::property_from_string("ID_Start"sv);
-    if (id_start_category.has_value())
-        return Unicode::code_point_has_property(code_point, *id_start_category);
-    return false;
+    if (auto code_point_or_error = lexer.consume_escaped_code_point(false); !code_point_or_error.is_error()) {
+        identifier_length = lexer.tell();
+        return code_point_or_error.value();
+    }
+
+    return {};
 }
 
-bool Lexer::is_identifier_middle() const
+// IdentifierStart :: https://tc39.es/ecma262/#prod-IdentifierStart
+//          UnicodeIDStart
+//          $
+//          _
+//          \ UnicodeEscapeSequence
+Optional<u32> Lexer::is_identifier_start(size_t& identifier_length) const
 {
-    if (!is_unicode_character())
-        return is_identifier_start() || is_ascii_digit(m_current_char);
-    auto code_point = current_code_point();
-    if (code_point == ZERO_WIDTH_NON_JOINER || code_point == ZERO_WIDTH_JOINER)
-        return true;
+    u32 code_point = current_code_point();
+    identifier_length = 1;
+
+    if (code_point == '\\') {
+        if (auto maybe_code_point = is_identifier_unicode_escape(identifier_length); maybe_code_point.has_value())
+            code_point = *maybe_code_point;
+        else
+            return {};
+    }
+
+    if (is_ascii_alpha(code_point) || code_point == '_' || code_point == '$')
+        return code_point;
+
+    static auto id_start_category = Unicode::property_from_string("ID_Start"sv);
+    if (id_start_category.has_value() && Unicode::code_point_has_property(code_point, *id_start_category))
+        return code_point;
+
+    return {};
+}
+
+// IdentifierPart :: https://tc39.es/ecma262/#prod-IdentifierPart
+//          UnicodeIDContinue
+//          $
+//          \ UnicodeEscapeSequence
+//          <ZWNJ>
+//          <ZWJ>
+Optional<u32> Lexer::is_identifier_middle(size_t& identifier_length) const
+{
+    u32 code_point = current_code_point();
+    identifier_length = 1;
+
+    if (code_point == '\\') {
+        if (auto maybe_code_point = is_identifier_unicode_escape(identifier_length); maybe_code_point.has_value())
+            code_point = *maybe_code_point;
+        else
+            return {};
+    }
+
+    if (is_ascii_alphanumeric(code_point) || (code_point == '$') || (code_point == ZERO_WIDTH_NON_JOINER) || (code_point == ZERO_WIDTH_JOINER))
+        return code_point;
 
     static auto id_continue_category = Unicode::property_from_string("ID_Continue"sv);
-    if (id_continue_category.has_value())
-        return Unicode::code_point_has_property(code_point, *id_continue_category);
-    return false;
+    if (id_continue_category.has_value() && Unicode::code_point_has_property(code_point, *id_continue_category))
+        return code_point;
+
+    return {};
 }
 
 bool Lexer::is_line_comment_start(bool line_has_token_yet) const
@@ -494,6 +541,9 @@ Token Lexer::next()
     // bunch of Invalid* tokens (bad numeric literals, unterminated comments etc.)
     String token_message;
 
+    Optional<FlyString> identifier;
+    size_t identifier_length = 0;
+
     if (m_current_token.type() == TokenType::RegexLiteral && !is_eof() && is_ascii_alpha(m_current_char) && !did_consume_whitespace_or_comments) {
         token_type = TokenType::RegexFlags;
         while (!is_eof() && is_ascii_alpha(m_current_char))
@@ -537,19 +587,29 @@ Token Lexer::next()
             else
                 token_type = TokenType::TemplateLiteralString;
         }
-    } else if (is_identifier_start()) {
+    } else if (auto code_point = is_identifier_start(identifier_length); code_point.has_value()) {
+        bool has_escaped_character = false;
         // identifier or keyword
+        StringBuilder builder;
         do {
-            consume();
-        } while (is_identifier_middle());
+            builder.append_code_point(*code_point);
+            for (size_t i = 0; i < identifier_length; ++i)
+                consume();
 
-        StringView value = m_source.substring_view(value_start - 1, m_position - value_start);
-        auto it = s_keywords.find(value.hash(), [&](auto& entry) { return entry.key == value; });
-        if (it == s_keywords.end()) {
+            has_escaped_character |= identifier_length > 1;
+
+            code_point = is_identifier_middle(identifier_length);
+        } while (code_point.has_value());
+
+        identifier = builder.build();
+        if (!m_parsed_identifiers.contains_slow(*identifier))
+            m_parsed_identifiers.append(*identifier);
+
+        auto it = s_keywords.find(identifier->hash(), [&](auto& entry) { return entry.key == identifier; });
+        if (it == s_keywords.end())
             token_type = TokenType::Identifier;
-        } else {
-            token_type = it->value;
-        }
+        else
+            token_type = has_escaped_character ? TokenType::EscapedKeyword : it->value;
     } else if (is_numeric_literal_start()) {
         token_type = TokenType::NumericLiteral;
         bool is_invalid_numeric_literal = false;
@@ -717,6 +777,9 @@ Token Lexer::next()
         value_start_line_number,
         value_start_column_number,
         m_position);
+
+    if (identifier.has_value())
+        m_current_token.set_identifier_value(identifier.release_value());
 
     if constexpr (LEXER_DEBUG) {
         dbgln("------------------------------");

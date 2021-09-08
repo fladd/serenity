@@ -15,6 +15,7 @@
     M(BigIntFromNonIntegral, "Cannot convert non-integral number to BigInt")                                                            \
     M(BigIntInvalidValue, "Invalid value for BigInt: {}")                                                                               \
     M(BindingNotInitialized, "Binding {} is not initialized")                                                                           \
+    M(CallStackSizeExceeded, "Call stack size limit exceeded")                                                                          \
     M(ClassConstructorWithoutNew, "Class constructor {} must be called with 'new'")                                                     \
     M(ClassExtendsValueNotAConstructorOrNull, "Class extends value {} is not a constructor or null")                                    \
     M(ClassExtendsValueInvalidPrototype, "Class extends value has an invalid prototype {}")                                             \
@@ -30,6 +31,7 @@
     M(IndexOutOfRange, "Index {} is out of range of array length {}")                                                                   \
     M(InOperatorWithObject, "'in' operator must be used on an object")                                                                  \
     M(InstanceOfOperatorBadPrototype, "'prototype' property of {} is not an object")                                                    \
+    M(IntlInvalidLanguageTag, "{} is not a structurally valid language tag")                                                            \
     M(InvalidAssignToConst, "Invalid assignment to const variable")                                                                     \
     M(InvalidCodePoint, "Invalid code point {}, must be an integer no less than 0 and no greater than 0x10FFFF")                        \
     M(InvalidFormat, "Invalid {} format")                                                                                               \
@@ -43,6 +45,7 @@
     M(IsNotA, "{} is not a {}")                                                                                                         \
     M(IsNotAn, "{} is not an {}")                                                                                                       \
     M(IsNotAEvaluatedFrom, "{} is not a {} (evaluated from '{}')")                                                                      \
+    M(IsUndefined, "{} is undefined")                                                                                                   \
     M(IterableNextBadReturn, "iterator.next() returned a non-object value")                                                             \
     M(IterableNextNotAFunction, "'next' property on returned object from Symbol.iterator method is not a function")                     \
     M(IterableReturnBadReturn, "iterator.return() returned a non-object value")                                                         \
@@ -58,9 +61,12 @@
     M(NotAn, "Not an {} object")                                                                                                        \
     M(NotAnObject, "{} is not an object")                                                                                               \
     M(NotAnObjectOrNull, "{} is neither an object nor null")                                                                            \
+    M(NotAnObjectOrString, "{} is neither an object nor a string")                                                                      \
+    M(NotAString, "{} is not a string")                                                                                                 \
     M(NotASymbol, "{} is not a symbol")                                                                                                 \
     M(NotIterable, "{} is not iterable")                                                                                                \
     M(NotObjectCoercible, "{} cannot be converted to an object")                                                                        \
+    M(NotUndefined, "{} is not undefined")                                                                                              \
     M(ObjectDefineOwnPropertyReturnedFalse, "Object's [[DefineOwnProperty]] method returned false")                                     \
     M(ObjectDeleteReturnedFalse, "Object's [[Delete]] method returned false")                                                           \
     M(ObjectFreezeFailed, "Could not freeze object")                                                                                    \
@@ -167,8 +173,11 @@
     M(StringRawCannotConvert, "Cannot convert property 'raw' to object from {}")                                                        \
     M(StringRepeatCountMustBe, "repeat count must be a {} number")                                                                      \
     M(TemporalAmbiguousMonthOfPlainMonthDay, "Accessing month of PlainMonthDay is ambiguous, use monthCode instead")                    \
+    M(TemporalDuplicateCalendarField, "Duplicate calendar field '{}'")                                                                  \
     M(TemporalInvalidCalendar, "Invalid calendar")                                                                                      \
-    M(TemporalInvalidCalendarFunctionResult, "Invalid calendar, {}() function returned undefined")                                      \
+    M(TemporalInvalidCalendarFieldName, "Invalid calendar field '{}'")                                                                  \
+    M(TemporalInvalidCalendarFieldValue, "Invalid calendar field {}, expected a string")                                                \
+    M(TemporalInvalidCalendarFunctionResult, "Invalid calendar, {}() function returned {}")                                             \
     M(TemporalInvalidCalendarIdentifier, "Invalid calendar identifier '{}'")                                                            \
     M(TemporalInvalidDuration, "Invalid duration")                                                                                      \
     M(TemporalInvalidDurationLikeObject, "Invalid duration-like object")                                                                \
@@ -185,7 +194,10 @@
     M(TemporalInvalidPlainYearMonth, "Invalid plain year month")                                                                        \
     M(TemporalInvalidTime, "Invalid time")                                                                                              \
     M(TemporalInvalidTimeZoneName, "Invalid time zone name")                                                                            \
+    M(TemporalInvalidUnitRange, "Invalid unit range, {} is larger than {}")                                                             \
+    M(TemporalMissingOptionsObject, "Required options object is missing or undefined")                                                  \
     M(TemporalMissingRequiredProperty, "Required property {} is missing or undefined")                                                  \
+    M(TemporalPropertyMustBeFinite, "Property must not be Infinity")                                                                    \
     M(TemporalPropertyMustBePositiveInteger, "Property must be a positive integer")                                                     \
     M(ThisHasNotBeenInitialized, "|this| has not been initialized")                                                                     \
     M(ThisIsAlreadyInitialized, "|this| is already initialized")                                                                        \
@@ -206,7 +218,8 @@
     M(BadArgCountOne, "{}() needs one argument")                                                                                        \
     M(BadArgCountAtLeastOne, "{}() needs at least one argument")                                                                        \
     M(BadArgCountMany, "{}() needs {} arguments")                                                                                       \
-    M(FixmeAddAnErrorString, "FIXME: Add a string for this error.")
+    M(FixmeAddAnErrorString, "FIXME: Add a string for this error.")                                                                     \
+    M(NotEnoughMemoryToAllocate, "Not enough memory to allocate {} bytes")
 
 namespace JS {
 

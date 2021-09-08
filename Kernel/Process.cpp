@@ -11,14 +11,14 @@
 #include <AK/Types.h>
 #include <Kernel/API/Syscall.h>
 #include <Kernel/Arch/x86/InterruptDisabler.h>
-#include <Kernel/CoreDump.h>
+#include <Kernel/Coredump.h>
 #include <Kernel/Debug.h>
 #ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
 #    include <Kernel/Devices/KCOVDevice.h>
 #endif
 #include <Kernel/Devices/NullDevice.h>
 #include <Kernel/FileSystem/Custody.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
 #include <Kernel/KBufferBuilder.h>
 #include <Kernel/KSyms.h>
@@ -42,20 +42,20 @@ namespace Kernel {
 
 static void create_signal_trampoline();
 
-RecursiveSpinLock g_profiling_lock;
+RecursiveSpinlock g_profiling_lock;
 static Atomic<pid_t> next_pid;
-static Singleton<ProtectedValue<Process::List>> s_processes;
+static Singleton<SpinlockProtected<Process::List>> s_processes;
 READONLY_AFTER_INIT HashMap<String, OwnPtr<Module>>* g_modules;
 READONLY_AFTER_INIT Memory::Region* g_signal_trampoline_region;
 
-static Singleton<ProtectedValue<String>> s_hostname;
+static Singleton<MutexProtected<String>> s_hostname;
 
-ProtectedValue<String>& hostname()
+MutexProtected<String>& hostname()
 {
     return *s_hostname;
 }
 
-ProtectedValue<Process::List>& processes()
+SpinlockProtected<Process::List>& processes()
 {
     return *s_processes;
 }
@@ -76,9 +76,9 @@ UNMAP_AFTER_INIT void Process::initialize()
 
     next_pid.store(0, AK::MemoryOrder::memory_order_release);
 
-    hostname().with_exclusive([&](auto& name) {
-        name = "courage";
-    });
+    // Note: This is called before scheduling is initialized, and before APs are booted.
+    //       So we can "safely" bypass the lock here.
+    reinterpret_cast<String&>(hostname()) = "courage";
 
     create_signal_trampoline();
 }
@@ -86,7 +86,7 @@ UNMAP_AFTER_INIT void Process::initialize()
 NonnullRefPtrVector<Process> Process::all_processes()
 {
     NonnullRefPtrVector<Process> output;
-    processes().with_shared([&](const auto& list) {
+    processes().with([&](const auto& list) {
         output.ensure_capacity(list.size_slow());
         for (const auto& process : list)
             output.append(NonnullRefPtr<Process>(process));
@@ -94,7 +94,7 @@ NonnullRefPtrVector<Process> Process::all_processes()
     return output;
 }
 
-bool Process::in_group(gid_t gid) const
+bool Process::in_group(GroupID gid) const
 {
     return this->gid() == gid || extra_gids().contains_slow(gid);
 }
@@ -138,34 +138,28 @@ void Process::register_new(Process& process)
 {
     // Note: this is essentially the same like process->ref()
     RefPtr<Process> new_process = process;
-    processes().with_exclusive([&](auto& list) {
+    processes().with([&](auto& list) {
         list.prepend(process);
     });
 }
 
-RefPtr<Process> Process::create_user_process(RefPtr<Thread>& first_thread, const String& path, uid_t uid, gid_t gid, ProcessID parent_pid, int& error, Vector<String>&& arguments, Vector<String>&& environment, TTY* tty)
+KResultOr<NonnullRefPtr<Process>> Process::try_create_user_process(RefPtr<Thread>& first_thread, StringView path, UserID uid, GroupID gid, Vector<String> arguments, Vector<String> environment, TTY* tty)
 {
-    auto parts = path.split('/');
+    auto parts = path.split_view('/');
     if (arguments.is_empty()) {
         arguments.append(parts.last());
     }
 
-    RefPtr<Custody> cwd;
-    if (auto parent = Process::from_pid(parent_pid))
-        cwd = parent->m_cwd;
-    if (!cwd)
-        cwd = VirtualFileSystem::the().root_custody();
+    auto path_string = TRY(KString::try_create(path));
+    auto name = TRY(KString::try_create(parts.last()));
+    auto process = TRY(Process::try_create(first_thread, move(name), uid, gid, ProcessID(0), false, VirtualFileSystem::the().root_custody(), nullptr, tty));
 
-    auto process = Process::create(first_thread, parts.take_last(), uid, gid, parent_pid, false, move(cwd), nullptr, tty);
-    if (!first_thread)
-        return {};
     if (!process->m_fds.try_resize(process->m_fds.max_open())) {
         first_thread = nullptr;
-        return {};
+        return ENOMEM;
     }
     auto& device_to_use_as_tty = tty ? (CharacterDevice&)*tty : NullDevice::the();
-    auto description = device_to_use_as_tty.open(O_RDWR).value();
-
+    auto description = TRY(device_to_use_as_tty.open(O_RDWR));
     auto setup_description = [&process, &description](int fd) {
         process->m_fds.m_fds_metadatas[fd].allocate();
         process->m_fds[fd].set(*description);
@@ -174,39 +168,38 @@ RefPtr<Process> Process::create_user_process(RefPtr<Thread>& first_thread, const
     setup_description(1);
     setup_description(2);
 
-    error = process->exec(path, move(arguments), move(environment)).error();
-    if (error != 0) {
-        dbgln("Failed to exec {}: {}", path, error);
+    if (auto result = process->exec(move(path_string), move(arguments), move(environment)); result.is_error()) {
+        dbgln("Failed to exec {}: {}", path, result);
         first_thread = nullptr;
-        return {};
+        return result;
     }
 
     register_new(*process);
-    error = 0;
 
-    // NOTE: All user processes have a leaked ref on them. It's balanced by Thread::WaitBlockCondition::finalize().
-    (void)process.leak_ref();
+    // NOTE: All user processes have a leaked ref on them. It's balanced by Thread::WaitBlockerSet::finalize().
+    process->ref();
 
     return process;
 }
 
-RefPtr<Process> Process::create_kernel_process(RefPtr<Thread>& first_thread, String&& name, void (*entry)(void*), void* entry_data, u32 affinity, RegisterProcess do_register)
+RefPtr<Process> Process::create_kernel_process(RefPtr<Thread>& first_thread, NonnullOwnPtr<KString> name, void (*entry)(void*), void* entry_data, u32 affinity, RegisterProcess do_register)
 {
-    auto process = Process::create(first_thread, move(name), (uid_t)0, (gid_t)0, ProcessID(0), true);
-    if (!first_thread || !process)
+    auto process_or_error = Process::try_create(first_thread, move(name), UserID(0), GroupID(0), ProcessID(0), true);
+    if (process_or_error.is_error())
         return {};
+    auto process = process_or_error.release_value();
+
+    first_thread->regs().set_ip((FlatPtr)entry);
 #if ARCH(I386)
-    first_thread->regs().eip = (FlatPtr)entry;
     first_thread->regs().esp = FlatPtr(entry_data); // entry function argument is expected to be in regs.esp
 #else
-    first_thread->regs().rip = (FlatPtr)entry;
     first_thread->regs().rdi = FlatPtr(entry_data); // entry function argument is expected to be in regs.rdi
 #endif
 
     if (do_register == RegisterProcess::Yes)
         register_new(*process);
 
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     first_thread->set_affinity(affinity);
     first_thread->set_state(Thread::State::Runnable);
     return process;
@@ -226,27 +219,21 @@ void Process::unprotect_data()
     });
 }
 
-RefPtr<Process> Process::create(RefPtr<Thread>& first_thread, const String& name, uid_t uid, gid_t gid, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd, RefPtr<Custody> executable, TTY* tty, Process* fork_parent)
+KResultOr<NonnullRefPtr<Process>> Process::try_create(RefPtr<Thread>& first_thread, NonnullOwnPtr<KString> name, UserID uid, GroupID gid, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd, RefPtr<Custody> executable, TTY* tty, Process* fork_parent)
 {
-    auto space = Memory::AddressSpace::try_create(fork_parent ? &fork_parent->address_space() : nullptr);
-    if (!space)
-        return {};
-    auto process = adopt_ref_if_nonnull(new (nothrow) Process(name, uid, gid, ppid, is_kernel_process, move(cwd), move(executable), tty));
-    if (!process)
-        return {};
-    auto result = process->attach_resources(space.release_nonnull(), first_thread, fork_parent);
-    if (result.is_error())
-        return {};
+    auto space = TRY(Memory::AddressSpace::try_create(fork_parent ? &fork_parent->address_space() : nullptr));
+    auto process = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Process(move(name), uid, gid, ppid, is_kernel_process, move(cwd), move(executable), tty)));
+    TRY(process->attach_resources(move(space), first_thread, fork_parent));
     return process;
 }
 
-Process::Process(const String& name, uid_t uid, gid_t gid, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd, RefPtr<Custody> executable, TTY* tty)
+Process::Process(NonnullOwnPtr<KString> name, UserID uid, GroupID gid, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd, RefPtr<Custody> executable, TTY* tty)
     : m_name(move(name))
     , m_is_kernel_process(is_kernel_process)
     , m_executable(move(executable))
     , m_cwd(move(cwd))
     , m_tty(tty)
-    , m_wait_block_condition(*this)
+    , m_wait_blocker_set(*this)
 {
     // Ensure that we protect the process data when exiting the constructor.
     ProtectedDataMutationScope scope { *this };
@@ -260,30 +247,30 @@ Process::Process(const String& name, uid_t uid, gid_t gid, ProcessID ppid, bool 
     m_protected_values.suid = uid;
     m_protected_values.sgid = gid;
 
-    auto maybe_procfs_traits = ProcessProcFSTraits::try_create({}, make_weak_ptr());
-    // NOTE: This can fail, but it should be very, *very* rare.
-    VERIFY(!maybe_procfs_traits.is_error());
-    m_procfs_traits = maybe_procfs_traits.release_value();
-
     dbgln_if(PROCESS_DEBUG, "Created new process {}({})", m_name, this->pid().value());
 }
 
 KResult Process::attach_resources(NonnullOwnPtr<Memory::AddressSpace>&& preallocated_space, RefPtr<Thread>& first_thread, Process* fork_parent)
 {
     m_space = move(preallocated_space);
-    if (fork_parent) {
-        // NOTE: fork() doesn't clone all threads; the thread that called fork() becomes the only thread in the new process.
-        first_thread = Thread::current()->clone(*this);
-        if (!first_thread)
-            return ENOMEM;
-    } else {
+
+    auto create_first_thread = [&] {
+        if (fork_parent) {
+            // NOTE: fork() doesn't clone all threads; the thread that called fork() becomes the only thread in the new process.
+            return Thread::current()->try_clone(*this);
+        }
         // NOTE: This non-forked code path is only taken when the kernel creates a process "manually" (at boot.)
-        auto thread_or_error = Thread::try_create(*this);
-        if (thread_or_error.is_error())
-            return thread_or_error.error();
-        first_thread = thread_or_error.release_value();
+        return Thread::try_create(*this);
+    };
+
+    first_thread = TRY(create_first_thread());
+
+    if (!fork_parent) {
+        // FIXME: Figure out if this is really necessary.
         first_thread->detach();
     }
+
+    m_procfs_traits = TRY(ProcessProcFSTraits::try_create({}, *this));
     return KSuccess;
 }
 
@@ -302,7 +289,7 @@ bool Process::unref() const
     // NOTE: We need to obtain the process list lock before doing anything,
     //       because otherwise someone might get in between us lowering the
     //       refcount and acquiring the lock.
-    auto did_hit_zero = processes().with_exclusive([&](auto& list) {
+    auto did_hit_zero = processes().with([&](auto& list) {
         auto new_ref_count = deref_base();
         if (new_ref_count > 0)
             return false;
@@ -375,7 +362,7 @@ extern "C" char const asm_signal_trampoline_end[];
 void create_signal_trampoline()
 {
     // NOTE: We leak this region.
-    g_signal_trampoline_region = MM.allocate_kernel_region(PAGE_SIZE, "Signal trampolines", Memory::Region::Access::ReadWrite).leak_ptr();
+    g_signal_trampoline_region = MM.allocate_kernel_region(PAGE_SIZE, "Signal trampolines", Memory::Region::Access::ReadWrite).release_value().leak_ptr();
     g_signal_trampoline_region->set_syscall_region(true);
 
     size_t trampoline_size = asm_signal_trampoline_end - asm_signal_trampoline;
@@ -390,7 +377,7 @@ void create_signal_trampoline()
 void Process::crash(int signal, FlatPtr ip, bool out_of_memory)
 {
     VERIFY(!is_dead());
-    VERIFY(Process::current() == this);
+    VERIFY(&Process::current() == this);
 
     if (out_of_memory) {
         dbgln("\033[31;1mOut of memory\033[m, killing: {}", *this);
@@ -407,7 +394,7 @@ void Process::crash(int signal, FlatPtr ip, bool out_of_memory)
         ProtectedDataMutationScope scope { *this };
         m_protected_values.termination_signal = signal;
     }
-    set_dump_core(!out_of_memory);
+    set_should_generate_coredump(!out_of_memory);
     address_space().dump_regions();
     VERIFY(is_user_process());
     die();
@@ -419,7 +406,7 @@ void Process::crash(int signal, FlatPtr ip, bool out_of_memory)
 
 RefPtr<Process> Process::from_pid(ProcessID pid)
 {
-    return processes().with_shared([&](const auto& list) -> RefPtr<Process> {
+    return processes().with([&](const auto& list) -> RefPtr<Process> {
         for (auto& process : list) {
             if (process.pid() == pid)
                 return &process;
@@ -428,9 +415,9 @@ RefPtr<Process> Process::from_pid(ProcessID pid)
     });
 }
 
-const Process::FileDescriptionAndFlags* Process::FileDescriptions::get_if_valid(size_t i) const
+const Process::OpenFileDescriptionAndFlags* Process::OpenFileDescriptions::get_if_valid(size_t i) const
 {
-    ScopedSpinLock lock(m_fds_lock);
+    SpinlockLocker lock(m_fds_lock);
     if (m_fds_metadatas.size() <= i)
         return nullptr;
 
@@ -439,9 +426,9 @@ const Process::FileDescriptionAndFlags* Process::FileDescriptions::get_if_valid(
 
     return nullptr;
 }
-Process::FileDescriptionAndFlags* Process::FileDescriptions::get_if_valid(size_t i)
+Process::OpenFileDescriptionAndFlags* Process::OpenFileDescriptions::get_if_valid(size_t i)
 {
-    ScopedSpinLock lock(m_fds_lock);
+    SpinlockLocker lock(m_fds_lock);
     if (m_fds_metadatas.size() <= i)
         return nullptr;
 
@@ -451,46 +438,49 @@ Process::FileDescriptionAndFlags* Process::FileDescriptions::get_if_valid(size_t
     return nullptr;
 }
 
-const Process::FileDescriptionAndFlags& Process::FileDescriptions::at(size_t i) const
+const Process::OpenFileDescriptionAndFlags& Process::OpenFileDescriptions::at(size_t i) const
 {
-    ScopedSpinLock lock(m_fds_lock);
+    SpinlockLocker lock(m_fds_lock);
     VERIFY(m_fds_metadatas[i].is_allocated());
     return m_fds_metadatas[i];
 }
-Process::FileDescriptionAndFlags& Process::FileDescriptions::at(size_t i)
+Process::OpenFileDescriptionAndFlags& Process::OpenFileDescriptions::at(size_t i)
 {
-    ScopedSpinLock lock(m_fds_lock);
+    SpinlockLocker lock(m_fds_lock);
     VERIFY(m_fds_metadatas[i].is_allocated());
     return m_fds_metadatas[i];
 }
 
-RefPtr<FileDescription> Process::FileDescriptions::file_description(int fd) const
+KResultOr<NonnullRefPtr<OpenFileDescription>> Process::OpenFileDescriptions::open_file_description(int fd) const
 {
-    ScopedSpinLock lock(m_fds_lock);
+    SpinlockLocker lock(m_fds_lock);
     if (fd < 0)
-        return nullptr;
-    if (static_cast<size_t>(fd) < m_fds_metadatas.size())
-        return m_fds_metadatas[fd].description();
-    return nullptr;
+        return EBADF;
+    if (static_cast<size_t>(fd) >= m_fds_metadatas.size())
+        return EBADF;
+    RefPtr description = m_fds_metadatas[fd].description();
+    if (!description)
+        return EBADF;
+    return description.release_nonnull();
 }
 
-void Process::FileDescriptions::enumerate(Function<void(const FileDescriptionAndFlags&)> callback) const
+void Process::OpenFileDescriptions::enumerate(Function<void(const OpenFileDescriptionAndFlags&)> callback) const
 {
-    ScopedSpinLock lock(m_fds_lock);
+    SpinlockLocker lock(m_fds_lock);
     for (auto& file_description_metadata : m_fds_metadatas) {
         callback(file_description_metadata);
     }
 }
 
-void Process::FileDescriptions::change_each(Function<void(FileDescriptionAndFlags&)> callback)
+void Process::OpenFileDescriptions::change_each(Function<void(OpenFileDescriptionAndFlags&)> callback)
 {
-    ScopedSpinLock lock(m_fds_lock);
+    SpinlockLocker lock(m_fds_lock);
     for (auto& file_description_metadata : m_fds_metadatas) {
         callback(file_description_metadata);
     }
 }
 
-size_t Process::FileDescriptions::open_count() const
+size_t Process::OpenFileDescriptions::open_count() const
 {
     size_t count = 0;
     enumerate([&](auto& file_description_metadata) {
@@ -500,9 +490,9 @@ size_t Process::FileDescriptions::open_count() const
     return count;
 }
 
-KResultOr<Process::ScopedDescriptionAllocation> Process::FileDescriptions::allocate(int first_candidate_fd)
+KResultOr<Process::ScopedDescriptionAllocation> Process::OpenFileDescriptions::allocate(int first_candidate_fd)
 {
-    ScopedSpinLock lock(m_fds_lock);
+    SpinlockLocker lock(m_fds_lock);
     for (size_t i = first_candidate_fd; i < max_open(); ++i) {
         if (!m_fds_metadatas[i].is_allocated()) {
             m_fds_metadatas[i].allocate();
@@ -522,7 +512,7 @@ siginfo_t Process::wait_info()
     siginfo_t siginfo {};
     siginfo.si_signo = SIGCHLD;
     siginfo.si_pid = pid().value();
-    siginfo.si_uid = uid();
+    siginfo.si_uid = uid().value();
 
     if (m_protected_values.termination_signal) {
         siginfo.si_status = m_protected_values.termination_signal;
@@ -547,10 +537,7 @@ KResultOr<NonnullOwnPtr<KString>> Process::get_syscall_path_argument(Userspace<c
         return EINVAL;
     if (path_length > PATH_MAX)
         return ENAMETOOLONG;
-    auto string_or_error = try_copy_kstring_from_user(user_path, path_length);
-    if (string_or_error.is_error())
-        return string_or_error.error();
-    return string_or_error.release_value();
+    return try_copy_kstring_from_user(user_path, path_length);
 }
 
 KResultOr<NonnullOwnPtr<KString>> Process::get_syscall_path_argument(Syscall::StringArgument const& path) const
@@ -562,13 +549,13 @@ KResultOr<NonnullOwnPtr<KString>> Process::get_syscall_path_argument(Syscall::St
 bool Process::dump_core()
 {
     VERIFY(is_dumpable());
-    VERIFY(should_core_dump());
+    VERIFY(should_generate_coredump());
     dbgln("Generating coredump for pid: {}", pid().value());
     auto coredump_path = String::formatted("/tmp/coredump/{}_{}_{}", name(), pid().value(), kgettimeofday().to_truncated_seconds());
-    auto coredump = CoreDump::create(*this, coredump_path);
-    if (!coredump)
+    auto coredump_or_error = Coredump::try_create(*this, coredump_path);
+    if (coredump_or_error.is_error())
         return false;
-    return !coredump->write().is_error();
+    return !coredump_or_error.value()->write().is_error();
 }
 
 bool Process::dump_perfcore()
@@ -588,8 +575,13 @@ bool Process::dump_perfcore()
     }
 
     auto& description = *description_or_error.value();
-    KBufferBuilder builder;
-    if (!m_perf_event_buffer->to_json(builder)) {
+    auto builder_or_error = KBufferBuilder::try_create();
+    if (builder_or_error.is_error()) {
+        dbgln("Failed to generate perfcore for pid {}: Could not allocate KBufferBuilder.", pid());
+        return false;
+    }
+    auto builder = builder_or_error.release_value();
+    if (m_perf_event_buffer->to_json(builder).is_error()) {
         dbgln("Failed to generate perfcore for pid {}: Could not serialize performance events to JSON.", pid().value());
         return false;
     }
@@ -616,7 +608,7 @@ void Process::finalize()
     dbgln_if(PROCESS_DEBUG, "Finalizing process {}", *this);
 
     if (is_dumpable()) {
-        if (m_should_dump_core)
+        if (m_should_generate_coredump)
             dump_core();
         if (m_perf_event_buffer) {
             dump_perfcore();
@@ -657,22 +649,22 @@ void Process::finalize()
     m_space->remove_all_regions({});
 
     VERIFY(ref_count() > 0);
-    // WaitBlockCondition::finalize will be in charge of dropping the last
+    // WaitBlockerSet::finalize will be in charge of dropping the last
     // reference if there are still waiters around, or whenever the last
     // waitable states are consumed. Unless there is no parent around
     // anymore, in which case we'll just drop it right away.
-    m_wait_block_condition.finalize();
+    m_wait_blocker_set.finalize();
 }
 
 void Process::disowned_by_waiter(Process& process)
 {
-    m_wait_block_condition.disowned_by_waiter(process);
+    m_wait_blocker_set.disowned_by_waiter(process);
 }
 
 void Process::unblock_waiters(Thread::WaitBlocker::UnblockFlags flags, u8 signal)
 {
     if (auto parent = Process::from_pid(ppid()))
-        parent->m_wait_block_condition.unblock(*this, flags, signal);
+        parent->m_wait_blocker_set.unblock(*this, flags, signal);
 }
 
 void Process::die()
@@ -697,7 +689,7 @@ void Process::die()
         m_threads_for_coredump.append(thread);
     });
 
-    processes().with_shared([&](const auto& list) {
+    processes().with([&](const auto& list) {
         for (auto it = list.begin(); it != list.end();) {
             auto& process = *it;
             ++it;
@@ -721,7 +713,7 @@ void Process::terminate_due_to_signal(u8 signal)
 {
     VERIFY_INTERRUPTS_DISABLED();
     VERIFY(signal < 32);
-    VERIFY(Process::current() == this);
+    VERIFY(&Process::current() == this);
     dbgln("Terminating {} due to signal {}", *this, signal);
     {
         ProtectedDataMutationScope scope { *this };
@@ -751,7 +743,7 @@ KResult Process::send_signal(u8 signal, Process* sender)
     return ESRCH;
 }
 
-RefPtr<Thread> Process::create_kernel_thread(void (*entry)(void*), void* entry_data, u32 priority, OwnPtr<KString> name, u32 affinity, bool joinable)
+RefPtr<Thread> Process::create_kernel_thread(void (*entry)(void*), void* entry_data, u32 priority, NonnullOwnPtr<KString> name, u32 affinity, bool joinable)
 {
     VERIFY((priority >= THREAD_PRIORITY_MIN) && (priority <= THREAD_PRIORITY_MAX));
 
@@ -769,27 +761,22 @@ RefPtr<Thread> Process::create_kernel_thread(void (*entry)(void*), void* entry_d
         thread->detach();
 
     auto& regs = thread->regs();
-#if ARCH(I386)
-    regs.eip = (FlatPtr)entry;
-    regs.esp = FlatPtr(entry_data); // entry function argument is expected to be in regs.rsp
-#else
-    regs.rip = (FlatPtr)entry;
-    regs.rsp = FlatPtr(entry_data); // entry function argument is expected to be in regs.rsp
-#endif
+    regs.set_ip((FlatPtr)entry);
+    regs.set_sp((FlatPtr)entry_data); // entry function argument is expected to be in the SP register
 
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     thread->set_state(Thread::State::Runnable);
     return thread;
 }
 
-void Process::FileDescriptionAndFlags::clear()
+void Process::OpenFileDescriptionAndFlags::clear()
 {
     // FIXME: Verify Process::m_fds_lock is locked!
     m_description = nullptr;
     m_flags = 0;
 }
 
-void Process::FileDescriptionAndFlags::set(NonnullRefPtr<FileDescription>&& description, u32 flags)
+void Process::OpenFileDescriptionAndFlags::set(NonnullRefPtr<OpenFileDescription>&& description, u32 flags)
 {
     // FIXME: Verify Process::m_fds_lock is locked!
     m_description = move(description);
@@ -803,10 +790,7 @@ void Process::set_tty(TTY* tty)
 
 KResult Process::start_tracing_from(ProcessID tracer)
 {
-    auto thread_tracer = ThreadTracer::create(tracer);
-    if (!thread_tracer)
-        return ENOMEM;
-    m_tracer = move(thread_tracer);
+    m_tracer = TRY(ThreadTracer::try_create(tracer));
     return KSuccess;
 }
 
@@ -881,11 +865,43 @@ KResult Process::set_coredump_property(NonnullOwnPtr<KString> key, NonnullOwnPtr
 
 KResult Process::try_set_coredump_property(StringView key, StringView value)
 {
-    auto key_kstring = KString::try_create(key);
-    auto value_kstring = KString::try_create(value);
-    if (key_kstring && value_kstring)
-        return set_coredump_property(key_kstring.release_nonnull(), value_kstring.release_nonnull());
-    return ENOMEM;
+    auto key_kstring = TRY(KString::try_create(key));
+    auto value_kstring = TRY(KString::try_create(value));
+    return set_coredump_property(move(key_kstring), move(value_kstring));
 };
+
+static constexpr StringView to_string(Pledge promise)
+{
+#define __ENUMERATE_PLEDGE_PROMISE(x) \
+    case Pledge::x:                   \
+        return #x;
+    switch (promise) {
+        ENUMERATE_PLEDGE_PROMISES
+    }
+#undef __ENUMERATE_PLEDGE_PROMISE
+    VERIFY_NOT_REACHED();
+}
+
+void Process::require_no_promises()
+{
+    if (!has_promises())
+        return;
+    dbgln("Has made a promise");
+    Process::current().crash(SIGABRT, 0);
+    VERIFY_NOT_REACHED();
+}
+
+void Process::require_promise(Pledge promise)
+{
+    if (!has_promises())
+        return;
+
+    if (has_promised(promise))
+        return;
+
+    dbgln("Has not pledged {}", to_string(promise));
+    (void)try_set_coredump_property("pledge_violation"sv, to_string(promise));
+    crash(SIGABRT, 0);
+}
 
 }

@@ -8,8 +8,8 @@
 #include <AK/Time.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Devices/RandomDevice.h>
-#include <Kernel/FileSystem/FileDescription.h>
-#include <Kernel/Locking/ProtectedValue.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
+#include <Kernel/Locking/MutexProtected.h>
 #include <Kernel/Net/EthernetFrameHeader.h>
 #include <Kernel/Net/IPv4.h>
 #include <Kernel/Net/NetworkAdapter.h>
@@ -39,7 +39,7 @@ void TCPSocket::set_state(State new_state)
     m_state = new_state;
 
     if (new_state == State::Established && m_direction == Direction::Outgoing) {
-        m_role = Role::Connected;
+        set_role(Role::Connected);
         [[maybe_unused]] auto rc = set_so_error(KSuccess);
     }
 
@@ -56,16 +56,16 @@ void TCPSocket::set_state(State new_state)
         evaluate_block_conditions();
 }
 
-static Singleton<ProtectedValue<HashMap<IPv4SocketTuple, RefPtr<TCPSocket>>>> s_socket_closing;
+static Singleton<MutexProtected<HashMap<IPv4SocketTuple, RefPtr<TCPSocket>>>> s_socket_closing;
 
-ProtectedValue<HashMap<IPv4SocketTuple, RefPtr<TCPSocket>>>& TCPSocket::closing_sockets()
+MutexProtected<HashMap<IPv4SocketTuple, RefPtr<TCPSocket>>>& TCPSocket::closing_sockets()
 {
     return *s_socket_closing;
 }
 
-static Singleton<ProtectedValue<HashMap<IPv4SocketTuple, TCPSocket*>>> s_socket_tuples;
+static Singleton<MutexProtected<HashMap<IPv4SocketTuple, TCPSocket*>>> s_socket_tuples;
 
-ProtectedValue<HashMap<IPv4SocketTuple, TCPSocket*>>& TCPSocket::sockets_by_tuple()
+MutexProtected<HashMap<IPv4SocketTuple, TCPSocket*>>& TCPSocket::sockets_by_tuple()
 {
     return *s_socket_tuples;
 }
@@ -90,21 +90,16 @@ RefPtr<TCPSocket> TCPSocket::from_tuple(const IPv4SocketTuple& tuple)
         return {};
     });
 }
-RefPtr<TCPSocket> TCPSocket::create_client(const IPv4Address& new_local_address, u16 new_local_port, const IPv4Address& new_peer_address, u16 new_peer_port)
+KResultOr<NonnullRefPtr<TCPSocket>> TCPSocket::try_create_client(const IPv4Address& new_local_address, u16 new_local_port, const IPv4Address& new_peer_address, u16 new_peer_port)
 {
     auto tuple = IPv4SocketTuple(new_local_address, new_local_port, new_peer_address, new_peer_port);
-    return sockets_by_tuple().with_exclusive([&](auto& table) -> RefPtr<TCPSocket> {
+    return sockets_by_tuple().with_exclusive([&](auto& table) -> KResultOr<NonnullRefPtr<TCPSocket>> {
         if (table.contains(tuple))
-            return {};
+            return EEXIST;
 
-        auto receive_buffer = create_receive_buffer();
-        if (!receive_buffer)
-            return {};
-        auto result = TCPSocket::create(protocol(), receive_buffer.release_nonnull());
-        if (result.is_error())
-            return {};
+        auto receive_buffer = TRY(try_create_receive_buffer());
+        auto client = TRY(TCPSocket::try_create(protocol(), move(receive_buffer)));
 
-        auto client = result.release_value();
         client->set_setup_state(SetupState::InProgress);
         client->set_local_address(new_local_address);
         client->set_local_port(new_local_port);
@@ -135,7 +130,7 @@ void TCPSocket::release_for_accept(RefPtr<TCPSocket> socket)
     [[maybe_unused]] auto rc = queue_connection_from(*socket);
 }
 
-TCPSocket::TCPSocket(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer, OwnPtr<KBuffer> scratch_buffer)
+TCPSocket::TCPSocket(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer, NonnullOwnPtr<KBuffer> scratch_buffer)
     : IPv4Socket(SOCK_STREAM, protocol, move(receive_buffer), move(scratch_buffer))
 {
     m_last_retransmit_time = kgettimeofday();
@@ -152,17 +147,11 @@ TCPSocket::~TCPSocket()
     dbgln_if(TCP_SOCKET_DEBUG, "~TCPSocket in state {}", to_string(state()));
 }
 
-KResultOr<NonnullRefPtr<TCPSocket>> TCPSocket::create(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer)
+KResultOr<NonnullRefPtr<TCPSocket>> TCPSocket::try_create(int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer)
 {
     // Note: Scratch buffer is only used for SOCK_STREAM sockets.
-    auto scratch_buffer = KBuffer::try_create_with_size(65536);
-    if (!scratch_buffer)
-        return ENOMEM;
-
-    auto socket = adopt_ref_if_nonnull(new (nothrow) TCPSocket(protocol, move(receive_buffer), move(scratch_buffer)));
-    if (socket)
-        return socket.release_nonnull();
-    return ENOMEM;
+    auto scratch_buffer = TRY(KBuffer::try_create_with_size(65536));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) TCPSocket(protocol, move(receive_buffer), move(scratch_buffer)));
 }
 
 KResultOr<size_t> TCPSocket::protocol_receive(ReadonlyBytes raw_ipv4_packet, UserOrKernelBuffer& buffer, size_t buffer_size, [[maybe_unused]] int flags)
@@ -172,8 +161,7 @@ KResultOr<size_t> TCPSocket::protocol_receive(ReadonlyBytes raw_ipv4_packet, Use
     size_t payload_size = raw_ipv4_packet.size() - sizeof(IPv4Packet) - tcp_packet.header_size();
     dbgln_if(TCP_SOCKET_DEBUG, "payload_size {}, will it fit in {}?", payload_size, buffer_size);
     VERIFY(buffer_size >= payload_size);
-    if (!buffer.write(tcp_packet.payload(), payload_size))
-        return set_so_error(EFAULT);
+    SOCKET_TRY(buffer.write(tcp_packet.payload(), payload_size));
     return payload_size;
 }
 
@@ -184,8 +172,7 @@ KResultOr<size_t> TCPSocket::protocol_send(const UserOrKernelBuffer& data, size_
         return set_so_error(EHOSTUNREACH);
     size_t mss = routing_decision.adapter->mtu() - sizeof(IPv4Packet) - sizeof(TCPPacket);
     data_length = min(data_length, mss);
-    if (auto result = send_tcp_packet(TCPFlags::PUSH | TCPFlags::ACK, &data, data_length, &routing_decision); result.is_error())
-        return result;
+    TRY(send_tcp_packet(TCPFlags::PUSH | TCPFlags::ACK, &data, data_length, &routing_decision));
     return data_length;
 }
 
@@ -230,9 +217,11 @@ KResult TCPSocket::send_tcp_packet(u16 flags, const UserOrKernelBuffer* payload,
         tcp_packet.set_ack_number(m_ack_number);
     }
 
-    if (payload && !payload->read(tcp_packet.payload(), payload_size)) {
-        routing_decision.adapter->release_packet_buffer(*packet);
-        return set_so_error(EFAULT);
+    if (payload) {
+        if (auto result = payload->read(tcp_packet.payload(), payload_size); result.is_error()) {
+            routing_decision.adapter->release_packet_buffer(*packet);
+            return set_so_error(result);
+        }
     }
 
     if (flags & TCPFlags::SYN) {
@@ -338,22 +327,22 @@ NetworkOrdered<u16> TCPSocket::compute_tcp_checksum(const IPv4Address& source, c
     PseudoHeader pseudo_header { source, destination, 0, (u8)IPv4Protocol::TCP, packet.header_size() + payload_size };
 
     u32 checksum = 0;
-    auto* w = (const NetworkOrdered<u16>*)&pseudo_header;
+    auto raw_pseudo_header = bit_cast<u16*>(&pseudo_header);
     for (size_t i = 0; i < sizeof(pseudo_header) / sizeof(u16); ++i) {
-        checksum += w[i];
+        checksum += AK::convert_between_host_and_network_endian(raw_pseudo_header[i]);
         if (checksum > 0xffff)
             checksum = (checksum >> 16) + (checksum & 0xffff);
     }
-    w = (const NetworkOrdered<u16>*)&packet;
+    auto raw_packet = bit_cast<u16*>(&packet);
     for (size_t i = 0; i < packet.header_size() / sizeof(u16); ++i) {
-        checksum += w[i];
+        checksum += AK::convert_between_host_and_network_endian(raw_packet[i]);
         if (checksum > 0xffff)
             checksum = (checksum >> 16) + (checksum & 0xffff);
     }
     VERIFY(packet.data_offset() * 4 == packet.header_size());
-    w = (const NetworkOrdered<u16>*)packet.payload();
+    auto raw_payload = bit_cast<u16*>(packet.payload());
     for (size_t i = 0; i < payload_size / sizeof(u16); ++i) {
-        checksum += w[i];
+        checksum += AK::convert_between_host_and_network_endian(raw_payload[i]);
         if (checksum > 0xffff)
             checksum = (checksum >> 16) + (checksum & 0xffff);
     }
@@ -396,9 +385,9 @@ KResult TCPSocket::protocol_listen(bool did_allocate_port)
     return KSuccess;
 }
 
-KResult TCPSocket::protocol_connect(FileDescription& description, ShouldBlock should_block)
+KResult TCPSocket::protocol_connect(OpenFileDescription& description, ShouldBlock should_block)
 {
-    MutexLocker locker(lock());
+    MutexLocker locker(mutex());
 
     auto routing_decision = route_to(peer_address(), local_address());
     if (routing_decision.is_zero())
@@ -413,10 +402,9 @@ KResult TCPSocket::protocol_connect(FileDescription& description, ShouldBlock sh
     m_ack_number = 0;
 
     set_setup_state(SetupState::InProgress);
-    if (auto result = send_tcp_packet(TCPFlags::SYN); result.is_error())
-        return result;
+    TRY(send_tcp_packet(TCPFlags::SYN));
     m_state = State::SynSent;
-    m_role = Role::Connecting;
+    set_role(Role::Connecting);
     m_direction = Direction::Outgoing;
 
     evaluate_block_conditions();
@@ -429,7 +417,7 @@ KResult TCPSocket::protocol_connect(FileDescription& description, ShouldBlock sh
         locker.lock();
         VERIFY(setup_state() == SetupState::Completed);
         if (has_error()) { // TODO: check unblock_flags
-            m_role = Role::None;
+            set_role(Role::None);
             if (error() == TCPSocket::Error::RetransmitTimeout)
                 return set_so_error(ETIMEDOUT);
             else
@@ -497,7 +485,7 @@ void TCPSocket::shut_down_for_writing()
 
 KResult TCPSocket::close()
 {
-    MutexLocker socket_locker(lock());
+    MutexLocker locker(mutex());
     auto result = IPv4Socket::close();
     if (state() == State::CloseWait) {
         dbgln_if(TCP_SOCKET_DEBUG, " Sending FIN from CloseWait and moving into LastAck");
@@ -512,9 +500,9 @@ KResult TCPSocket::close()
     return result;
 }
 
-static Singleton<ProtectedValue<TCPSocket::RetransmitList>> s_sockets_for_retransmit;
+static Singleton<MutexProtected<TCPSocket::RetransmitList>> s_sockets_for_retransmit;
 
-ProtectedValue<TCPSocket::RetransmitList>& TCPSocket::sockets_for_retransmit()
+MutexProtected<TCPSocket::RetransmitList>& TCPSocket::sockets_for_retransmit()
 {
     return *s_sockets_for_retransmit;
 }
@@ -600,7 +588,7 @@ void TCPSocket::retransmit_packets()
     });
 }
 
-bool TCPSocket::can_write(const FileDescription& file_description, size_t size) const
+bool TCPSocket::can_write(const OpenFileDescription& file_description, size_t size) const
 {
     if (!IPv4Socket::can_write(file_description, size))
         return false;

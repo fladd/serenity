@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <Kernel/Locking/ProtectedValue.h>
+#include <Kernel/Locking/MutexProtected.h>
 #include <Kernel/Net/NetworkAdapter.h>
 #include <Kernel/Thread.h>
 
@@ -24,9 +24,9 @@ enum class UpdateArp {
     Delete,
 };
 
-void update_arp_table(const IPv4Address&, const MACAddress&, UpdateArp update);
-RoutingDecision route_to(const IPv4Address& target, const IPv4Address& source, const RefPtr<NetworkAdapter> through = nullptr);
+void update_arp_table(IPv4Address const&, MACAddress const&, UpdateArp update);
+RoutingDecision route_to(IPv4Address const& target, IPv4Address const& source, RefPtr<NetworkAdapter> const through = nullptr);
 
-ProtectedValue<HashMap<IPv4Address, MACAddress>>& arp_table();
+MutexProtected<HashMap<IPv4Address, MACAddress>>& arp_table();
 
 }

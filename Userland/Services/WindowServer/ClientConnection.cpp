@@ -79,7 +79,7 @@ ClientConnection::~ClientConnection()
 
 void ClientConnection::die()
 {
-    deferred_invoke([this](auto&) {
+    deferred_invoke([this] {
         s_connections->remove(client_id());
     });
 }
@@ -653,14 +653,9 @@ void ClientConnection::set_window_backing_store(i32 window_id, [[maybe_unused]] 
         window.invalidate(false);
 }
 
-void ClientConnection::set_global_cursor_tracking(i32 window_id, bool enabled)
+void ClientConnection::set_global_mouse_tracking(bool enabled)
 {
-    auto it = m_windows.find(window_id);
-    if (it == m_windows.end()) {
-        did_misbehave("SetGlobalCursorTracking: Bad window ID");
-        return;
-    }
-    it->value->set_global_cursor_tracking_enabled(enabled);
+    m_does_global_mouse_tracking = enabled;
 }
 
 void ClientConnection::set_window_cursor(i32 window_id, i32 cursor_type)
@@ -758,6 +753,18 @@ Messages::WindowServer::GetSystemThemeResponse ClientConnection::get_system_them
     return name;
 }
 
+void ClientConnection::apply_cursor_theme(String const& name)
+{
+    WindowManager::the().apply_cursor_theme(name);
+}
+
+Messages::WindowServer::GetCursorThemeResponse ClientConnection::get_cursor_theme()
+{
+    auto config = Core::ConfigFile::open("/etc/WindowServer.ini");
+    auto name = config->read_entry("Mouse", "CursorTheme");
+    return name;
+}
+
 Messages::WindowServer::SetSystemFontsResponse ClientConnection::set_system_fonts(String const& default_font_query, String const& fixed_width_font_query)
 {
     if (!Gfx::FontDatabase::the().get_by_name(default_font_query)
@@ -777,7 +784,7 @@ Messages::WindowServer::SetSystemFontsResponse ClientConnection::set_system_font
 
     WindowManager::the().invalidate_after_theme_or_font_change();
 
-    auto wm_config = Core::ConfigFile::open("/etc/WindowServer.ini");
+    auto wm_config = Core::ConfigFile::open("/etc/WindowServer.ini", Core::ConfigFile::AllowWriting::Yes);
     wm_config->write_entry("Fonts", "Default", default_font_query);
     wm_config->write_entry("Fonts", "FixedWidth", fixed_width_font_query);
     return true;
@@ -961,7 +968,8 @@ Messages::WindowServer::GetScreenBitmapResponse ClientConnection::get_screen_bit
         return bitmap.to_shareable_bitmap();
     }
     // TODO: Mixed scale setups at what scale? Lowest? Highest? Configurable?
-    if (auto bitmap = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRx8888, Screen::bounding_rect().size(), 1)) {
+    auto bitmap_size = rect.value_or(Screen::bounding_rect()).size();
+    if (auto bitmap = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRx8888, bitmap_size, 1)) {
         Gfx::Painter painter(*bitmap);
         Screen::for_each([&](auto& screen) {
             auto screen_rect = screen.rect();

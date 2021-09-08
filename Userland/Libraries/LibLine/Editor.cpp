@@ -39,13 +39,13 @@ namespace Line {
 Configuration Configuration::from_config(const StringView& libname)
 {
     Configuration configuration;
-    auto config_file = Core::ConfigFile::get_for_lib(libname);
+    auto config_file = Core::ConfigFile::open_for_lib(libname);
 
-    // Read behaviour options.
-    auto refresh = config_file->read_entry("behaviour", "refresh", "lazy");
-    auto operation = config_file->read_entry("behaviour", "operation_mode");
-    auto bracketed_paste = config_file->read_bool_entry("behaviour", "bracketed_paste", true);
-    auto default_text_editor = config_file->read_entry("behaviour", "default_text_editor");
+    // Read behavior options.
+    auto refresh = config_file->read_entry("behavior", "refresh", "lazy");
+    auto operation = config_file->read_entry("behavior", "operation_mode");
+    auto bracketed_paste = config_file->read_bool_entry("behavior", "bracketed_paste", true);
+    auto default_text_editor = config_file->read_entry("behavior", "default_text_editor");
 
     Configuration::Flags flags { Configuration::Flags::None };
     if (bracketed_paste)
@@ -184,8 +184,8 @@ void Editor::set_default_keybinds()
 Editor::Editor(Configuration configuration)
     : m_configuration(move(configuration))
 {
-    m_always_refresh = m_configuration.refresh_behaviour == Configuration::RefreshBehaviour::Eager;
-    m_pending_chars = ByteBuffer::create_uninitialized(0);
+    m_always_refresh = m_configuration.refresh_behavior == Configuration::RefreshBehavior::Eager;
+    m_pending_chars = {};
     get_terminal_size();
     m_suggestion_display = make<XtermSuggestionDisplay>(m_num_lines, m_num_columns);
 }
@@ -370,7 +370,8 @@ void Editor::insert(const u32 cp)
     StringBuilder builder;
     builder.append(Utf32View(&cp, 1));
     auto str = builder.build();
-    m_pending_chars.append(str.characters(), str.length());
+    if (!m_pending_chars.try_append(str.characters(), str.length()))
+        return;
 
     readjust_anchored_styles(m_cursor, ModificationKind::Insertion);
 
@@ -607,7 +608,7 @@ void Editor::resized()
         if (set_origin(false)) {
             handle_resize_event(false);
         } else {
-            deferred_invoke([this](auto&) { handle_resize_event(true); });
+            deferred_invoke([this] { handle_resize_event(true); });
             m_has_origin_reset_scheduled = true;
         }
     }
@@ -618,7 +619,7 @@ void Editor::handle_resize_event(bool reset_origin)
     m_has_origin_reset_scheduled = false;
     if (reset_origin && !set_origin(false)) {
         m_has_origin_reset_scheduled = true;
-        return deferred_invoke([this](auto&) { handle_resize_event(true); });
+        return deferred_invoke([this] { handle_resize_event(true); });
     }
 
     set_origin(m_origin_row, 1);
@@ -722,7 +723,7 @@ auto Editor::get_line(const String& prompt) -> Result<String, Editor::Error>
 
     m_notifier->on_ready_to_read = [&] { try_update_once(); };
     if (!m_incomplete_data.is_empty())
-        deferred_invoke([&](auto&) { try_update_once(); });
+        deferred_invoke([&] { try_update_once(); });
 
     if (loop.exec() == Retry)
         return get_line(prompt);
@@ -1023,8 +1024,8 @@ void Editor::handle_read_event()
         ArmedScopeGuard suggestion_cleanup { [this] { cleanup_suggestions(); } };
 
         // Normally ^D. `stty eof \^n` can change it to ^N (or something else), but Serenity doesn't have `stty` yet.
-        // Process this here since the keybinds might override its behaviour.
-        // This only applies when the buffer is empty. at any other time, the behaviour should be configurable.
+        // Process this here since the keybinds might override its behavior.
+        // This only applies when the buffer is empty. at any other time, the behavior should be configurable.
         if (code_point == m_termios.c_cc[VEOF] && m_buffer.size() == 0) {
             finish_edit();
             continue;
@@ -1166,7 +1167,7 @@ void Editor::handle_read_event()
     }
 
     if (!m_incomplete_data.is_empty() && !m_finish)
-        deferred_invoke([&](auto&) { try_update_once(); });
+        deferred_invoke([&] { try_update_once(); });
 }
 
 void Editor::cleanup_suggestions()

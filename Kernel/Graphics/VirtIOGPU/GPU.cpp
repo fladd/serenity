@@ -15,12 +15,11 @@
 
 namespace Kernel::Graphics::VirtIOGPU {
 
-GPU::GPU(PCI::Address address)
-    : VirtIODevice(address, "GPU")
-    , m_scratch_space(MM.allocate_contiguous_kernel_region(32 * PAGE_SIZE, "VirtGPU Scratch Space", Memory::Region::Access::ReadWrite))
+void GPU::initialize()
 {
+    Device::initialize();
     VERIFY(!!m_scratch_space);
-    if (auto cfg = get_config(ConfigurationType::Device)) {
+    if (auto cfg = get_config(VirtIO::ConfigurationType::Device)) {
         m_device_configuration = cfg;
         bool success = negotiate_features([&](u64 supported_features) {
             u64 negotiated = 0;
@@ -47,6 +46,15 @@ GPU::GPU(PCI::Address address)
     }
 }
 
+GPU::GPU(PCI::Address address)
+    : VirtIO::Device(address)
+{
+    auto region_or_error = MM.allocate_contiguous_kernel_region(32 * PAGE_SIZE, "VirtGPU Scratch Space", Memory::Region::Access::ReadWrite);
+    if (region_or_error.is_error())
+        TODO();
+    m_scratch_space = region_or_error.release_value();
+}
+
 GPU::~GPU()
 {
 }
@@ -65,7 +73,7 @@ bool GPU::handle_device_config_change()
     auto events = get_pending_events();
     if (events & VIRTIO_GPU_EVENT_DISPLAY) {
         // The host window was resized, in SerenityOS we completely ignore this event
-        dbgln_if(VIRTIO_DEBUG, "{}: Ignoring virtio gpu display resize event", m_class_name);
+        dbgln_if(VIRTIO_DEBUG, "VirtIO::GPU: Ignoring virtio gpu display resize event");
         clear_pending_events(VIRTIO_GPU_EVENT_DISPLAY);
     }
     if (events & ~VIRTIO_GPU_EVENT_DISPLAY) {
@@ -81,7 +89,7 @@ void GPU::handle_queue_update(u16 queue_index)
     VERIFY(queue_index == CONTROLQ);
 
     auto& queue = get_queue(CONTROLQ);
-    ScopedSpinLock queue_lock(queue.lock());
+    SpinlockLocker queue_lock(queue.lock());
     queue.discard_used_buffers();
     m_outstanding_request.wake_all();
 }
@@ -242,10 +250,10 @@ void GPU::synchronous_virtio_gpu_command(PhysicalAddress buffer_start, size_t re
     VERIFY(m_outstanding_request.is_empty());
     auto& queue = get_queue(CONTROLQ);
     {
-        ScopedSpinLock lock(queue.lock());
-        VirtIOQueueChain chain { queue };
-        chain.add_buffer_to_chain(buffer_start, request_size, BufferType::DeviceReadable);
-        chain.add_buffer_to_chain(buffer_start.offset(request_size), response_size, BufferType::DeviceWritable);
+        SpinlockLocker lock(queue.lock());
+        VirtIO::QueueChain chain { queue };
+        chain.add_buffer_to_chain(buffer_start, request_size, VirtIO::BufferType::DeviceReadable);
+        chain.add_buffer_to_chain(buffer_start.offset(request_size), response_size, VirtIO::BufferType::DeviceWritable);
         supply_chain_and_notify(CONTROLQ, chain);
         full_memory_barrier();
     }

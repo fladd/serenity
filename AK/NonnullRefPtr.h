@@ -58,7 +58,7 @@ public:
         const_cast<T&>(object).ref();
     }
     template<typename U>
-    ALWAYS_INLINE NonnullRefPtr(const U& object)
+    ALWAYS_INLINE NonnullRefPtr(const U& object) requires(IsConvertible<U*, T*>)
         : m_bits((FlatPtr) static_cast<const T*>(&object))
     {
         VERIFY(!(m_bits & 1));
@@ -75,7 +75,7 @@ public:
         VERIFY(!(m_bits & 1));
     }
     template<typename U>
-    ALWAYS_INLINE NonnullRefPtr(NonnullRefPtr<U>&& other)
+    ALWAYS_INLINE NonnullRefPtr(NonnullRefPtr<U>&& other) requires(IsConvertible<U*, T*>)
         : m_bits((FlatPtr)&other.leak_ref())
     {
         VERIFY(!(m_bits & 1));
@@ -86,7 +86,7 @@ public:
         VERIFY(!(m_bits & 1));
     }
     template<typename U>
-    ALWAYS_INLINE NonnullRefPtr(const NonnullRefPtr<U>& other)
+    ALWAYS_INLINE NonnullRefPtr(const NonnullRefPtr<U>& other) requires(IsConvertible<U*, T*>)
         : m_bits((FlatPtr)other.add_ref())
     {
         VERIFY(!(m_bits & 1));
@@ -95,10 +95,7 @@ public:
     {
         assign(nullptr);
 #ifdef SANITIZE_PTRS
-        if constexpr (sizeof(T*) == 8)
-            m_bits.store(0xb0b0b0b0b0b0b0b0, AK::MemoryOrder::memory_order_relaxed);
-        else
-            m_bits.store(0xb0b0b0b0, AK::MemoryOrder::memory_order_relaxed);
+        m_bits.store(explode_byte(0xb0), AK::MemoryOrder::memory_order_relaxed);
 #endif
     }
 
@@ -122,7 +119,7 @@ public:
     }
 
     template<typename U>
-    NonnullRefPtr& operator=(const NonnullRefPtr<U>& other)
+    NonnullRefPtr& operator=(const NonnullRefPtr<U>& other) requires(IsConvertible<U*, T*>)
     {
         assign(other.add_ref());
         return *this;
@@ -136,7 +133,7 @@ public:
     }
 
     template<typename U>
-    NonnullRefPtr& operator=(NonnullRefPtr<U>&& other)
+    NonnullRefPtr& operator=(NonnullRefPtr<U>&& other) requires(IsConvertible<U*, T*>)
     {
         assign(&other.leak_ref());
         return *this;
@@ -216,7 +213,7 @@ public:
     }
 
     template<typename U>
-    void swap(NonnullRefPtr<U>& other)
+    void swap(NonnullRefPtr<U>& other) requires(IsConvertible<U*, T*>)
     {
         // NOTE: swap is not atomic!
         U* other_ptr = other.exchange(nullptr);
@@ -330,20 +327,20 @@ struct Formatter<NonnullRefPtr<T>> : Formatter<const T*> {
 };
 
 template<typename T, typename U>
-inline void swap(NonnullRefPtr<T>& a, NonnullRefPtr<U>& b)
+inline void swap(NonnullRefPtr<T>& a, NonnullRefPtr<U>& b) requires(IsConvertible<U*, T*>)
 {
     a.swap(b);
 }
 
 template<typename T, class... Args>
-requires(IsConstructible<T, Args...>) inline NonnullRefPtr<T> create(Args&&... args)
+requires(IsConstructible<T, Args...>) inline NonnullRefPtr<T> make_ref_counted(Args&&... args)
 {
     return NonnullRefPtr<T>(NonnullRefPtr<T>::Adopt, *new T(forward<Args>(args)...));
 }
 
 // FIXME: Remove once P0960R3 is available in Clang.
 template<typename T, class... Args>
-inline NonnullRefPtr<T> create(Args&&... args)
+inline NonnullRefPtr<T> make_ref_counted(Args&&... args)
 {
     return NonnullRefPtr<T>(NonnullRefPtr<T>::Adopt, *new T { forward<Args>(args)... });
 }
@@ -358,5 +355,5 @@ struct Traits<NonnullRefPtr<T>> : public GenericTraits<NonnullRefPtr<T>> {
 };
 
 using AK::adopt_ref;
-using AK::create;
+using AK::make_ref_counted;
 using AK::NonnullRefPtr;

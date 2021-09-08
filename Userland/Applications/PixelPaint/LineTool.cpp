@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Mustafa Quraish <mustafa@cs.toronto.edu>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -38,8 +39,12 @@ LineTool::~LineTool()
 {
 }
 
-void LineTool::on_mousedown(Layer&, GUI::MouseEvent& layer_event, GUI::MouseEvent&)
+void LineTool::on_mousedown(Layer* layer, MouseEvent& event)
 {
+    if (!layer)
+        return;
+
+    auto& layer_event = event.layer_event();
     if (layer_event.button() != GUI::MouseButton::Left && layer_event.button() != GUI::MouseButton::Right)
         return;
 
@@ -54,19 +59,27 @@ void LineTool::on_mousedown(Layer&, GUI::MouseEvent& layer_event, GUI::MouseEven
     m_editor->update();
 }
 
-void LineTool::on_mouseup(Layer& layer, GUI::MouseEvent& event, GUI::MouseEvent&)
+void LineTool::on_mouseup(Layer* layer, MouseEvent& event)
 {
-    if (event.button() == m_drawing_button) {
-        GUI::Painter painter(layer.bitmap());
+    if (!layer)
+        return;
+
+    auto& layer_event = event.layer_event();
+    if (layer_event.button() == m_drawing_button) {
+        GUI::Painter painter(layer->bitmap());
         painter.draw_line(m_line_start_position, m_line_end_position, m_editor->color_for(m_drawing_button), m_thickness);
         m_drawing_button = GUI::MouseButton::None;
-        layer.did_modify_bitmap();
+        layer->did_modify_bitmap();
         m_editor->did_complete_action();
     }
 }
 
-void LineTool::on_mousemove(Layer&, GUI::MouseEvent& layer_event, GUI::MouseEvent&)
+void LineTool::on_mousemove(Layer* layer, MouseEvent& event)
 {
+    if (!layer)
+        return;
+
+    auto& layer_event = event.layer_event();
     if (m_drawing_button == GUI::MouseButton::None)
         return;
 
@@ -79,20 +92,21 @@ void LineTool::on_mousemove(Layer&, GUI::MouseEvent& layer_event, GUI::MouseEven
     m_editor->update();
 }
 
-void LineTool::on_second_paint(Layer const& layer, GUI::PaintEvent& event)
+void LineTool::on_second_paint(Layer const* layer, GUI::PaintEvent& event)
 {
-    if (m_drawing_button == GUI::MouseButton::None)
+    if (!layer || m_drawing_button == GUI::MouseButton::None)
         return;
 
     GUI::Painter painter(*m_editor);
     painter.add_clip_rect(event.rect());
-    auto preview_start = m_editor->layer_position_to_editor_position(layer, m_line_start_position).to_type<int>();
-    auto preview_end = m_editor->layer_position_to_editor_position(layer, m_line_end_position).to_type<int>();
-    painter.draw_line(preview_start, preview_end, m_editor->color_for(m_drawing_button), m_thickness);
+    auto preview_start = m_editor->layer_position_to_editor_position(*layer, m_line_start_position).to_type<int>();
+    auto preview_end = m_editor->layer_position_to_editor_position(*layer, m_line_end_position).to_type<int>();
+    painter.draw_line(preview_start, preview_end, m_editor->color_for(m_drawing_button), m_thickness * m_editor->scale());
 }
 
 void LineTool::on_keydown(GUI::KeyEvent& event)
 {
+    Tool::on_keydown(event);
     if (event.key() == Key_Escape && m_drawing_button != GUI::MouseButton::None) {
         m_drawing_button = GUI::MouseButton::None;
         m_editor->update();
@@ -121,6 +135,7 @@ GUI::Widget* LineTool::get_properties_widget()
         thickness_slider.on_change = [&](int value) {
             m_thickness = value;
         };
+        set_primary_slider(&thickness_slider);
     }
 
     return m_properties_widget.ptr();

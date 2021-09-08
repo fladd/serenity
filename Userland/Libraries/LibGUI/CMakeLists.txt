@@ -22,6 +22,7 @@ set(SOURCES
     ColorInput.cpp
     ColorPicker.cpp
     ColumnsView.cpp
+    CommonActions.cpp
     CommonLocationsProvider.cpp
     ComboBox.cpp
     Command.cpp
@@ -65,6 +66,7 @@ set(SOURCES
     Model.cpp
     ModelIndex.cpp
     ModelSelection.cpp
+    MouseTracker.cpp
     MultiView.cpp
     Notification.cpp
     OpacitySlider.cpp
@@ -123,4 +125,4 @@ set(GENERATED_SOURCES
 )
 
 serenity_lib(LibGUI gui)
-target_link_libraries(LibGUI LibCore LibGfx LibIPC LibThreading LibRegex LibSyntax)
+target_link_libraries(LibGUI LibCore LibGfx LibIPC LibThreading LibRegex LibSyntax LibConfig)

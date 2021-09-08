@@ -53,6 +53,7 @@ public:
         size_t match_length_minimum;
         Error error;
         Token error_token;
+        Vector<FlyString> capture_groups;
     };
 
     explicit Parser(Lexer& lexer)
@@ -80,9 +81,10 @@ protected:
     ALWAYS_INLINE Token consume();
     ALWAYS_INLINE Token consume(TokenType type, Error error);
     ALWAYS_INLINE bool consume(String const&);
+    ALWAYS_INLINE Optional<u32> consume_escaped_code_point(bool unicode);
     ALWAYS_INLINE bool try_skip(StringView);
     ALWAYS_INLINE bool lookahead_any(StringView);
-    ALWAYS_INLINE char skip();
+    ALWAYS_INLINE unsigned char skip();
     ALWAYS_INLINE void back(size_t = 1);
     ALWAYS_INLINE void reset();
     ALWAYS_INLINE bool done() const;
@@ -164,6 +166,7 @@ private:
     constexpr static size_t number_of_addressable_capture_groups = 9;
     size_t m_capture_group_minimum_lengths[number_of_addressable_capture_groups] { 0 };
     bool m_capture_group_seen[number_of_addressable_capture_groups] { false };
+    size_t m_current_capture_group_depth { 0 };
 };
 
 class PosixExtendedParser final : public AbstractPosixParser {
@@ -217,7 +220,7 @@ private:
     };
     StringView read_digits_as_string(ReadDigitsInitialZeroState initial_zero = ReadDigitsInitialZeroState::Allow, bool hex = false, int max_count = -1, int min_count = -1);
     Optional<unsigned> read_digits(ReadDigitsInitialZeroState initial_zero = ReadDigitsInitialZeroState::Allow, bool hex = false, int max_count = -1, int min_count = -1);
-    StringView read_capture_group_specifier(bool take_starting_angle_bracket = false);
+    FlyString read_capture_group_specifier(bool take_starting_angle_bracket = false);
 
     struct Script {
         Unicode::Script script {};
@@ -257,7 +260,7 @@ private:
     // Most patterns should have no need to ever populate this field.
     Optional<size_t> m_total_number_of_capturing_parenthesis;
 
-    // Keep the Annex B. behaviour behind a flag, the users can enable it by passing the `ECMAScriptFlags::BrowserExtended` flag.
+    // Keep the Annex B. behavior behind a flag, the users can enable it by passing the `ECMAScriptFlags::BrowserExtended` flag.
     bool m_should_use_browser_extended_grammar { false };
 
     // ECMA-262 basically requires that we clear the inner captures of a capture group before trying to match it,

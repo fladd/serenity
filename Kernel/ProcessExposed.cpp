@@ -15,7 +15,7 @@
 
 namespace Kernel {
 
-static SpinLock<u8> s_index_lock;
+static Spinlock s_index_lock;
 static InodeIndex s_next_inode_index = 0;
 
 namespace SegmentedProcFSIndex {
@@ -64,14 +64,14 @@ InodeIndex build_segmented_index_for_thread_stack(ProcessID pid, ThreadID thread
 
 InodeIndex build_segmented_index_for_file_description(ProcessID pid, unsigned fd)
 {
-    return build_segmented_index_with_unknown_property(pid, ProcessSubDirectory::FileDescriptions, fd);
+    return build_segmented_index_with_unknown_property(pid, ProcessSubDirectory::OpenFileDescriptions, fd);
 }
 
 }
 
 static size_t s_allocate_global_inode_index()
 {
-    ScopedSpinLock lock(s_index_lock);
+    SpinlockLocker lock(s_index_lock);
     s_next_inode_index = s_next_inode_index.value() + 1;
     // Note: Global ProcFS indices must be above 0 and up to maximum of what 36 bit (2 ^ 36 - 1) can represent.
     VERIFY(s_next_inode_index > 0);
@@ -86,7 +86,10 @@ ProcFSExposedComponent::ProcFSExposedComponent()
 ProcFSExposedComponent::ProcFSExposedComponent(StringView name)
     : m_component_index(s_allocate_global_inode_index())
 {
-    m_name = KString::try_create(name);
+    auto name_or_error = KString::try_create(name);
+    if (name_or_error.is_error())
+        TODO();
+    m_name = name_or_error.release_value();
 }
 
 ProcFSExposedDirectory::ProcFSExposedDirectory(StringView name)
@@ -104,7 +107,7 @@ ProcFSExposedLink::ProcFSExposedLink(StringView name)
     : ProcFSExposedComponent(name)
 {
 }
-KResultOr<size_t> ProcFSGlobalInformation::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, FileDescription* description) const
+KResultOr<size_t> ProcFSGlobalInformation::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, OpenFileDescription* description) const
 {
     dbgln_if(PROCFS_DEBUG, "ProcFSGlobalInformation @ {}: read_bytes offset: {} count: {}", name(), offset, count);
 
@@ -128,13 +131,11 @@ KResultOr<size_t> ProcFSGlobalInformation::read_bytes(off_t offset, size_t count
         return 0;
 
     ssize_t nread = min(static_cast<off_t>(data_buffer->size() - offset), static_cast<off_t>(count));
-    if (!buffer.write(data_buffer->data() + offset, nread))
-        return KResult(EFAULT);
-
+    TRY(buffer.write(data_buffer->data() + offset, nread));
     return nread;
 }
 
-KResult ProcFSGlobalInformation::refresh_data(FileDescription& description) const
+KResult ProcFSGlobalInformation::refresh_data(OpenFileDescription& description) const
 {
     MutexLocker lock(m_refresh_lock);
     auto& cached_data = description.data();
@@ -143,9 +144,8 @@ KResult ProcFSGlobalInformation::refresh_data(FileDescription& description) cons
         if (!cached_data)
             return ENOMEM;
     }
-    KBufferBuilder builder;
-    if (!const_cast<ProcFSGlobalInformation&>(*this).output(builder))
-        return ENOENT;
+    auto builder = TRY(KBufferBuilder::try_create());
+    TRY(const_cast<ProcFSGlobalInformation&>(*this).try_generate(builder));
     auto& typed_cached_data = static_cast<ProcFSInodeData&>(*cached_data);
     typed_cached_data.buffer = builder.build();
     if (!typed_cached_data.buffer)
@@ -153,11 +153,11 @@ KResult ProcFSGlobalInformation::refresh_data(FileDescription& description) cons
     return KSuccess;
 }
 
-KResultOr<size_t> ProcFSExposedLink::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, FileDescription*) const
+KResultOr<size_t> ProcFSExposedLink::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, OpenFileDescription*) const
 {
     VERIFY(offset == 0);
     MutexLocker locker(m_lock);
-    KBufferBuilder builder;
+    auto builder = TRY(KBufferBuilder::try_create());
     if (!const_cast<ProcFSExposedLink&>(*this).acquire_link(builder))
         return KResult(EFAULT);
     auto blob = builder.build();
@@ -165,36 +165,23 @@ KResultOr<size_t> ProcFSExposedLink::read_bytes(off_t offset, size_t count, User
         return KResult(EFAULT);
 
     ssize_t nread = min(static_cast<off_t>(blob->size() - offset), static_cast<off_t>(count));
-    if (!buffer.write(blob->data() + offset, nread))
-        return KResult(EFAULT);
+    TRY(buffer.write(blob->data() + offset, nread));
     return nread;
 }
 
 KResultOr<NonnullRefPtr<Inode>> ProcFSExposedLink::to_inode(const ProcFS& procfs_instance) const
 {
-    auto maybe_inode = ProcFSLinkInode::try_create(procfs_instance, *this);
-    if (maybe_inode.is_error())
-        return maybe_inode.error();
-
-    return maybe_inode.release_value();
+    return TRY(ProcFSLinkInode::try_create(procfs_instance, *this));
 }
 
 KResultOr<NonnullRefPtr<Inode>> ProcFSExposedComponent::to_inode(const ProcFS& procfs_instance) const
 {
-    auto maybe_inode = ProcFSGlobalInode::try_create(procfs_instance, *this);
-    if (maybe_inode.is_error())
-        return maybe_inode.error();
-
-    return maybe_inode.release_value();
+    return TRY(ProcFSGlobalInode::try_create(procfs_instance, *this));
 }
 
 KResultOr<NonnullRefPtr<Inode>> ProcFSExposedDirectory::to_inode(const ProcFS& procfs_instance) const
 {
-    auto maybe_inode = ProcFSDirectoryInode::try_create(procfs_instance, *this);
-    if (maybe_inode.is_error())
-        return maybe_inode.error();
-
-    return maybe_inode.release_value();
+    return TRY(ProcFSDirectoryInode::try_create(procfs_instance, *this));
 }
 
 void ProcFSExposedDirectory::add_component(const ProcFSExposedComponent&)

@@ -10,9 +10,9 @@
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
 #include <AK/String.h>
+#include <Kernel/API/KResult.h>
 #include <Kernel/Forward.h>
 #include <Kernel/Heap/SlabAllocator.h>
-#include <Kernel/KResult.h>
 #include <Kernel/KString.h>
 
 namespace Kernel {
@@ -33,7 +33,7 @@ public:
     Inode& inode() { return *m_inode; }
     Inode const& inode() const { return *m_inode; }
     StringView name() const { return m_name->view(); }
-    OwnPtr<KString> try_create_absolute_path() const;
+    KResultOr<NonnullOwnPtr<KString>> try_serialize_absolute_path() const;
     String absolute_path() const;
 
     int mount_flags() const { return m_mount_flags; }

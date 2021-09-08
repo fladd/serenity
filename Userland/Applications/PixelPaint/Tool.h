@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Mustafa Quraish <mustafa@cs.toronto.edu>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,6 +9,7 @@
 
 #include <LibGUI/Event.h>
 #include <LibGUI/Forward.h>
+#include <LibGUI/ValueSlider.h>
 #include <LibGfx/StandardCursor.h>
 
 namespace PixelPaint {
@@ -19,13 +21,42 @@ class Tool {
 public:
     virtual ~Tool();
 
-    virtual void on_mousedown(Layer&, GUI::MouseEvent&, GUI::MouseEvent&) { }
-    virtual void on_mousemove(Layer&, GUI::MouseEvent&, GUI::MouseEvent&) { }
-    virtual void on_mouseup(Layer&, GUI::MouseEvent&, GUI::MouseEvent&) { }
-    virtual void on_context_menu(Layer&, GUI::ContextMenuEvent&) { }
+    class MouseEvent {
+    public:
+        enum class Action {
+            MouseDown,
+            MouseMove,
+            MouseUp
+        };
+
+        MouseEvent(Action action, GUI::MouseEvent& layer_event, GUI::MouseEvent& image_event, GUI::MouseEvent& raw_event)
+            : m_action(action)
+            , m_layer_event(layer_event)
+            , m_image_event(image_event)
+            , m_raw_event(raw_event)
+        {
+        }
+
+        Action action() const { return m_action; }
+        GUI::MouseEvent const& layer_event() const { return m_layer_event; }
+        GUI::MouseEvent const& image_event() const { return m_image_event; }
+        GUI::MouseEvent const& raw_event() const { return m_raw_event; }
+
+    private:
+        Action m_action;
+
+        GUI::MouseEvent& m_layer_event;
+        GUI::MouseEvent& m_image_event;
+        GUI::MouseEvent& m_raw_event;
+    };
+
+    virtual void on_mousedown(Layer*, MouseEvent&) { }
+    virtual void on_mousemove(Layer*, MouseEvent&) { }
+    virtual void on_mouseup(Layer*, MouseEvent&) { }
+    virtual void on_context_menu(Layer*, GUI::ContextMenuEvent&) { }
     virtual void on_tool_button_contextmenu(GUI::ContextMenuEvent&) { }
-    virtual void on_second_paint(Layer const&, GUI::PaintEvent&) { }
-    virtual void on_keydown(GUI::KeyEvent&) { }
+    virtual void on_second_paint(Layer const*, GUI::PaintEvent&) { }
+    virtual void on_keydown(GUI::KeyEvent&);
     virtual void on_keyup(GUI::KeyEvent&) { }
     virtual void on_tool_activation() { }
     virtual GUI::Widget* get_properties_widget() { return nullptr; }
@@ -44,6 +75,12 @@ protected:
     Tool();
     WeakPtr<ImageEditor> m_editor;
     RefPtr<GUI::Action> m_action;
+
+    void set_primary_slider(GUI::ValueSlider* primary) { m_primary_slider = primary; }
+    void set_secondary_slider(GUI::ValueSlider* secondary) { m_secondary_slider = secondary; }
+
+    GUI::ValueSlider* m_primary_slider { nullptr };
+    GUI::ValueSlider* m_secondary_slider { nullptr };
 };
 
 }

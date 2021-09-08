@@ -357,6 +357,7 @@ void Editor::drop_event(GUI::DropEvent& event)
             GUI::MessageBox::show(window(), "HackStudio can only open one file at a time!", "One at a time please!", GUI::MessageBox::Type::Error);
             return;
         }
+        set_current_editor_wrapper(static_cast<EditorWrapper*>(parent()));
         open_file(urls.first().path());
     }
 }
@@ -565,11 +566,9 @@ void Editor::flush_file_content_to_langauge_server()
 
 void Editor::on_navigatable_link_click(const GUI::TextDocumentSpan& span)
 {
-    auto adjusted_range = span.range;
-    adjusted_range.end().set_column(adjusted_range.end().column() + 1);
-    auto span_text = document().text_in_range(adjusted_range);
+    auto span_text = document().text_in_range(span.range);
     auto header_path = span_text.substring(1, span_text.length() - 2);
-    dbgln_if(EDITOR_DEBUG, "Ctrl+click: {} \"{}\"", adjusted_range, header_path);
+    dbgln_if(EDITOR_DEBUG, "Ctrl+click: {} \"{}\"", span.range, header_path);
     navigate_to_include_if_available(header_path);
 }
 

@@ -64,7 +64,7 @@ void OutOfProcessWebView::create_client()
 
     m_client_state.client = WebContentClient::construct(*this);
     m_client_state.client->on_web_content_process_crash = [this] {
-        deferred_invoke([this](auto&) {
+        deferred_invoke([this] {
             handle_web_content_process_crash();
         });
     };
@@ -341,10 +341,22 @@ void OutOfProcessWebView::notify_server_did_get_dom_tree(const String& dom_tree)
         on_get_dom_tree(dom_tree);
 }
 
-void OutOfProcessWebView::notify_server_did_js_console_output(const String& method, const String& line)
+void OutOfProcessWebView::notify_server_did_get_dom_node_properties(i32 node_id, String const& specified_style, String const& computed_style)
 {
-    if (on_js_console_output)
-        on_js_console_output(method, line);
+    if (on_get_dom_node_properties)
+        on_get_dom_node_properties(node_id, specified_style, computed_style);
+}
+
+void OutOfProcessWebView::notify_server_did_output_js_console_message(i32 message_index)
+{
+    if (on_js_console_new_message)
+        on_js_console_new_message(message_index);
+}
+
+void OutOfProcessWebView::notify_server_did_get_js_console_messages(i32 start_index, const Vector<String>& message_types, const Vector<String>& messages)
+{
+    if (on_get_js_console_messages)
+        on_get_js_console_messages(start_index, message_types, messages);
 }
 
 void OutOfProcessWebView::notify_server_did_change_favicon(const Gfx::Bitmap& favicon)
@@ -402,14 +414,40 @@ void OutOfProcessWebView::inspect_dom_tree()
     client().async_inspect_dom_tree();
 }
 
-void OutOfProcessWebView::js_console_initialize()
+Optional<OutOfProcessWebView::DOMNodeProperties> OutOfProcessWebView::inspect_dom_node(i32 node_id)
 {
-    client().async_js_console_initialize();
+    auto response = client().inspect_dom_node(node_id);
+    if (!response.has_style())
+        return {};
+    return DOMNodeProperties {
+        .specified_values_json = response.specified_style(),
+        .computed_values_json = response.computed_style()
+    };
+}
+
+void OutOfProcessWebView::clear_inspected_dom_node()
+{
+    client().inspect_dom_node(0);
+}
+
+i32 OutOfProcessWebView::get_hovered_node_id()
+{
+    return client().get_hovered_node_id();
 }
 
 void OutOfProcessWebView::js_console_input(const String& js_source)
 {
     client().async_js_console_input(js_source);
+}
+
+void OutOfProcessWebView::js_console_request_messages(i32 start_index)
+{
+    client().async_js_console_request_messages(start_index);
+}
+
+void OutOfProcessWebView::run_javascript(StringView js_source)
+{
+    client().async_run_javascript(js_source);
 }
 
 String OutOfProcessWebView::selected_text()

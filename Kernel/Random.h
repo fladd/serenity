@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2020, Peter Elliott <pelliott@ualberta.ca>
+ * Copyright (c) 2020, Peter Elliott <pelliott@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -30,14 +30,15 @@ public:
     using HashType = HashT;
     using DigestType = typename HashT::DigestType;
 
+    // FIXME: Do something other than VERIFY()'ing inside Optional in case of OOM.
     FortunaPRNG()
-        : m_counter(ByteBuffer::create_zeroed(BlockType::block_size()))
+        : m_counter(ByteBuffer::create_zeroed(BlockType::block_size()).release_value())
     {
     }
 
-    bool get_random_bytes(u8* buffer, size_t n)
+    bool get_random_bytes(Bytes buffer)
     {
-        ScopedSpinLock lock(m_lock);
+        SpinlockLocker lock(m_lock);
         if (!is_ready())
             return false;
         if (m_p0_len >= reseed_threshold) {
@@ -47,13 +48,12 @@ public:
         VERIFY(is_seeded());
 
         // FIXME: More than 2^20 bytes cannot be generated without refreshing the key.
-        VERIFY(n < (1 << 20));
+        VERIFY(buffer.size() < (1 << 20));
 
         typename CipherType::CTRMode cipher(m_key, KeySize, Crypto::Cipher::Intent::Encryption);
 
-        Bytes buffer_span { buffer, n };
         auto counter_span = m_counter.bytes();
-        cipher.key_stream(buffer_span, counter_span, &counter_span);
+        cipher.key_stream(buffer, counter_span, &counter_span);
 
         // Extract a new key from the prng stream.
         Bytes key_span = m_key.bytes();
@@ -82,7 +82,7 @@ public:
         return is_seeded() || m_p0_len >= reseed_threshold;
     }
 
-    SpinLock<u8>& get_lock() { return m_lock; }
+    Spinlock& get_lock() { return m_lock; }
 
 private:
     void reseed()
@@ -96,8 +96,17 @@ private:
             }
         }
         DigestType digest = new_key.digest();
-        m_key = ByteBuffer::copy(digest.immutable_data(),
-            digest.data_length());
+        if (m_key.size() == digest.data_length()) {
+            // Avoid reallocating, just overwrite the key.
+            m_key.overwrite(0, digest.immutable_data(), digest.data_length());
+        } else {
+            auto buffer_result = ByteBuffer::copy(digest.immutable_data(), digest.data_length());
+            // If there's no memory left to copy this into, bail out.
+            if (!buffer_result.has_value())
+                return;
+
+            m_key = buffer_result.release_value();
+        }
 
         m_reseed_number++;
         m_p0_len = 0;
@@ -108,7 +117,7 @@ private:
     size_t m_p0_len { 0 };
     ByteBuffer m_key;
     HashType m_pools[pool_count];
-    SpinLock<u8> m_lock;
+    Spinlock m_lock;
 };
 
 class KernelRng : public Lockable<FortunaPRNG<Crypto::Cipher::AESCipher, Crypto::Hash::SHA256, 256>> {
@@ -122,7 +131,7 @@ public:
 
     void wake_if_ready();
 
-    SpinLock<u8>& get_lock() { return resource().get_lock(); }
+    Spinlock& get_lock() { return resource().get_lock(); }
 
 private:
     WaitQueue m_seed_queue;
@@ -156,7 +165,7 @@ public:
     void add_random_event(const T& event_data)
     {
         auto& kernel_rng = KernelRng::the();
-        ScopedSpinLock lock(kernel_rng.get_lock());
+        SpinlockLocker lock(kernel_rng.get_lock());
         // We don't lock this because on the off chance a pool is corrupted, entropy isn't lost.
         Event<T> event = { read_tsc(), m_source, event_data };
         kernel_rng.resource().add_random_event(event, m_pool);
@@ -173,14 +182,15 @@ private:
 // NOTE: These API's are primarily about expressing intent/needs in the calling code.
 //       The only difference is that get_fast_random is guaranteed not to block.
 
-void get_fast_random_bytes(u8*, size_t);
-bool get_good_random_bytes(u8*, size_t, bool allow_wait = true, bool fallback_to_fast = true);
+void get_fast_random_bytes(Bytes);
+bool get_good_random_bytes(Bytes bytes, bool allow_wait = true, bool fallback_to_fast = true);
 
 template<typename T>
 inline T get_fast_random()
 {
     T value;
-    get_fast_random_bytes(reinterpret_cast<u8*>(&value), sizeof(T));
+    Bytes bytes { reinterpret_cast<u8*>(&value), sizeof(T) };
+    get_fast_random_bytes(bytes);
     return value;
 }
 
@@ -188,7 +198,8 @@ template<typename T>
 inline T get_good_random()
 {
     T value;
-    get_good_random_bytes(reinterpret_cast<u8*>(&value), sizeof(T));
+    Bytes bytes { reinterpret_cast<u8*>(&value), sizeof(T) };
+    get_good_random_bytes(bytes);
     return value;
 }
 

@@ -25,6 +25,11 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
     g_gl_context->gl_tex_image_2d(target, level, internalFormat, width, height, border, format, type, data);
 }
 
+void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* data)
+{
+    g_gl_context->gl_tex_sub_image_2d(target, level, xoffset, yoffset, width, height, format, type, data);
+}
+
 void glBindTexture(GLenum target, GLuint texture)
 {
     g_gl_context->gl_bind_texture(target, texture);
@@ -45,4 +50,9 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param)
 void glTexParameterf(GLenum target, GLenum pname, GLfloat param)
 {
     g_gl_context->gl_tex_parameter(target, pname, param);
+}
+
+void glTexEnvf(GLenum target, GLenum pname, GLfloat param)
+{
+    g_gl_context->gl_tex_env(target, pname, param);
 }

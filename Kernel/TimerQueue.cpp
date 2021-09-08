@@ -14,7 +14,7 @@
 namespace Kernel {
 
 static Singleton<TimerQueue> s_the;
-static SpinLock<u8> g_timerqueue_lock;
+static Spinlock g_timerqueue_lock;
 
 Time Timer::remaining() const
 {
@@ -67,7 +67,7 @@ bool TimerQueue::add_timer_without_id(NonnullRefPtr<Timer> timer, clockid_t cloc
     // returning from the timer handler and a call to cancel_timer().
     timer->setup(clock_id, deadline, move(callback));
 
-    ScopedSpinLock lock(g_timerqueue_lock);
+    SpinlockLocker lock(g_timerqueue_lock);
     timer->m_id = 0; // Don't generate a timer id
     add_timer_locked(move(timer));
     return true;
@@ -75,7 +75,7 @@ bool TimerQueue::add_timer_without_id(NonnullRefPtr<Timer> timer, clockid_t cloc
 
 TimerId TimerQueue::add_timer(NonnullRefPtr<Timer>&& timer)
 {
-    ScopedSpinLock lock(g_timerqueue_lock);
+    SpinlockLocker lock(g_timerqueue_lock);
 
     timer->m_id = ++m_timer_id_count;
     VERIFY(timer->m_id != 0); // wrapped
@@ -115,81 +115,6 @@ void TimerQueue::add_timer_locked(NonnullRefPtr<Timer> timer)
     }
 }
 
-TimerId TimerQueue::add_timer(clockid_t clock_id, const Time& deadline, Function<void()>&& callback)
-{
-    auto expires = TimeManagement::the().current_time(clock_id);
-    expires = expires + deadline;
-    auto timer = new Timer();
-    VERIFY(timer);
-    timer->setup(clock_id, expires, move(callback));
-    return add_timer(adopt_ref(*timer));
-}
-
-bool TimerQueue::cancel_timer(TimerId id)
-{
-    Timer* found_timer = nullptr;
-    Queue* timer_queue = nullptr;
-
-    ScopedSpinLock lock(g_timerqueue_lock);
-    for (auto& timer : m_timer_queue_monotonic.list) {
-        if (timer.m_id == id) {
-            found_timer = &timer;
-            timer_queue = &m_timer_queue_monotonic;
-            break;
-        }
-    }
-
-    if (found_timer == nullptr) {
-        for (auto& timer : m_timer_queue_realtime.list) {
-            if (timer.m_id == id) {
-                found_timer = &timer;
-                timer_queue = &m_timer_queue_realtime;
-                break;
-            }
-        };
-    }
-
-    if (found_timer) {
-        VERIFY(timer_queue);
-        remove_timer_locked(*timer_queue, *found_timer);
-        return true;
-    }
-
-    // The timer may be executing right now, if it is then it should
-    // be in m_timers_executing. This is the case when the deferred
-    // call has been queued but not yet executed.
-    for (auto& timer : m_timers_executing) {
-        if (timer.m_id == id) {
-            found_timer = &timer;
-            break;
-        }
-    }
-
-    if (!found_timer)
-        return false;
-
-    // Keep a reference while we unlock
-    NonnullRefPtr<Timer> executing_timer(*found_timer);
-    lock.unlock();
-
-    if (!found_timer->set_cancelled()) {
-        // We cancelled it even though the deferred call has been queued already.
-        // We do not unref the timer here because the deferred call is still going
-        // too need it!
-        lock.lock();
-        VERIFY(m_timers_executing.contains(*found_timer));
-        m_timers_executing.remove(*found_timer);
-        return true;
-    }
-
-    // At this point the deferred call is queued and is being executed
-    // on another processor. We need to wait until it's complete!
-    while (!found_timer->is_callback_finished())
-        Processor::wait_check();
-
-    return true;
-}
-
 bool TimerQueue::cancel_timer(Timer& timer, bool* was_in_use)
 {
     bool in_use = timer.is_in_use();
@@ -207,7 +132,7 @@ bool TimerQueue::cancel_timer(Timer& timer, bool* was_in_use)
     if (!did_already_run) {
         timer.clear_in_use();
 
-        ScopedSpinLock lock(g_timerqueue_lock);
+        SpinlockLocker lock(g_timerqueue_lock);
         if (timer_queue.list.contains(timer)) {
             // The timer has not fired, remove it
             VERIFY(timer.ref_count() > 1);
@@ -251,7 +176,7 @@ void TimerQueue::remove_timer_locked(Queue& queue, Timer& timer)
 
 void TimerQueue::fire()
 {
-    ScopedSpinLock lock(g_timerqueue_lock);
+    SpinlockLocker lock(g_timerqueue_lock);
 
     auto fire_timers = [&](Queue& queue) {
         auto* timer = queue.list.first();
@@ -274,7 +199,7 @@ void TimerQueue::fire()
                 // our reference and don't execute the callback.
                 if (!timer->set_cancelled()) {
                     timer->m_callback();
-                    ScopedSpinLock lock(g_timerqueue_lock);
+                    SpinlockLocker lock(g_timerqueue_lock);
                     m_timers_executing.remove(*timer);
                 }
                 timer->clear_in_use();

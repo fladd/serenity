@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
 #include <Kernel/KSyms.h>
 #include <Kernel/Module.h>
@@ -23,22 +23,11 @@ KResultOr<FlatPtr> Process::sys$module_load(Userspace<const char*> user_path, si
 
     REQUIRE_NO_PROMISES;
 
-    auto path = get_syscall_path_argument(user_path, path_length);
-    if (path.is_error())
-        return path.error();
-    auto description_or_error = VirtualFileSystem::the().open(path.value()->view(), O_RDONLY, 0, current_directory());
-    if (description_or_error.is_error())
-        return description_or_error.error();
-    auto& description = description_or_error.value();
-    auto payload_or_error = description->read_entire_file();
-    if (payload_or_error.is_error())
-        return payload_or_error.error();
+    auto path = TRY(get_syscall_path_argument(user_path, path_length));
+    auto description = TRY(VirtualFileSystem::the().open(path->view(), O_RDONLY, 0, current_directory()));
+    auto payload = TRY(description->read_entire_file());
 
-    auto& payload = *payload_or_error.value();
-    auto storage = KBuffer::try_create_with_size(payload.size());
-    if (!storage)
-        return ENOMEM;
-    memcpy(storage->data(), payload.data(), payload.size());
+    auto storage = TRY(KBuffer::try_create_with_bytes(ReadonlyBytes { payload->data(), payload->size() }));
 
     auto elf_image = try_make<ELF::Image>(storage->data(), storage->size());
     if (!elf_image)
@@ -52,13 +41,21 @@ KResultOr<FlatPtr> Process::sys$module_load(Userspace<const char*> user_path, si
     if (!module)
         return ENOMEM;
 
+    KResult section_loading_result = KSuccess;
     elf_image->for_each_section_of_type(SHT_PROGBITS, [&](const ELF::Image::Section& section) {
-        if (!section.size())
+        if (!section.size() || !section_loading_result.is_error())
             return;
-        auto section_storage = KBuffer::copy(section.raw_data(), section.size(), Memory::Region::Access::ReadWriteExecute);
-        section_storage_by_name.set(section.name(), section_storage.data());
+        auto section_storage_or_error = KBuffer::try_create_with_bytes(ReadonlyBytes { section.raw_data(), section.size() }, Memory::Region::Access::ReadWriteExecute);
+        if (section_storage_or_error.is_error()) {
+            section_loading_result = section_storage_or_error.error();
+            return;
+        }
+        auto section_storage = section_storage_or_error.release_value();
+        section_storage_by_name.set(section.name(), section_storage->data());
         module->sections.append(move(section_storage));
     });
+    if (section_loading_result.is_error())
+        return section_loading_result;
 
     bool missing_symbols = false;
 
@@ -155,11 +152,9 @@ KResultOr<FlatPtr> Process::sys$module_unload(Userspace<const char*> user_name, 
 
     REQUIRE_NO_PROMISES;
 
-    auto module_name_or_error = try_copy_kstring_from_user(user_name, name_length);
-    if (module_name_or_error.is_error())
-        return module_name_or_error.error();
+    auto module_name = TRY(try_copy_kstring_from_user(user_name, name_length));
 
-    auto it = g_modules->find(module_name_or_error.value()->view());
+    auto it = g_modules->find(module_name->view());
     if (it == g_modules->end())
         return ENOENT;
 

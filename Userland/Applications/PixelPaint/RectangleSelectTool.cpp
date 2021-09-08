@@ -26,8 +26,9 @@ RectangleSelectTool::~RectangleSelectTool()
 {
 }
 
-void RectangleSelectTool::on_mousedown(Layer&, GUI::MouseEvent&, GUI::MouseEvent& image_event)
+void RectangleSelectTool::on_mousedown(Layer*, MouseEvent& event)
 {
+    auto& image_event = event.image_event();
     if (image_event.button() != GUI::MouseButton::Left)
         return;
 
@@ -39,8 +40,9 @@ void RectangleSelectTool::on_mousedown(Layer&, GUI::MouseEvent&, GUI::MouseEvent
     m_editor->update();
 }
 
-void RectangleSelectTool::on_mousemove(Layer&, GUI::MouseEvent&, GUI::MouseEvent& image_event)
+void RectangleSelectTool::on_mousemove(Layer*, MouseEvent& event)
 {
+    auto& image_event = event.image_event();
     if (!m_selecting)
         return;
 
@@ -56,8 +58,9 @@ void RectangleSelectTool::on_mousemove(Layer&, GUI::MouseEvent&, GUI::MouseEvent
     m_editor->update();
 }
 
-void RectangleSelectTool::on_mouseup(Layer&, GUI::MouseEvent&, GUI::MouseEvent& image_event)
+void RectangleSelectTool::on_mouseup(Layer*, MouseEvent& event)
 {
+    auto& image_event = event.image_event();
     if (!m_selecting || image_event.button() != GUI::MouseButton::Left)
         return;
 
@@ -107,6 +110,7 @@ void RectangleSelectTool::on_mouseup(Layer&, GUI::MouseEvent&, GUI::MouseEvent& 
 
 void RectangleSelectTool::on_keydown(GUI::KeyEvent& key_event)
 {
+    Tool::on_keydown(key_event);
     if (key_event.key() == KeyCode::Key_Space)
         m_moving_mode = MovingMode::MovingOrigin;
     else if (key_event.key() == KeyCode::Key_Control)
@@ -121,7 +125,7 @@ void RectangleSelectTool::on_keyup(GUI::KeyEvent& key_event)
         m_moving_mode = MovingMode::None;
 }
 
-void RectangleSelectTool::on_second_paint(Layer const&, GUI::PaintEvent& event)
+void RectangleSelectTool::on_second_paint(Layer const*, GUI::PaintEvent& event)
 {
     if (!m_selecting)
         return;
@@ -161,6 +165,7 @@ GUI::Widget* RectangleSelectTool::get_properties_widget()
     feather_slider.on_change = [&](int value) {
         m_edge_feathering = (float)value / (float)feather_slider_max;
     };
+    set_primary_slider(&feather_slider);
 
     auto& mode_container = m_properties_widget->add<GUI::Widget>();
     mode_container.set_fixed_height(20);

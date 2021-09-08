@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/IDAllocator.h>
 #include <AK/StringBuilder.h>
 #include <LibJS/AST.h>
 #include <LibJS/Runtime/FunctionObject.h>
@@ -30,10 +31,33 @@
 
 namespace Web::DOM {
 
+static IDAllocator s_node_id_allocator;
+static HashMap<i32, Node*> s_node_directory;
+
+static i32 allocate_node_id(Node* node)
+{
+    i32 id = s_node_id_allocator.allocate();
+    s_node_directory.set(id, node);
+    return id;
+}
+
+static void deallocate_node_id(i32 node_id)
+{
+    if (!s_node_directory.remove(node_id))
+        VERIFY_NOT_REACHED();
+    s_node_id_allocator.deallocate(node_id);
+}
+
+Node* Node::from_id(i32 node_id)
+{
+    return s_node_directory.get(node_id).value_or(nullptr);
+}
+
 Node::Node(Document& document, NodeType type)
     : EventTarget(static_cast<Bindings::ScriptExecutionContext&>(document))
     , m_document(&document)
     , m_type(type)
+    , m_id(allocate_node_id(this))
 {
     if (!is_document())
         m_document->ref_from_node({});
@@ -47,6 +71,8 @@ Node::~Node()
 
     if (!is_document())
         m_document->unref_from_node({});
+
+    deallocate_node_id(m_id);
 }
 
 const HTML::HTMLAnchorElement* Node::enclosing_link_element() const
@@ -72,22 +98,45 @@ const HTML::HTMLElement* Node::enclosing_html_element_with_attribute(const FlySt
     return nullptr;
 }
 
-String Node::text_content() const
+// https://dom.spec.whatwg.org/#concept-descendant-text-content
+String Node::descendant_text_content() const
 {
     StringBuilder builder;
-    for (auto* child = first_child(); child; child = child->next_sibling()) {
-        builder.append(child->text_content());
-    }
+    for_each_in_subtree_of_type<Text>([&](auto& text_node) {
+        builder.append(text_node.data());
+        return IterationDecision::Continue;
+    });
     return builder.to_string();
 }
 
-void Node::set_text_content(const String& content)
+// https://dom.spec.whatwg.org/#dom-node-textcontent
+String Node::text_content() const
 {
-    if (is_text()) {
-        verify_cast<Text>(this)->set_data(content);
+    if (is<DocumentFragment>(this) || is<Element>(this))
+        return descendant_text_content();
+    else if (is<CharacterData>(this))
+        return verify_cast<CharacterData>(this)->data();
+
+    // FIXME: Else if this is an Attr node, return this's value.
+
+    return {};
+}
+
+// https://dom.spec.whatwg.org/#ref-for-dom-node-textcontent%E2%91%A0
+void Node::set_text_content(String const& content)
+{
+    if (is<DocumentFragment>(this) || is<Element>(this)) {
+        string_replace_all(content);
+    } else if (is<CharacterData>(this)) {
+        // FIXME: CharacterData::set_data is not spec compliant. Make this match the spec when set_data becomes spec compliant.
+        //        Do note that this will make this function able to throw an exception.
+
+        auto* character_data_node = verify_cast<CharacterData>(this);
+        character_data_node->set_data(content);
     } else {
-        remove_all_children();
-        append_child(document().create_text_node(content));
+        // FIXME: Else if this is an Attr node, set an existing attribute value with this and the given value.
+
+        return;
     }
 
     set_needs_style_update(true);
@@ -131,25 +180,28 @@ String Node::child_text_content() const
     return builder.build();
 }
 
-Node* Node::root()
+// https://dom.spec.whatwg.org/#concept-tree-root
+Node& Node::root()
 {
     Node* root = this;
     while (root->parent())
         root = root->parent();
-    return root;
+    return *root;
 }
 
-Node* Node::shadow_including_root()
+// https://dom.spec.whatwg.org/#concept-shadow-including-root
+Node& Node::shadow_including_root()
 {
-    auto node_root = root();
+    auto& node_root = root();
     if (is<ShadowRoot>(node_root))
-        return verify_cast<ShadowRoot>(node_root)->host()->shadow_including_root();
+        return verify_cast<ShadowRoot>(node_root).host()->shadow_including_root();
     return node_root;
 }
 
+// https://dom.spec.whatwg.org/#connected
 bool Node::is_connected() const
 {
-    return shadow_including_root() && shadow_including_root()->is_document();
+    return shadow_including_root().is_document();
 }
 
 Element* Node::parent_element()
@@ -190,14 +242,14 @@ ExceptionOr<void> Node::ensure_pre_insertion_validity(NonnullRefPtr<Node> node, 
         if (is<DocumentFragment>(*node)) {
             auto node_element_child_count = verify_cast<DocumentFragment>(*node).child_element_count();
             if ((node_element_child_count > 1 || node->has_child_of_type<Text>())
-                || (node_element_child_count == 1 && (has_child_of_type<Element>() || is<DocumentType>(child.ptr()) /* FIXME: or child is non-null and a doctype is following child. */))) {
+                || (node_element_child_count == 1 && (has_child_of_type<Element>() || is<DocumentType>(child.ptr()) || (child && child->has_following_node_of_type_in_tree_order<DocumentType>())))) {
                 return DOM::HierarchyRequestError::create("Invalid node type for insertion");
             }
         } else if (is<Element>(*node)) {
-            if (has_child_of_type<Element>() || is<DocumentType>(child.ptr()) /* FIXME: or child is non-null and a doctype is following child. */)
+            if (has_child_of_type<Element>() || is<DocumentType>(child.ptr()) || (child && child->has_following_node_of_type_in_tree_order<DocumentType>()))
                 return DOM::HierarchyRequestError::create("Invalid node type for insertion");
         } else if (is<DocumentType>(*node)) {
-            if (has_child_of_type<DocumentType>() /* FIXME: or child is non-null and an element is preceding child */ || (!child && has_child_of_type<Element>()))
+            if (has_child_of_type<DocumentType>() || (child && child->has_preceding_node_of_type_in_tree_order<Element>()) || (!child && has_child_of_type<Element>()))
                 return DOM::HierarchyRequestError::create("Invalid node type for insertion");
         }
     }
@@ -372,14 +424,14 @@ ExceptionOr<NonnullRefPtr<Node>> Node::replace_child(NonnullRefPtr<Node> node, N
         if (is<DocumentFragment>(*node)) {
             auto node_element_child_count = verify_cast<DocumentFragment>(*node).child_element_count();
             if ((node_element_child_count > 1 || node->has_child_of_type<Text>())
-                || (node_element_child_count == 1 && (first_child_of_type<Element>() != child /* FIXME: or a doctype is following child. */))) {
+                || (node_element_child_count == 1 && (first_child_of_type<Element>() != child || child->has_following_node_of_type_in_tree_order<DocumentType>()))) {
                 return DOM::HierarchyRequestError::create("Invalid node type for insertion");
             }
         } else if (is<Element>(*node)) {
-            if (first_child_of_type<Element>() != child /* FIXME: or a doctype is following child. */)
+            if (first_child_of_type<Element>() != child || child->has_following_node_of_type_in_tree_order<DocumentType>())
                 return DOM::HierarchyRequestError::create("Invalid node type for insertion");
         } else if (is<DocumentType>(*node)) {
-            if (first_child_of_type<DocumentType>() != node /* FIXME: or an element is preceding child */)
+            if (first_child_of_type<DocumentType>() != node || child->has_preceding_node_of_type_in_tree_order<Element>())
                 return DOM::HierarchyRequestError::create("Invalid node type for insertion");
         }
     }
@@ -477,6 +529,7 @@ void Node::set_document(Badge<Document>, Document& document)
 {
     if (m_document == &document)
         return;
+
     document.ref_from_node({});
     m_document->unref_from_node({});
     m_document = &document;
@@ -524,7 +577,6 @@ void Node::set_needs_style_update(bool value)
 
     if (m_needs_style_update) {
         for (auto* ancestor = parent(); ancestor; ancestor = ancestor->parent()) {
-            //dbgln("{}", ancestor->node_name());
             ancestor->m_child_needs_style_update = true;
         }
         document().schedule_style_update();
@@ -582,7 +634,7 @@ u16 Node::compare_document_position(RefPtr<Node> other)
     // FIXME: Once LibWeb supports attribute nodes fix to follow the specification.
     VERIFY(node1->type() != NodeType::ATTRIBUTE_NODE && node2->type() != NodeType::ATTRIBUTE_NODE);
 
-    if ((node1 == nullptr || node2 == nullptr) || (node1->root() != node2->root()))
+    if ((node1 == nullptr || node2 == nullptr) || (&node1->root() != &node2->root()))
         return DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC | (node1 > node2 ? DOCUMENT_POSITION_PRECEDING : DOCUMENT_POSITION_FOLLOWING);
 
     if (node1->is_ancestor_of(*node2))
@@ -600,7 +652,7 @@ u16 Node::compare_document_position(RefPtr<Node> other)
 // https://dom.spec.whatwg.org/#concept-tree-host-including-inclusive-ancestor
 bool Node::is_host_including_inclusive_ancestor_of(const Node& other) const
 {
-    return is_inclusive_ancestor_of(other) || (is<DocumentFragment>(other.root()) && verify_cast<DocumentFragment>(other.root())->host() && is_inclusive_ancestor_of(*verify_cast<DocumentFragment>(other.root())->host().ptr()));
+    return is_inclusive_ancestor_of(other) || (is<DocumentFragment>(other.root()) && verify_cast<DocumentFragment>(other.root()).host() && is_inclusive_ancestor_of(*verify_cast<DocumentFragment>(other.root()).host().ptr()));
 }
 
 // https://dom.spec.whatwg.org/#dom-node-ownerdocument
@@ -614,6 +666,7 @@ RefPtr<Document> Node::owner_document() const
 void Node::serialize_tree_as_json(JsonObjectSerializer<StringBuilder>& object) const
 {
     object.add("name", node_name().view());
+    object.add("id", id());
     if (is_document()) {
         object.add("type", "document");
     } else if (is_element()) {
@@ -653,6 +706,66 @@ bool Node::is_scripting_disabled() const
 bool Node::contains(RefPtr<Node> other) const
 {
     return other && other->is_inclusive_descendant_of(*this);
+}
+
+// https://dom.spec.whatwg.org/#concept-shadow-including-descendant
+bool Node::is_shadow_including_descendant_of(Node const& other) const
+{
+    if (is_descendant_of(other))
+        return true;
+
+    if (!is<ShadowRoot>(root()))
+        return false;
+
+    auto& shadow_root = verify_cast<ShadowRoot>(root());
+
+    // NOTE: While host is nullable because of inheriting from DocumentFragment, shadow roots always have a host.
+    return shadow_root.host()->is_shadow_including_inclusive_descendant_of(other);
+}
+
+// https://dom.spec.whatwg.org/#concept-shadow-including-inclusive-descendant
+bool Node::is_shadow_including_inclusive_descendant_of(Node const& other) const
+{
+    return &other == this || is_shadow_including_descendant_of(other);
+}
+
+// https://dom.spec.whatwg.org/#concept-shadow-including-ancestor
+bool Node::is_shadow_including_ancestor_of(Node const& other) const
+{
+    return other.is_shadow_including_descendant_of(*this);
+}
+
+// https://dom.spec.whatwg.org/#concept-shadow-including-inclusive-ancestor
+bool Node::is_shadow_including_inclusive_ancestor_of(Node const& other) const
+{
+    return other.is_shadow_including_inclusive_descendant_of(*this);
+}
+
+// https://dom.spec.whatwg.org/#concept-node-replace-all
+void Node::replace_all(RefPtr<Node> node)
+{
+    // FIXME: Let removedNodes be parent’s children. (Current unused so not included)
+    // FIXME: Let addedNodes be the empty set. (Currently unused so not included)
+    // FIXME: If node is a DocumentFragment node, then set addedNodes to node’s children.
+    // FIXME: Otherwise, if node is non-null, set addedNodes to « node ».
+
+    remove_all_children(true);
+
+    if (node)
+        insert_before(*node, nullptr, true);
+
+    // FIXME: If either addedNodes or removedNodes is not empty, then queue a tree mutation record for parent with addedNodes, removedNodes, null, and null.
+}
+
+// https://dom.spec.whatwg.org/#string-replace-all
+void Node::string_replace_all(String const& string)
+{
+    RefPtr<Node> node;
+
+    if (!string.is_empty())
+        node = make_ref_counted<Text>(document(), string);
+
+    replace_all(node);
 }
 
 }

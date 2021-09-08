@@ -545,6 +545,10 @@ void SoftwareGLContext::gl_enable(GLenum capability)
         rasterizer_options.enable_alpha_test = true;
         update_rasterizer_options = true;
         break;
+    case GL_FOG:
+        rasterizer_options.fog_enabled = true;
+        update_rasterizer_options = true;
+        break;
     default:
         RETURN_WITH_ERROR_IF(true, GL_INVALID_ENUM);
     }
@@ -638,15 +642,49 @@ void SoftwareGLContext::gl_tex_image_2d(GLenum target, GLint level, GLint intern
     // Check if there is actually a texture bound
     RETURN_WITH_ERROR_IF(target == GL_TEXTURE_2D && m_active_texture_unit->currently_bound_target() != GL_TEXTURE_2D, GL_INVALID_OPERATION);
 
+    // Internal format can also be a number between 1 and 4. Symbolic formats were only added with EXT_texture, promoted to core in OpenGL 1.1
+    if (internal_format == 1)
+        internal_format = GL_ALPHA;
+    else if (internal_format == 2)
+        internal_format = GL_LUMINANCE_ALPHA;
+    else if (internal_format == 3)
+        internal_format = GL_RGB;
+    else if (internal_format == 4)
+        internal_format = GL_RGBA;
+
     // We only support symbolic constants for now
     RETURN_WITH_ERROR_IF(!(internal_format == GL_RGB || internal_format == GL_RGBA), GL_INVALID_ENUM);
     RETURN_WITH_ERROR_IF(type != GL_UNSIGNED_BYTE, GL_INVALID_VALUE);
     RETURN_WITH_ERROR_IF(level < 0 || level > Texture2D::LOG2_MAX_TEXTURE_SIZE, GL_INVALID_VALUE);
     RETURN_WITH_ERROR_IF(width < 0 || height < 0 || width > (2 + Texture2D::MAX_TEXTURE_SIZE) || height > (2 + Texture2D::MAX_TEXTURE_SIZE), GL_INVALID_VALUE);
-    RETURN_WITH_ERROR_IF((width & 2) != 0 || (height & 2) != 0, GL_INVALID_VALUE);
+    // Check if width and height are a power of 2
+    RETURN_WITH_ERROR_IF((width & (width - 1)) != 0, GL_INVALID_VALUE);
+    RETURN_WITH_ERROR_IF((height & (height - 1)) != 0, GL_INVALID_VALUE);
     RETURN_WITH_ERROR_IF(border < 0 || border > 1, GL_INVALID_VALUE);
 
-    m_active_texture_unit->bound_texture_2d()->upload_texture_data(target, level, internal_format, width, height, border, format, type, data);
+    m_active_texture_unit->bound_texture_2d()->upload_texture_data(level, internal_format, width, height, border, format, type, data, m_unpack_row_length);
+}
+
+void SoftwareGLContext::gl_tex_sub_image_2d(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* data)
+{
+    RETURN_WITH_ERROR_IF(m_in_draw_state, GL_INVALID_OPERATION);
+
+    // We only support GL_TEXTURE_2D for now
+    RETURN_WITH_ERROR_IF(target != GL_TEXTURE_2D, GL_INVALID_ENUM);
+
+    // Check if there is actually a texture bound
+    RETURN_WITH_ERROR_IF(target == GL_TEXTURE_2D && m_active_texture_unit->currently_bound_target() != GL_TEXTURE_2D, GL_INVALID_OPERATION);
+
+    // We only support symbolic constants for now
+    RETURN_WITH_ERROR_IF(type != GL_UNSIGNED_BYTE, GL_INVALID_VALUE);
+    RETURN_WITH_ERROR_IF(level < 0 || level > Texture2D::LOG2_MAX_TEXTURE_SIZE, GL_INVALID_VALUE);
+    RETURN_WITH_ERROR_IF(width < 0 || height < 0 || width > (2 + Texture2D::MAX_TEXTURE_SIZE) || height > (2 + Texture2D::MAX_TEXTURE_SIZE), GL_INVALID_VALUE);
+
+    auto texture = m_active_texture_unit->bound_texture_2d();
+
+    RETURN_WITH_ERROR_IF(xoffset < 0 || yoffset < 0 || xoffset + width > texture->width_at_lod(level) || yoffset + height > texture->height_at_lod(level), GL_INVALID_VALUE);
+
+    texture->replace_sub_texture_data(level, xoffset, yoffset, width, height, format, type, data, m_unpack_row_length);
 }
 
 void SoftwareGLContext::gl_tex_parameter(GLenum target, GLenum pname, GLfloat param)
@@ -954,6 +992,46 @@ void SoftwareGLContext::gl_read_buffer(GLenum mode)
         GL_INVALID_OPERATION);
 
     m_current_read_buffer = mode;
+}
+
+void SoftwareGLContext::gl_draw_buffer(GLenum buffer)
+{
+    APPEND_TO_CALL_LIST_AND_RETURN_IF_NEEDED(gl_draw_buffer, buffer);
+
+    RETURN_WITH_ERROR_IF(m_in_draw_state, GL_INVALID_OPERATION);
+
+    // FIXME: Also allow aux buffers GL_AUX0 through GL_AUX3 here
+    // plus any aux buffer between 0 and GL_AUX_BUFFERS
+    RETURN_WITH_ERROR_IF(buffer != GL_NONE
+            && buffer != GL_FRONT_LEFT
+            && buffer != GL_FRONT_RIGHT
+            && buffer != GL_BACK_LEFT
+            && buffer != GL_BACK_RIGHT
+            && buffer != GL_FRONT
+            && buffer != GL_BACK
+            && buffer != GL_LEFT
+            && buffer != GL_RIGHT,
+        GL_INVALID_ENUM);
+
+    // FIXME: We do not currently have aux buffers, so make it an invalid
+    // operation to select anything but front or back buffers. Also we do
+    // not allow selecting the stereoscopic RIGHT buffers since we do not
+    // have them configured.
+    RETURN_WITH_ERROR_IF(buffer != GL_NONE
+            && buffer != GL_FRONT_LEFT
+            && buffer != GL_FRONT
+            && buffer != GL_BACK_LEFT
+            && buffer != GL_BACK
+            && buffer != GL_FRONT
+            && buffer != GL_BACK
+            && buffer != GL_LEFT,
+        GL_INVALID_OPERATION);
+
+    m_current_draw_buffer = buffer;
+
+    auto rasterizer_options = m_rasterizer.options();
+    rasterizer_options.draw_buffer = m_current_draw_buffer;
+    m_rasterizer.set_options(rasterizer_options);
 }
 
 void SoftwareGLContext::gl_read_pixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid* pixels)
@@ -1323,7 +1401,7 @@ void SoftwareGLContext::gl_get_floatv(GLenum pname, GLfloat* params)
     default:
         // FIXME: Because glQuake only requires GL_MODELVIEW_MATRIX, that is the only parameter
         // that we currently support. More parameters should be supported.
-        TODO();
+        RETURN_WITH_ERROR_IF(true, GL_INVALID_ENUM);
     }
 }
 
@@ -1361,6 +1439,12 @@ void SoftwareGLContext::gl_get_integerv(GLenum pname, GLint* data)
         break;
     case GL_BLEND_DST_ALPHA:
         *data = m_blend_destination_factor;
+        break;
+    case GL_MAX_TEXTURE_UNITS:
+        *data = m_texture_units.size();
+        break;
+    case GL_MAX_TEXTURE_SIZE:
+        *data = 4096;
         break;
     default:
         // According to the Khronos docs, we always return GL_INVALID_ENUM if we encounter a non-accepted value
@@ -1476,6 +1560,36 @@ void SoftwareGLContext::gl_tex_coord_pointer(GLint size, GLenum type, GLsizei st
     m_client_tex_coord_pointer.type = type;
     m_client_tex_coord_pointer.stride = stride;
     m_client_tex_coord_pointer.pointer = pointer;
+}
+
+void SoftwareGLContext::gl_tex_env(GLenum target, GLenum pname, GLfloat param)
+{
+    APPEND_TO_CALL_LIST_AND_RETURN_IF_NEEDED(gl_tex_env, target, pname, param);
+    RETURN_WITH_ERROR_IF(m_in_draw_state, GL_INVALID_OPERATION);
+
+    if (target == GL_TEXTURE_ENV) {
+        if (pname == GL_TEXTURE_ENV_MODE) {
+            auto param_enum = static_cast<GLenum>(param);
+
+            switch (param_enum) {
+            case GL_MODULATE:
+            case GL_REPLACE:
+            case GL_DECAL:
+                m_active_texture_unit->set_env_mode(param_enum);
+                break;
+            default:
+                // FIXME: We currently only support a subset of possible param values. Implement the rest!
+                RETURN_WITH_ERROR_IF(true, GL_INVALID_ENUM);
+                break;
+            }
+        } else {
+            // FIXME: We currently only support a subset of possible pname values. Implement the rest!
+            RETURN_WITH_ERROR_IF(true, GL_INVALID_ENUM);
+        }
+    } else {
+        // FIXME: We currently only support a subset of possible target values. Implement the rest!
+        RETURN_WITH_ERROR_IF(true, GL_INVALID_ENUM);
+    }
 }
 
 void SoftwareGLContext::gl_draw_arrays(GLenum mode, GLint first, GLsizei count)
@@ -1731,6 +1845,99 @@ void SoftwareGLContext::gl_color_mask(GLboolean red, GLboolean green, GLboolean 
 
     options.color_mask = mask;
     m_rasterizer.set_options(options);
+}
+
+void SoftwareGLContext::gl_polygon_mode(GLenum face, GLenum mode)
+{
+    RETURN_WITH_ERROR_IF(!(face == GL_BACK || face == GL_FRONT || face == GL_FRONT_AND_BACK), GL_INVALID_ENUM);
+    RETURN_WITH_ERROR_IF(!(mode == GL_POINT || mode == GL_LINE || mode == GL_FILL), GL_INVALID_ENUM);
+    RETURN_WITH_ERROR_IF(m_in_draw_state, GL_INVALID_OPERATION);
+
+    auto options = m_rasterizer.options();
+    options.polygon_mode = mode;
+
+    m_rasterizer.set_options(options);
+}
+
+void SoftwareGLContext::gl_polygon_offset(GLfloat factor, GLfloat units)
+{
+    APPEND_TO_CALL_LIST_AND_RETURN_IF_NEEDED(gl_polygon_offset, factor, units);
+    RETURN_WITH_ERROR_IF(m_in_draw_state, GL_INVALID_OPERATION);
+
+    auto rasterizer_options = m_rasterizer.options();
+    rasterizer_options.depth_offset_factor = factor;
+    rasterizer_options.depth_offset_constant = units;
+    m_rasterizer.set_options(rasterizer_options);
+}
+
+void SoftwareGLContext::gl_fogfv(GLenum pname, GLfloat* params)
+{
+    RETURN_WITH_ERROR_IF(m_in_draw_state, GL_INVALID_OPERATION);
+
+    auto options = m_rasterizer.options();
+
+    switch (pname) {
+    case GL_FOG_COLOR:
+        // Set rasterizer options fog color
+        // NOTE: We purposefully don't check for `nullptr` here (as with other calls). The spec states nothing
+        // about us checking for such things. If the programmer does so and hits SIGSEGV, that's on them.
+        options.fog_color = FloatVector4 { params[0], params[1], params[2], params[3] };
+        break;
+    default:
+        RETURN_WITH_ERROR_IF(true, GL_INVALID_ENUM);
+    }
+
+    m_rasterizer.set_options(options);
+}
+
+void SoftwareGLContext::gl_fogf(GLenum pname, GLfloat param)
+{
+    RETURN_WITH_ERROR_IF(m_in_draw_state, GL_INVALID_OPERATION);
+    RETURN_WITH_ERROR_IF(param < 0.0f, GL_INVALID_VALUE);
+
+    auto options = m_rasterizer.options();
+
+    switch (pname) {
+    case GL_FOG_DENSITY:
+        options.fog_density = param;
+        break;
+    default:
+        RETURN_WITH_ERROR_IF(true, GL_INVALID_ENUM);
+    }
+
+    m_rasterizer.set_options(options);
+}
+
+void SoftwareGLContext::gl_fogi(GLenum pname, GLint param)
+{
+    RETURN_WITH_ERROR_IF(m_in_draw_state, GL_INVALID_OPERATION);
+    RETURN_WITH_ERROR_IF(!(param == GL_EXP || param == GL_EXP2 || param != GL_LINEAR), GL_INVALID_ENUM);
+
+    auto options = m_rasterizer.options();
+
+    switch (pname) {
+    case GL_FOG_MODE:
+        options.fog_mode = param;
+        break;
+    default:
+        RETURN_WITH_ERROR_IF(true, GL_INVALID_ENUM);
+    }
+
+    m_rasterizer.set_options(options);
+}
+
+void SoftwareGLContext::gl_pixel_store(GLenum pname, GLfloat param)
+{
+    // FIXME: Implement missing parameters
+    switch (pname) {
+    case GL_UNPACK_ROW_LENGTH:
+        RETURN_WITH_ERROR_IF(param < 0, GL_INVALID_VALUE);
+        m_unpack_row_length = static_cast<size_t>(param);
+        break;
+    default:
+        RETURN_WITH_ERROR_IF(true, GL_INVALID_ENUM);
+        break;
+    }
 }
 
 void SoftwareGLContext::present()

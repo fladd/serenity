@@ -16,22 +16,12 @@
 
 namespace Kernel {
 
-RefPtr<MasterPTY> MasterPTY::try_create(unsigned int index)
+KResultOr<NonnullRefPtr<MasterPTY>> MasterPTY::try_create(unsigned int index)
 {
-    auto buffer = DoubleBuffer::try_create();
-    if (!buffer)
-        return {};
-
-    auto master_pty = adopt_ref_if_nonnull(new (nothrow) MasterPTY(index, buffer.release_nonnull()));
-    if (!master_pty)
-        return {};
-
-    auto slave_pty = adopt_ref_if_nonnull(new (nothrow) SlavePTY(*master_pty, index));
-    if (!slave_pty)
-        return {};
-
+    auto buffer = TRY(DoubleBuffer::try_create());
+    auto master_pty = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) MasterPTY(index, move(buffer))));
+    auto slave_pty = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) SlavePTY(*master_pty, index)));
     master_pty->m_slave = slave_pty;
-
     return master_pty;
 }
 
@@ -41,9 +31,9 @@ MasterPTY::MasterPTY(unsigned index, NonnullOwnPtr<DoubleBuffer> buffer)
     , m_buffer(move(buffer))
 {
     m_pts_name = String::formatted("/dev/pts/{}", m_index);
-    auto process = Process::current();
-    set_uid(process->uid());
-    set_gid(process->gid());
+    auto& process = Process::current();
+    set_uid(process.uid());
+    set_gid(process.gid());
 
     m_buffer->set_unblock_callback([this]() {
         if (m_slave)
@@ -62,14 +52,14 @@ String MasterPTY::pts_name() const
     return m_pts_name;
 }
 
-KResultOr<size_t> MasterPTY::read(FileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
+KResultOr<size_t> MasterPTY::read(OpenFileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
 {
     if (!m_slave && m_buffer->is_empty())
         return 0;
     return m_buffer->read(buffer, size);
 }
 
-KResultOr<size_t> MasterPTY::write(FileDescription&, u64, const UserOrKernelBuffer& buffer, size_t size)
+KResultOr<size_t> MasterPTY::write(OpenFileDescription&, u64, const UserOrKernelBuffer& buffer, size_t size)
 {
     if (!m_slave)
         return EIO;
@@ -77,14 +67,14 @@ KResultOr<size_t> MasterPTY::write(FileDescription&, u64, const UserOrKernelBuff
     return size;
 }
 
-bool MasterPTY::can_read(const FileDescription&, size_t) const
+bool MasterPTY::can_read(const OpenFileDescription&, size_t) const
 {
     if (!m_slave)
         return true;
     return !m_buffer->is_empty();
 }
 
-bool MasterPTY::can_write(const FileDescription&, size_t) const
+bool MasterPTY::can_write(const OpenFileDescription&, size_t) const
 {
     return true;
 }
@@ -93,7 +83,7 @@ void MasterPTY::notify_slave_closed(Badge<SlavePTY>)
 {
     dbgln_if(MASTERPTY_DEBUG, "MasterPTY({}): slave closed, my retains: {}, slave retains: {}", m_index, ref_count(), m_slave->ref_count());
     // +1 ref for my MasterPTY::m_slave
-    // +1 ref for FileDescription::m_device
+    // +1 ref for OpenFileDescription::m_device
     if (m_slave->ref_count() == 2)
         m_slave = nullptr;
 }
@@ -115,7 +105,7 @@ bool MasterPTY::can_write_from_slave() const
 KResult MasterPTY::close()
 {
     InterruptDisabler disabler;
-    // After the closing FileDescription dies, slave is the only thing keeping me alive.
+    // After the closing OpenFileDescription dies, slave is the only thing keeping me alive.
     // From this point, let's consider ourselves closed.
     m_closed = true;
 
@@ -125,7 +115,7 @@ KResult MasterPTY::close()
     return KSuccess;
 }
 
-KResult MasterPTY::ioctl(FileDescription& description, unsigned request, Userspace<void*> arg)
+KResult MasterPTY::ioctl(OpenFileDescription& description, unsigned request, Userspace<void*> arg)
 {
     REQUIRE_PROMISE(tty);
     if (!m_slave)
@@ -135,14 +125,9 @@ KResult MasterPTY::ioctl(FileDescription& description, unsigned request, Userspa
     return EINVAL;
 }
 
-String MasterPTY::absolute_path(const FileDescription&) const
+String MasterPTY::absolute_path(const OpenFileDescription&) const
 {
     return String::formatted("ptm:{}", m_pts_name);
-}
-
-String MasterPTY::device_name() const
-{
-    return String::formatted("{}", minor());
 }
 
 }

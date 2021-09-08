@@ -47,7 +47,7 @@ namespace Kernel::Memory {
 // run. If we do, then Singleton would get re-initialized, causing
 // the memory manager to be initialized twice!
 static MemoryManager* s_the;
-RecursiveSpinLock s_mm_lock;
+RecursiveSpinlock s_mm_lock { LockRank::MemoryManager };
 
 MemoryManager& MemoryManager::the()
 {
@@ -63,15 +63,15 @@ UNMAP_AFTER_INIT MemoryManager::MemoryManager()
 {
     s_the = this;
 
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     parse_memory_map();
     write_cr3(kernel_page_directory().cr3());
     protect_kernel_image();
 
     // We're temporarily "committing" to two pages that we need to allocate below
-    auto committed_pages = commit_user_physical_pages(2);
+    auto committed_pages = commit_user_physical_pages(2).release_value();
 
-    m_shared_zero_page = committed_pages->take_one();
+    m_shared_zero_page = committed_pages.take_one();
 
     // We're wasting a page here, we just need a special tag (physical
     // address) so that we know when we need to lazily allocate a page
@@ -79,7 +79,7 @@ UNMAP_AFTER_INIT MemoryManager::MemoryManager()
     // than potentially failing if no pages are available anymore.
     // By using a tag we don't have to query the VMObject for every page
     // whether it was committed or not
-    m_lazy_committed_page = committed_pages->take_one();
+    m_lazy_committed_page = committed_pages.take_one();
 }
 
 UNMAP_AFTER_INIT MemoryManager::~MemoryManager()
@@ -88,7 +88,7 @@ UNMAP_AFTER_INIT MemoryManager::~MemoryManager()
 
 UNMAP_AFTER_INIT void MemoryManager::protect_kernel_image()
 {
-    ScopedSpinLock page_lock(kernel_page_directory().get_lock());
+    SpinlockLocker page_lock(kernel_page_directory().get_lock());
     // Disable writing to the kernel text and rodata segments.
     for (auto i = start_of_kernel_text; i < start_of_kernel_data; i += PAGE_SIZE) {
         auto& pte = *ensure_pte(kernel_page_directory(), VirtualAddress(i));
@@ -105,8 +105,8 @@ UNMAP_AFTER_INIT void MemoryManager::protect_kernel_image()
 
 UNMAP_AFTER_INIT void MemoryManager::protect_readonly_after_init_memory()
 {
-    ScopedSpinLock page_lock(kernel_page_directory().get_lock());
-    ScopedSpinLock mm_lock(s_mm_lock);
+    SpinlockLocker page_lock(kernel_page_directory().get_lock());
+    SpinlockLocker mm_lock(s_mm_lock);
     // Disable writing to the .ro_after_init section
     for (auto i = (FlatPtr)&start_of_ro_after_init; i < (FlatPtr)&end_of_ro_after_init; i += PAGE_SIZE) {
         auto& pte = *ensure_pte(kernel_page_directory(), VirtualAddress(i));
@@ -117,8 +117,8 @@ UNMAP_AFTER_INIT void MemoryManager::protect_readonly_after_init_memory()
 
 void MemoryManager::unmap_text_after_init()
 {
-    ScopedSpinLock page_lock(kernel_page_directory().get_lock());
-    ScopedSpinLock mm_lock(s_mm_lock);
+    SpinlockLocker page_lock(kernel_page_directory().get_lock());
+    SpinlockLocker mm_lock(s_mm_lock);
 
     auto start = page_round_down((FlatPtr)&start_of_unmap_after_init);
     auto end = page_round_up((FlatPtr)&end_of_unmap_after_init);
@@ -135,8 +135,8 @@ void MemoryManager::unmap_text_after_init()
 
 void MemoryManager::unmap_ksyms_after_init()
 {
-    ScopedSpinLock mm_lock(s_mm_lock);
-    ScopedSpinLock page_lock(kernel_page_directory().get_lock());
+    SpinlockLocker mm_lock(s_mm_lock);
+    SpinlockLocker page_lock(kernel_page_directory().get_lock());
 
     auto start = page_round_down((FlatPtr)start_of_kernel_ksyms);
     auto end = page_round_up((FlatPtr)end_of_kernel_ksyms);
@@ -403,23 +403,24 @@ UNMAP_AFTER_INIT void MemoryManager::initialize_physical_pages()
     m_kernel_page_directory = PageDirectory::must_create_kernel_page_directory();
 
     // Allocate a virtual address range for our array
-    auto range = m_kernel_page_directory->range_allocator().allocate_anywhere(physical_page_array_pages * PAGE_SIZE);
-    if (!range.has_value()) {
+    auto range_or_error = m_kernel_page_directory->range_allocator().try_allocate_anywhere(physical_page_array_pages * PAGE_SIZE);
+    if (range_or_error.is_error()) {
         dmesgln("MM: Could not allocate {} bytes to map physical page array!", physical_page_array_pages * PAGE_SIZE);
         VERIFY_NOT_REACHED();
     }
+    auto range = range_or_error.release_value();
 
     // Now that we have our special m_physical_pages_region region with enough pages to hold the entire array
     // try to map the entire region into kernel space so we always have it
     // We can't use ensure_pte here because it would try to allocate a PhysicalPage and we don't have the array
     // mapped yet so we can't create them
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
 
     // Create page tables at the beginning of m_physical_pages_region, followed by the PhysicalPageEntry array
     auto page_tables_base = m_physical_pages_region->lower();
     auto physical_page_array_base = page_tables_base.offset(needed_page_table_count * PAGE_SIZE);
     auto physical_page_array_current_page = physical_page_array_base.get();
-    auto virtual_page_array_base = range.value().base().get();
+    auto virtual_page_array_base = range.base().get();
     auto virtual_page_array_current_page = virtual_page_array_base;
     for (size_t pt_index = 0; pt_index < needed_page_table_count; pt_index++) {
         auto virtual_page_base_for_this_pt = virtual_page_array_current_page;
@@ -461,7 +462,7 @@ UNMAP_AFTER_INIT void MemoryManager::initialize_physical_pages()
     }
 
     // We now have the entire PhysicalPageEntry array mapped!
-    m_physical_page_entries = (PhysicalPageEntry*)range.value().base().get();
+    m_physical_page_entries = (PhysicalPageEntry*)range.base().get();
     for (size_t i = 0; i < m_physical_page_entries_count; i++)
         new (&m_physical_page_entries[i]) PageTableEntry();
 
@@ -474,7 +475,7 @@ UNMAP_AFTER_INIT void MemoryManager::initialize_physical_pages()
     auto& kernel_page_tables = kernel_page_directory().m_page_tables;
     virtual_page_array_current_page = virtual_page_array_base;
     for (size_t pt_index = 0; pt_index < needed_page_table_count; pt_index++) {
-        VERIFY(virtual_page_array_current_page <= range.value().end().get());
+        VERIFY(virtual_page_array_current_page <= range.end().get());
         auto pt_paddr = page_tables_base.offset(pt_index * PAGE_SIZE);
         auto physical_page_index = PhysicalAddress::physical_page_index(pt_paddr.get());
         auto& physical_page_entry = m_physical_page_entries[physical_page_index];
@@ -485,7 +486,7 @@ UNMAP_AFTER_INIT void MemoryManager::initialize_physical_pages()
         virtual_page_array_current_page += (PAGE_SIZE / sizeof(PageTableEntry)) * PAGE_SIZE;
     }
 
-    dmesgln("MM: Physical page entries: {}", range.value());
+    dmesgln("MM: Physical page entries: {}", range);
 }
 
 PhysicalPageEntry& MemoryManager::get_physical_page_entry(PhysicalAddress physical_address)
@@ -508,8 +509,8 @@ PhysicalAddress MemoryManager::get_physical_address(PhysicalPage const& physical
 PageTableEntry* MemoryManager::pte(PageDirectory& page_directory, VirtualAddress vaddr)
 {
     VERIFY_INTERRUPTS_DISABLED();
-    VERIFY(s_mm_lock.own_lock());
-    VERIFY(page_directory.get_lock().own_lock());
+    VERIFY(s_mm_lock.is_locked_by_current_processor());
+    VERIFY(page_directory.get_lock().is_locked_by_current_processor());
     u32 page_directory_table_index = (vaddr.get() >> 30) & 0x1ff;
     u32 page_directory_index = (vaddr.get() >> 21) & 0x1ff;
     u32 page_table_index = (vaddr.get() >> 12) & 0x1ff;
@@ -525,8 +526,8 @@ PageTableEntry* MemoryManager::pte(PageDirectory& page_directory, VirtualAddress
 PageTableEntry* MemoryManager::ensure_pte(PageDirectory& page_directory, VirtualAddress vaddr)
 {
     VERIFY_INTERRUPTS_DISABLED();
-    VERIFY(s_mm_lock.own_lock());
-    VERIFY(page_directory.get_lock().own_lock());
+    VERIFY(s_mm_lock.is_locked_by_current_processor());
+    VERIFY(page_directory.get_lock().is_locked_by_current_processor());
     u32 page_directory_table_index = (vaddr.get() >> 30) & 0x1ff;
     u32 page_directory_index = (vaddr.get() >> 21) & 0x1ff;
     u32 page_table_index = (vaddr.get() >> 12) & 0x1ff;
@@ -567,8 +568,8 @@ PageTableEntry* MemoryManager::ensure_pte(PageDirectory& page_directory, Virtual
 void MemoryManager::release_pte(PageDirectory& page_directory, VirtualAddress vaddr, bool is_last_release)
 {
     VERIFY_INTERRUPTS_DISABLED();
-    VERIFY(s_mm_lock.own_lock());
-    VERIFY(page_directory.get_lock().own_lock());
+    VERIFY(s_mm_lock.is_locked_by_current_processor());
+    VERIFY(page_directory.get_lock().is_locked_by_current_processor());
     u32 page_directory_table_index = (vaddr.get() >> 30) & 0x1ff;
     u32 page_directory_index = (vaddr.get() >> 21) & 0x1ff;
     u32 page_table_index = (vaddr.get() >> 12) & 0x1ff;
@@ -612,7 +613,7 @@ UNMAP_AFTER_INIT void MemoryManager::initialize(u32 cpu)
 
 Region* MemoryManager::kernel_region_from_vaddr(VirtualAddress vaddr)
 {
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     for (auto& region : MM.m_kernel_regions) {
         if (region.contains(vaddr))
             return &region;
@@ -622,13 +623,13 @@ Region* MemoryManager::kernel_region_from_vaddr(VirtualAddress vaddr)
 
 Region* MemoryManager::find_user_region_from_vaddr_no_lock(AddressSpace& space, VirtualAddress vaddr)
 {
-    VERIFY(space.get_lock().own_lock());
+    VERIFY(space.get_lock().is_locked_by_current_processor());
     return space.find_region_containing({ vaddr, 1 });
 }
 
 Region* MemoryManager::find_user_region_from_vaddr(AddressSpace& space, VirtualAddress vaddr)
 {
-    ScopedSpinLock lock(space.get_lock());
+    SpinlockLocker lock(space.get_lock());
     return find_user_region_from_vaddr_no_lock(space, vaddr);
 }
 
@@ -636,7 +637,7 @@ void MemoryManager::validate_syscall_preconditions(AddressSpace& space, Register
 {
     // We take the space lock once here and then use the no_lock variants
     // to avoid excessive spinlock recursion in this extemely common path.
-    ScopedSpinLock lock(space.get_lock());
+    SpinlockLocker lock(space.get_lock());
 
     auto unlock_and_handle_crash = [&lock, &regs](const char* description, int signal) {
         lock.unlock();
@@ -646,7 +647,7 @@ void MemoryManager::validate_syscall_preconditions(AddressSpace& space, Register
     {
         VirtualAddress userspace_sp = VirtualAddress { regs.userspace_sp() };
         if (!MM.validate_user_stack_no_lock(space, userspace_sp)) {
-            dbgln("Invalid stack pointer: {:p}", userspace_sp);
+            dbgln("Invalid stack pointer: {}", userspace_sp);
             unlock_and_handle_crash("Bad stack on syscall entry", SIGSTKFLT);
         }
     }
@@ -685,13 +686,13 @@ Region* MemoryManager::find_region_from_vaddr(VirtualAddress vaddr)
 PageFaultResponse MemoryManager::handle_page_fault(PageFault const& fault)
 {
     VERIFY_INTERRUPTS_DISABLED();
-    if (Processor::current().in_irq()) {
+    if (Processor::current_in_irq()) {
         dbgln("CPU[{}] BUG! Page fault while handling IRQ! code={}, vaddr={}, irq level: {}",
-            Processor::id(), fault.code(), fault.vaddr(), Processor::current().in_irq());
+            Processor::current_id(), fault.code(), fault.vaddr(), Processor::current_in_irq());
         dump_kernel_regions();
         return PageFaultResponse::ShouldCrash;
     }
-    dbgln_if(PAGE_FAULT_DEBUG, "MM: CPU[{}] handle_page_fault({:#04x}) at {}", Processor::id(), fault.code(), fault.vaddr());
+    dbgln_if(PAGE_FAULT_DEBUG, "MM: CPU[{}] handle_page_fault({:#04x}) at {}", Processor::current_id(), fault.code(), fault.vaddr());
     auto* region = find_region_from_vaddr(fault.vaddr());
     if (!region) {
         return PageFaultResponse::ShouldCrash;
@@ -699,75 +700,57 @@ PageFaultResponse MemoryManager::handle_page_fault(PageFault const& fault)
     return region->handle_fault(fault);
 }
 
-OwnPtr<Region> MemoryManager::allocate_contiguous_kernel_region(size_t size, StringView name, Region::Access access, Region::Cacheable cacheable)
+KResultOr<NonnullOwnPtr<Region>> MemoryManager::allocate_contiguous_kernel_region(size_t size, StringView name, Region::Access access, Region::Cacheable cacheable)
 {
     VERIFY(!(size % PAGE_SIZE));
-    ScopedSpinLock lock(kernel_page_directory().get_lock());
-    auto range = kernel_page_directory().range_allocator().allocate_anywhere(size);
-    if (!range.has_value())
-        return {};
-    auto maybe_vmobject = AnonymousVMObject::try_create_physically_contiguous_with_size(size);
-    if (maybe_vmobject.is_error()) {
-        kernel_page_directory().range_allocator().deallocate(range.value());
-        // FIXME: Would be nice to be able to return a KResultOr from here.
-        return {};
-    }
-    return allocate_kernel_region_with_vmobject(range.value(), maybe_vmobject.release_value(), name, access, cacheable);
+    SpinlockLocker lock(kernel_page_directory().get_lock());
+    auto vmobject = TRY(AnonymousVMObject::try_create_physically_contiguous_with_size(size));
+    auto range = TRY(kernel_page_directory().range_allocator().try_allocate_anywhere(size));
+    return allocate_kernel_region_with_vmobject(range, move(vmobject), name, access, cacheable);
 }
 
-OwnPtr<Region> MemoryManager::allocate_kernel_region(size_t size, StringView name, Region::Access access, AllocationStrategy strategy, Region::Cacheable cacheable)
+KResultOr<NonnullOwnPtr<Region>> MemoryManager::allocate_kernel_region(size_t size, StringView name, Region::Access access, AllocationStrategy strategy, Region::Cacheable cacheable)
 {
     VERIFY(!(size % PAGE_SIZE));
-    auto maybe_vm_object = AnonymousVMObject::try_create_with_size(size, strategy);
-    if (maybe_vm_object.is_error())
-        return {};
-    ScopedSpinLock lock(kernel_page_directory().get_lock());
-    auto range = kernel_page_directory().range_allocator().allocate_anywhere(size);
-    if (!range.has_value())
-        return {};
-    return allocate_kernel_region_with_vmobject(range.value(), maybe_vm_object.release_value(), name, access, cacheable);
+    auto vmobject = TRY(AnonymousVMObject::try_create_with_size(size, strategy));
+    SpinlockLocker lock(kernel_page_directory().get_lock());
+    auto range = TRY(kernel_page_directory().range_allocator().try_allocate_anywhere(size));
+    return allocate_kernel_region_with_vmobject(range, move(vmobject), name, access, cacheable);
 }
 
-OwnPtr<Region> MemoryManager::allocate_kernel_region(PhysicalAddress paddr, size_t size, StringView name, Region::Access access, Region::Cacheable cacheable)
+KResultOr<NonnullOwnPtr<Region>> MemoryManager::allocate_kernel_region(PhysicalAddress paddr, size_t size, StringView name, Region::Access access, Region::Cacheable cacheable)
 {
-    auto maybe_vm_object = AnonymousVMObject::try_create_for_physical_range(paddr, size);
-    if (maybe_vm_object.is_error())
-        return {};
     VERIFY(!(size % PAGE_SIZE));
-    ScopedSpinLock lock(kernel_page_directory().get_lock());
-    auto range = kernel_page_directory().range_allocator().allocate_anywhere(size);
-    if (!range.has_value())
-        return {};
-    return allocate_kernel_region_with_vmobject(range.value(), maybe_vm_object.release_value(), name, access, cacheable);
+    auto vmobject = TRY(AnonymousVMObject::try_create_for_physical_range(paddr, size));
+    SpinlockLocker lock(kernel_page_directory().get_lock());
+    auto range = TRY(kernel_page_directory().range_allocator().try_allocate_anywhere(size));
+    return allocate_kernel_region_with_vmobject(range, move(vmobject), name, access, cacheable);
 }
 
-OwnPtr<Region> MemoryManager::allocate_kernel_region_with_vmobject(VirtualRange const& range, VMObject& vmobject, StringView name, Region::Access access, Region::Cacheable cacheable)
+KResultOr<NonnullOwnPtr<Region>> MemoryManager::allocate_kernel_region_with_vmobject(VirtualRange const& range, VMObject& vmobject, StringView name, Region::Access access, Region::Cacheable cacheable)
 {
-    auto maybe_region = Region::try_create_kernel_only(range, vmobject, 0, KString::try_create(name), access, cacheable);
-    if (maybe_region.is_error())
-        return {};
-
-    auto region = maybe_region.release_value();
-    region->map(kernel_page_directory());
+    OwnPtr<KString> name_kstring;
+    if (!name.is_null())
+        name_kstring = TRY(KString::try_create(name));
+    auto region = TRY(Region::try_create_kernel_only(range, vmobject, 0, move(name_kstring), access, cacheable));
+    TRY(region->map(kernel_page_directory()));
     return region;
 }
 
-OwnPtr<Region> MemoryManager::allocate_kernel_region_with_vmobject(VMObject& vmobject, size_t size, StringView name, Region::Access access, Region::Cacheable cacheable)
+KResultOr<NonnullOwnPtr<Region>> MemoryManager::allocate_kernel_region_with_vmobject(VMObject& vmobject, size_t size, StringView name, Region::Access access, Region::Cacheable cacheable)
 {
     VERIFY(!(size % PAGE_SIZE));
-    ScopedSpinLock lock(kernel_page_directory().get_lock());
-    auto range = kernel_page_directory().range_allocator().allocate_anywhere(size);
-    if (!range.has_value())
-        return {};
-    return allocate_kernel_region_with_vmobject(range.value(), vmobject, name, access, cacheable);
+    SpinlockLocker lock(kernel_page_directory().get_lock());
+    auto range = TRY(kernel_page_directory().range_allocator().try_allocate_anywhere(size));
+    return allocate_kernel_region_with_vmobject(range, vmobject, name, access, cacheable);
 }
 
-Optional<CommittedPhysicalPageSet> MemoryManager::commit_user_physical_pages(size_t page_count)
+KResultOr<CommittedPhysicalPageSet> MemoryManager::commit_user_physical_pages(size_t page_count)
 {
     VERIFY(page_count > 0);
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     if (m_system_memory_info.user_physical_pages_uncommitted < page_count)
-        return {};
+        return ENOMEM;
 
     m_system_memory_info.user_physical_pages_uncommitted -= page_count;
     m_system_memory_info.user_physical_pages_committed += page_count;
@@ -778,7 +761,7 @@ void MemoryManager::uncommit_user_physical_pages(Badge<CommittedPhysicalPageSet>
 {
     VERIFY(page_count > 0);
 
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     VERIFY(m_system_memory_info.user_physical_pages_committed >= page_count);
 
     m_system_memory_info.user_physical_pages_uncommitted += page_count;
@@ -787,7 +770,7 @@ void MemoryManager::uncommit_user_physical_pages(Badge<CommittedPhysicalPageSet>
 
 void MemoryManager::deallocate_physical_page(PhysicalAddress paddr)
 {
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
 
     // Are we returning a user page?
     for (auto& region : m_user_physical_regions) {
@@ -839,7 +822,7 @@ RefPtr<PhysicalPage> MemoryManager::find_free_user_physical_page(bool committed)
 
 NonnullRefPtr<PhysicalPage> MemoryManager::allocate_committed_user_physical_page(Badge<CommittedPhysicalPageSet>, ShouldZeroFill should_zero_fill)
 {
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     auto page = find_free_user_physical_page(true);
     if (should_zero_fill == ShouldZeroFill::Yes) {
         auto* ptr = quickmap_page(*page);
@@ -851,7 +834,7 @@ NonnullRefPtr<PhysicalPage> MemoryManager::allocate_committed_user_physical_page
 
 RefPtr<PhysicalPage> MemoryManager::allocate_user_physical_page(ShouldZeroFill should_zero_fill, bool* did_purge)
 {
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     auto page = find_free_user_physical_page(false);
     bool purged_pages = false;
 
@@ -893,7 +876,7 @@ RefPtr<PhysicalPage> MemoryManager::allocate_user_physical_page(ShouldZeroFill s
 NonnullRefPtrVector<PhysicalPage> MemoryManager::allocate_contiguous_supervisor_physical_pages(size_t size)
 {
     VERIFY(!(size % PAGE_SIZE));
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     size_t count = ceil_div(size, static_cast<size_t>(PAGE_SIZE));
     auto physical_pages = m_super_physical_region->take_contiguous_free_pages(count);
 
@@ -903,15 +886,20 @@ NonnullRefPtrVector<PhysicalPage> MemoryManager::allocate_contiguous_supervisor_
         return {};
     }
 
-    auto cleanup_region = MM.allocate_kernel_region(physical_pages[0].paddr(), PAGE_SIZE * count, "MemoryManager Allocation Sanitization", Region::Access::Read | Region::Access::Write);
-    fast_u32_fill((u32*)cleanup_region->vaddr().as_ptr(), 0, (PAGE_SIZE * count) / sizeof(u32));
+    {
+        auto region_or_error = MM.allocate_kernel_region(physical_pages[0].paddr(), PAGE_SIZE * count, "MemoryManager Allocation Sanitization", Region::Access::Read | Region::Access::Write);
+        if (region_or_error.is_error())
+            TODO();
+        auto cleanup_region = region_or_error.release_value();
+        fast_u32_fill((u32*)cleanup_region->vaddr().as_ptr(), 0, (PAGE_SIZE * count) / sizeof(u32));
+    }
     m_system_memory_info.super_physical_pages_used += count;
     return physical_pages;
 }
 
 RefPtr<PhysicalPage> MemoryManager::allocate_supervisor_physical_page()
 {
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     auto page = m_super_physical_region->take_free_page();
 
     if (!page) {
@@ -925,16 +913,16 @@ RefPtr<PhysicalPage> MemoryManager::allocate_supervisor_physical_page()
     return page;
 }
 
-void MemoryManager::enter_process_paging_scope(Process& process)
+void MemoryManager::enter_process_address_space(Process& process)
 {
-    enter_space(process.address_space());
+    enter_address_space(process.address_space());
 }
 
-void MemoryManager::enter_space(AddressSpace& space)
+void MemoryManager::enter_address_space(AddressSpace& space)
 {
     auto current_thread = Thread::current();
     VERIFY(current_thread != nullptr);
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
 
     current_thread->regs().cr3 = space.page_directory().cr3();
     write_cr3(space.page_directory().cr3());
@@ -952,7 +940,7 @@ void MemoryManager::flush_tlb(PageDirectory const* page_directory, VirtualAddres
 
 PageDirectoryEntry* MemoryManager::quickmap_pd(PageDirectory& directory, size_t pdpt_index)
 {
-    VERIFY(s_mm_lock.own_lock());
+    VERIFY(s_mm_lock.is_locked_by_current_processor());
     auto& mm_data = get_data();
     auto& pte = boot_pd_kernel_pt1023[(KERNEL_QUICKMAP_PD - KERNEL_PT1024_BASE) / PAGE_SIZE];
     auto pd_paddr = directory.m_directory_pages[pdpt_index]->paddr();
@@ -978,7 +966,7 @@ PageDirectoryEntry* MemoryManager::quickmap_pd(PageDirectory& directory, size_t 
 
 PageTableEntry* MemoryManager::quickmap_pt(PhysicalAddress pt_paddr)
 {
-    VERIFY(s_mm_lock.own_lock());
+    VERIFY(s_mm_lock.is_locked_by_current_processor());
     auto& mm_data = get_data();
     auto& pte = ((PageTableEntry*)boot_pd_kernel_pt1023)[(KERNEL_QUICKMAP_PT - KERNEL_PT1024_BASE) / PAGE_SIZE];
     if (pte.physical_page_base() != pt_paddr.get()) {
@@ -1004,11 +992,11 @@ PageTableEntry* MemoryManager::quickmap_pt(PhysicalAddress pt_paddr)
 u8* MemoryManager::quickmap_page(PhysicalAddress const& physical_address)
 {
     VERIFY_INTERRUPTS_DISABLED();
+    VERIFY(s_mm_lock.is_locked_by_current_processor());
     auto& mm_data = get_data();
     mm_data.m_quickmap_prev_flags = mm_data.m_quickmap_in_use.lock();
-    ScopedSpinLock lock(s_mm_lock);
 
-    VirtualAddress vaddr(KERNEL_QUICKMAP_PER_CPU_BASE + Processor::id() * PAGE_SIZE);
+    VirtualAddress vaddr(KERNEL_QUICKMAP_PER_CPU_BASE + Processor::current_id() * PAGE_SIZE);
     u32 pte_idx = (vaddr.get() - KERNEL_PT1024_BASE) / PAGE_SIZE;
 
     auto& pte = ((PageTableEntry*)boot_pd_kernel_pt1023)[pte_idx];
@@ -1025,10 +1013,10 @@ u8* MemoryManager::quickmap_page(PhysicalAddress const& physical_address)
 void MemoryManager::unquickmap_page()
 {
     VERIFY_INTERRUPTS_DISABLED();
-    ScopedSpinLock lock(s_mm_lock);
+    VERIFY(s_mm_lock.is_locked_by_current_processor());
     auto& mm_data = get_data();
     VERIFY(mm_data.m_quickmap_in_use.is_locked());
-    VirtualAddress vaddr(KERNEL_QUICKMAP_PER_CPU_BASE + Processor::id() * PAGE_SIZE);
+    VirtualAddress vaddr(KERNEL_QUICKMAP_PER_CPU_BASE + Processor::current_id() * PAGE_SIZE);
     u32 pte_idx = (vaddr.get() - KERNEL_PT1024_BASE) / PAGE_SIZE;
     auto& pte = ((PageTableEntry*)boot_pd_kernel_pt1023)[pte_idx];
     pte.clear();
@@ -1038,7 +1026,7 @@ void MemoryManager::unquickmap_page()
 
 bool MemoryManager::validate_user_stack_no_lock(AddressSpace& space, VirtualAddress vaddr) const
 {
-    VERIFY(space.get_lock().own_lock());
+    VERIFY(space.get_lock().is_locked_by_current_processor());
 
     if (!is_user_address(vaddr))
         return false;
@@ -1049,20 +1037,20 @@ bool MemoryManager::validate_user_stack_no_lock(AddressSpace& space, VirtualAddr
 
 bool MemoryManager::validate_user_stack(AddressSpace& space, VirtualAddress vaddr) const
 {
-    ScopedSpinLock lock(space.get_lock());
+    SpinlockLocker lock(space.get_lock());
     return validate_user_stack_no_lock(space, vaddr);
 }
 
 void MemoryManager::register_region(Region& region)
 {
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     if (region.is_kernel())
         m_kernel_regions.append(region);
 }
 
 void MemoryManager::unregister_region(Region& region)
 {
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     if (region.is_kernel())
         m_kernel_regions.remove(region);
 }
@@ -1077,7 +1065,7 @@ void MemoryManager::dump_kernel_regions()
 #endif
     dbgln("BEGIN{}         END{}        SIZE{}       ACCESS NAME",
         addr_padding, addr_padding, addr_padding);
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     for (auto& region : m_kernel_regions) {
         dbgln("{:p} -- {:p} {:p} {:c}{:c}{:c}{:c}{:c}{:c} {}",
             region.vaddr().get(),
@@ -1095,8 +1083,8 @@ void MemoryManager::dump_kernel_regions()
 
 void MemoryManager::set_page_writable_direct(VirtualAddress vaddr, bool writable)
 {
-    ScopedSpinLock page_lock(kernel_page_directory().get_lock());
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker page_lock(kernel_page_directory().get_lock());
+    SpinlockLocker lock(s_mm_lock);
     auto* pte = ensure_pte(kernel_page_directory(), vaddr);
     VERIFY(pte);
     if (pte->is_writable() == writable)

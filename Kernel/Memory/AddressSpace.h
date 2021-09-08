@@ -18,13 +18,13 @@ namespace Kernel::Memory {
 
 class AddressSpace {
 public:
-    static OwnPtr<AddressSpace> try_create(AddressSpace const* parent);
+    static KResultOr<NonnullOwnPtr<AddressSpace>> try_create(AddressSpace const* parent);
     ~AddressSpace();
 
     PageDirectory& page_directory() { return *m_page_directory; }
     const PageDirectory& page_directory() const { return *m_page_directory; }
 
-    Region* add_region(NonnullOwnPtr<Region>);
+    KResultOr<Region*> add_region(NonnullOwnPtr<Region>);
 
     size_t region_count() const { return m_regions.size(); }
 
@@ -35,7 +35,7 @@ public:
 
     KResult unmap_mmap_range(VirtualAddress, size_t);
 
-    Optional<VirtualRange> allocate_range(VirtualAddress, size_t, size_t alignment = PAGE_SIZE);
+    KResultOr<VirtualRange> try_allocate_range(VirtualAddress, size_t, size_t alignment = PAGE_SIZE);
 
     KResultOr<Region*> allocate_region_with_vmobject(VirtualRange const&, NonnullRefPtr<VMObject>, size_t offset_in_vmobject, StringView name, int prot, bool shared);
     KResultOr<Region*> allocate_region(VirtualRange const&, StringView name, int prot = PROT_READ | PROT_WRITE, AllocationStrategy strategy = AllocationStrategy::Reserve);
@@ -55,7 +55,7 @@ public:
 
     void remove_all_regions(Badge<Process>);
 
-    RecursiveSpinLock& get_lock() const { return m_lock; }
+    RecursiveSpinlock& get_lock() const { return m_lock; }
 
     size_t amount_clean_inode() const;
     size_t amount_dirty_private() const;
@@ -68,7 +68,7 @@ public:
 private:
     explicit AddressSpace(NonnullRefPtr<PageDirectory>);
 
-    mutable RecursiveSpinLock m_lock;
+    mutable RecursiveSpinlock m_lock;
 
     RefPtr<PageDirectory> m_page_directory;
 

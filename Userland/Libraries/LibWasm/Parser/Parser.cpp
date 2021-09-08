@@ -54,7 +54,7 @@ static auto parse_vector(InputStream& stream)
                     return ParseResult<Vector<T>> { with_eof_check(stream, ParseError::ExpectedSize) };
                 entries.append(value);
             } else if constexpr (IsSame<T, u8>) {
-                if (count > 64 * KiB)
+                if (count > Constants::max_allowed_vector_size)
                     return ParseResult<Vector<T>> { ParseError::HugeAllocationRequested };
                 entries.resize(count);
                 if (!stream.read_or_error({ entries.data(), entries.size() }))
@@ -738,13 +738,17 @@ ParseResult<CustomSection> CustomSection::parse(InputStream& stream)
     if (name.is_error())
         return name.error();
 
-    auto data_buffer = ByteBuffer::create_uninitialized(64);
+    ByteBuffer data_buffer;
+    if (!data_buffer.try_resize(64))
+        return ParseError::OutOfMemory;
+
     while (!stream.has_any_error() && !stream.unreliable_eof()) {
         char buf[16];
         auto size = stream.read({ buf, 16 });
         if (size == 0)
             break;
-        data_buffer.append(buf, size);
+        if (!data_buffer.try_append(buf, size))
+            return with_eof_check(stream, ParseError::HugeAllocationRequested);
     }
 
     return CustomSection(name.release_value(), move(data_buffer));
@@ -1091,7 +1095,10 @@ ParseResult<Locals> Locals::parse(InputStream& stream)
     size_t count;
     if (!LEB128::read_unsigned(stream, count))
         return with_eof_check(stream, ParseError::InvalidSize);
-    // TODO: Disallow too many entries.
+
+    if (count > Constants::max_allowed_function_locals_per_type)
+        return with_eof_check(stream, ParseError::HugeAllocationRequested);
+
     auto type = ValueType::parse(stream);
     if (type.is_error())
         return type.error();
@@ -1409,6 +1416,8 @@ String parse_error_to_string(ParseError error)
         return "The parser encountered an unimplemented feature";
     case ParseError::HugeAllocationRequested:
         return "Parsing caused an attempt to allocate a very big chunk of memory, likely malformed data";
+    case ParseError::OutOfMemory:
+        return "The parser hit an OOM condition";
     case ParseError::ExpectedFloatingImmediate:
         return "Expected a floating point immediate";
     case ParseError::ExpectedSignedImmediate:

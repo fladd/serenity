@@ -6,8 +6,9 @@ ARG0=$0
 print_help() {
     NAME=$(basename "$ARG0")
     cat <<EOF
-Usage: $NAME COMMAND [TARGET] [ARGS...]
-  Supported TARGETs: i686 (default), x86_64, lagom
+Usage: $NAME COMMAND [TARGET] [TOOLCHAIN] [ARGS...]
+  Supported TARGETs: aarch64, i686, x86_64, lagom. Defaults to SERENITY_ARCH, or i686 if not set.
+  Supported TOOLCHAINs: gcc, clang. Defaults to gcc if not set.
   Supported COMMANDs:
     build:      Compiles the target binaries, [ARGS...] are passed through to ninja
     install:    Installs the target binary
@@ -40,6 +41,9 @@ Usage: $NAME COMMAND [TARGET] [ARGS...]
                     attempt to find the BINARY_FILE in the appropriate build directory
     rebuild-toolchain: Deletes and re-builds the TARGET's toolchain
     rebuild-world:     Deletes and re-builds the toolchain and build environment for TARGET.
+    copy-src:   Same as image, but also copies the project's source tree to ~/Source/serenity
+                in the built disk image.
+
 
   Examples:
     $NAME run i686 smp=on
@@ -81,25 +85,47 @@ fi
 if [ -n "$1" ]; then
     TARGET="$1"; shift
 else
-    TARGET="i686"
+    TARGET="${SERENITY_ARCH:-"i686"}"
 fi
+
+case "$1" in
+    gcc|clang)
+        TOOLCHAIN_TYPE="$1"; shift
+        ;;
+    *)
+        TOOLCHAIN_TYPE="gcc"
+        ;;
+esac
+
 CMD_ARGS=( "$@" )
 CMAKE_ARGS=()
+
+if [ "$TOOLCHAIN_TYPE" = "clang" ]; then
+    CMAKE_ARGS+=("-DUSE_CLANG_TOOLCHAIN=1")
+fi
 
 get_top_dir() {
     git rev-parse --show-toplevel
 }
 
 is_valid_target() {
-    if [ "$TARGET" = "lagom" ]; then
-        CMAKE_ARGS+=("-DBUILD_LAGOM=ON")
+    if [ "$TARGET" = "aarch64" ]; then
+        CMAKE_ARGS+=("-DSERENITY_ARCH=aarch64")
+        return 0
+    fi
+    if [ "$TARGET" = "i686" ]; then
+        CMAKE_ARGS+=("-DSERENITY_ARCH=i686")
         return 0
     fi
     if [ "$TARGET" = "x86_64" ]; then
         CMAKE_ARGS+=("-DSERENITY_ARCH=x86_64")
         return 0
     fi
-    [[ "$TARGET" =~ ^(i686|x86_64|lagom)$ ]] || return 1
+    if [ "$TARGET" = "lagom" ]; then
+        CMAKE_ARGS+=("-DBUILD_LAGOM=ON")
+        return 0
+    fi
+    return 1
 }
 
 create_build_dir() {
@@ -143,10 +169,15 @@ cmd_with_target() {
         SERENITY_SOURCE_DIR="$(get_top_dir)"
         export SERENITY_SOURCE_DIR
     fi
-    BUILD_DIR="$SERENITY_SOURCE_DIR/Build/$TARGET"
+    local TARGET_TOOLCHAIN=""
+    if [[ "$TOOLCHAIN_TYPE" != "gcc" && "$TARGET" != "lagom" ]]; then
+        # Only append the toolchain if it's not gcc
+        TARGET_TOOLCHAIN="$TOOLCHAIN_TYPE"
+    fi
+    BUILD_DIR="$SERENITY_SOURCE_DIR/Build/$TARGET$TARGET_TOOLCHAIN"
     if [ "$TARGET" != "lagom" ]; then
         export SERENITY_ARCH="$TARGET"
-        TOOLCHAIN_DIR="$SERENITY_SOURCE_DIR/Toolchain/Build/$TARGET"
+        TOOLCHAIN_DIR="$SERENITY_SOURCE_DIR/Toolchain/Local/$TARGET_TOOLCHAIN/$TARGET"
     fi
 }
 
@@ -173,7 +204,12 @@ delete_target() {
 }
 
 build_toolchain() {
-    ( cd "$SERENITY_SOURCE_DIR/Toolchain" && ARCH="$TARGET" ./BuildIt.sh )
+    echo "build_toolchain: $TOOLCHAIN_DIR"
+    if [ "$TOOLCHAIN_TYPE" = "clang" ]; then
+        ( cd "$SERENITY_SOURCE_DIR/Toolchain" && ARCH="$TARGET" ./BuildClang.sh )
+    else
+        ( cd "$SERENITY_SOURCE_DIR/Toolchain" && ARCH="$TARGET" ./BuildIt.sh )
+    fi
 }
 
 ensure_toolchain() {
@@ -235,11 +271,11 @@ run_gdb() {
             export SERENITY_KERNEL_CMDLINE="$KERNEL_CMD_LINE"
         fi
         sleep 1
-        "$(get_top_dir)/Meta/debug-kernel.sh" "${GDB_ARGS[@]}" -ex cont
+        "$(get_top_dir)/Meta/debug-kernel.sh" "${GDB_ARGS[@]}"
     fi
 }
 
-if [[ "$CMD" =~ ^(build|install|image|run|gdb|test|rebuild|recreate|kaddr2line|addr2line|setup-and-run)$ ]]; then
+if [[ "$CMD" =~ ^(build|install|image|copy-src|run|gdb|test|rebuild|recreate|kaddr2line|addr2line|setup-and-run)$ ]]; then
     cmd_with_target
     [[ "$CMD" != "recreate" && "$CMD" != "rebuild" ]] || delete_target
     [ "$TARGET" = "lagom" ] || ensure_toolchain
@@ -259,6 +295,13 @@ if [[ "$CMD" =~ ^(build|install|image|run|gdb|test|rebuild|recreate|kaddr2line|a
             build_target install
             build_target image
             ;;
+        copy-src)
+          lagom_unsupported
+          build_target
+          build_target install
+          export SERENITY_COPY_SOURCE=1
+          build_target image
+          ;;
         run)
             if [ "$TARGET" = "lagom" ]; then
                 build_target "${CMD_ARGS[0]}"

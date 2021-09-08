@@ -18,12 +18,34 @@
 #include <LibGUI/Toolbar.h>
 #include <LibGUI/ToolbarContainer.h>
 #include <LibGUI/Window.h>
+#include <unistd.h>
 
 const char* click_tip = "Tip: click the board to toggle individual cells, or click+drag to toggle multiple cells";
 
 int main(int argc, char** argv)
 {
+    if (pledge("stdio rpath recvfd sendfd unix", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
+
     auto app = GUI::Application::construct(argc, argv);
+
+    if (pledge("stdio rpath recvfd sendfd", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
+
+    if (unveil("/res", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil(nullptr, nullptr) < 0) {
+        perror("unveil");
+        return 1;
+    }
+
     auto app_icon = GUI::Icon::default_icon("app-gameoflife");
 
     auto window = GUI::Window::construct();
@@ -105,9 +127,9 @@ int main(int argc, char** argv)
     main_toolbar.add_action(randomize_cells_action);
 
     auto rotate_pattern_action = GUI::Action::create("&Rotate pattern", { 0, Key_R }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/redo.png"), [&](auto&) {
-        if (board_widget.selected_pattern() != nullptr)
-            board_widget.selected_pattern()->rotate_clockwise();
+        board_widget.selected_pattern()->rotate_clockwise();
     });
+    rotate_pattern_action->set_enabled(false);
     main_toolbar.add_action(rotate_pattern_action);
 
     auto& game_menu = window->add_menu("&Game");
@@ -156,6 +178,10 @@ int main(int argc, char** argv)
 
     board_widget.on_cell_toggled = [&](auto, auto, auto) {
         statusbar.set_text(click_tip);
+    };
+
+    board_widget.on_pattern_selection_state_change = [&] {
+        rotate_pattern_action->set_enabled(board_widget.selected_pattern() != nullptr);
     };
 
     window->resize(500, 420);

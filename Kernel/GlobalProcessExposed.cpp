@@ -9,13 +9,13 @@
 #include <Kernel/Arch/x86/CPU.h>
 #include <Kernel/Arch/x86/InterruptDisabler.h>
 #include <Kernel/Arch/x86/ProcessorInfo.h>
-#include <Kernel/Bus/PCI/Access.h>
+#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/CommandLine.h>
 #include <Kernel/ConsoleDevice.h>
 #include <Kernel/Devices/HID/HIDManagement.h>
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/FileBackedFileSystem.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Heap/kmalloc.h>
 #include <Kernel/Interrupts/GenericInterruptHandler.h>
 #include <Kernel/Interrupts/InterruptManagement.h>
@@ -40,7 +40,7 @@ public:
 
 private:
     ProcFSAdapters();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonArraySerializer array { builder };
         NetworkingManagement::the().for_each([&array](auto& adapter) {
@@ -64,7 +64,7 @@ private:
             obj.add("mtu", adapter.mtu());
         });
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 
@@ -74,7 +74,7 @@ public:
 
 private:
     ProcFSARP();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonArraySerializer array { builder };
         arp_table().for_each_shared([&](const auto& it) {
@@ -83,7 +83,7 @@ private:
             obj.add("ip_address", it.key.to_string());
         });
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 
@@ -93,7 +93,7 @@ public:
 
 private:
     ProcFSTCP();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonArraySerializer array { builder };
         TCPSocket::for_each([&array](auto& socket) {
@@ -109,14 +109,14 @@ private:
             obj.add("bytes_in", socket.bytes_in());
             obj.add("packets_out", socket.packets_out());
             obj.add("bytes_out", socket.bytes_out());
-            if (Process::current()->is_superuser() || Process::current()->uid() == socket.origin_uid()) {
-                obj.add("origin_pid", socket.origin_pid());
-                obj.add("origin_uid", socket.origin_uid());
-                obj.add("origin_gid", socket.origin_gid());
+            if (Process::current().is_superuser() || Process::current().uid() == socket.origin_uid()) {
+                obj.add("origin_pid", socket.origin_pid().value());
+                obj.add("origin_uid", socket.origin_uid().value());
+                obj.add("origin_gid", socket.origin_gid().value());
             }
         });
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 
@@ -126,21 +126,21 @@ public:
 
 private:
     ProcFSLocalNet();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonArraySerializer array { builder };
         LocalSocket::for_each([&array](auto& socket) {
             auto obj = array.add_object();
             obj.add("path", String(socket.socket_path()));
-            obj.add("origin_pid", socket.origin_pid());
-            obj.add("origin_uid", socket.origin_uid());
-            obj.add("origin_gid", socket.origin_gid());
-            obj.add("acceptor_pid", socket.acceptor_pid());
-            obj.add("acceptor_uid", socket.acceptor_uid());
-            obj.add("acceptor_gid", socket.acceptor_gid());
+            obj.add("origin_pid", socket.origin_pid().value());
+            obj.add("origin_uid", socket.origin_uid().value());
+            obj.add("origin_gid", socket.origin_gid().value());
+            obj.add("acceptor_pid", socket.acceptor_pid().value());
+            obj.add("acceptor_uid", socket.acceptor_uid().value());
+            obj.add("acceptor_gid", socket.acceptor_gid().value());
         });
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 
@@ -150,7 +150,7 @@ public:
 
 private:
     ProcFSUDP();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonArraySerializer array { builder };
         UDPSocket::for_each([&array](auto& socket) {
@@ -159,14 +159,14 @@ private:
             obj.add("local_port", socket.local_port());
             obj.add("peer_address", socket.peer_address().to_string());
             obj.add("peer_port", socket.peer_port());
-            if (Process::current()->is_superuser() || Process::current()->uid() == socket.origin_uid()) {
-                obj.add("origin_pid", socket.origin_pid());
-                obj.add("origin_uid", socket.origin_uid());
-                obj.add("origin_gid", socket.origin_gid());
+            if (Process::current().is_superuser() || Process::current().uid() == socket.origin_uid()) {
+                obj.add("origin_pid", socket.origin_pid().value());
+                obj.add("origin_uid", socket.origin_uid().value());
+                obj.add("origin_gid", socket.origin_gid().value());
             }
         });
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 
@@ -336,7 +336,8 @@ private:
     ProcFSSelfProcessDirectory();
     virtual bool acquire_link(KBufferBuilder& builder) override
     {
-        builder.appendff("{}", Process::current()->pid().value());
+        if (builder.appendff("{}", Process::current().pid().value()).is_error())
+            return false;
         return true;
     }
 };
@@ -347,7 +348,7 @@ public:
 
 private:
     ProcFSDiskUsage();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonArraySerializer array { builder };
         VirtualFileSystem::the().for_each_mount([&array](auto& mount) {
@@ -369,7 +370,7 @@ private:
                 fs_object.add("source", "none");
         });
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 
@@ -379,7 +380,7 @@ public:
 
 private:
     ProcFSMemoryStatus();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         InterruptDisabler disabler;
 
@@ -406,7 +407,7 @@ private:
             json.add(String::formatted("{}_num_free", prefix), num_free);
         });
         json.finish();
-        return true;
+        return KSuccess;
     }
 };
 
@@ -416,7 +417,7 @@ public:
 
 private:
     ProcFSOverallProcesses();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonObjectSerializer<KBufferBuilder> json { builder };
 
@@ -456,8 +457,8 @@ private:
             process_object.add("pgid", process.tty() ? process.tty()->pgid().value() : 0);
             process_object.add("pgp", process.pgid().value());
             process_object.add("sid", process.sid().value());
-            process_object.add("uid", process.uid());
-            process_object.add("gid", process.gid());
+            process_object.add("uid", process.uid().value());
+            process_object.add("gid", process.gid().value());
             process_object.add("ppid", process.ppid().value());
             process_object.add("nfds", process.fds().open_count());
             process_object.add("name", process.name());
@@ -474,7 +475,7 @@ private:
             process_object.add("kernel", process.is_kernel_process());
             auto thread_array = process_object.add_array("threads");
             process.for_each_thread([&](const Thread& thread) {
-                ScopedSpinLock locker(thread.get_lock());
+                SpinlockLocker locker(thread.get_lock());
                 auto thread_object = thread_array.add_object();
 #if LOCK_DEBUG
                 thread_object.add("lock_count", thread.lock_count());
@@ -500,7 +501,7 @@ private:
             });
         };
 
-        ScopedSpinLock lock(g_scheduler_lock);
+        SpinlockLocker lock(g_scheduler_lock);
         {
             {
                 auto array = json.add_array("processes");
@@ -514,7 +515,7 @@ private:
             json.add("total_time", total_time_scheduled.total);
             json.add("total_time_kernel", total_time_scheduled.total_kernel);
         }
-        return true;
+        return KSuccess;
     }
 };
 class ProcFSCPUInformation final : public ProcFSGlobalInformation {
@@ -523,14 +524,14 @@ public:
 
 private:
     ProcFSCPUInformation();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonArraySerializer array { builder };
         Processor::for_each(
             [&](Processor& proc) {
                 auto& info = proc.info();
                 auto obj = array.add_object();
-                obj.add("processor", proc.get_id());
+                obj.add("processor", proc.id());
                 obj.add("cpuid", info.cpuid());
                 obj.add("family", info.display_family());
 
@@ -545,7 +546,7 @@ private:
                 obj.add("brandstr", info.brandstr());
             });
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 class ProcFSDmesg final : public ProcFSGlobalInformation {
@@ -556,12 +557,13 @@ public:
 
 private:
     ProcFSDmesg();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         InterruptDisabler disabler;
-        for (char ch : ConsoleDevice::the().logbuffer())
-            builder.append(ch);
-        return true;
+        for (char ch : ConsoleDevice::the().logbuffer()) {
+            TRY(builder.append(ch));
+        }
+        return KSuccess;
     }
 };
 class ProcFSInterrupts final : public ProcFSGlobalInformation {
@@ -570,7 +572,7 @@ public:
 
 private:
     ProcFSInterrupts();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonArraySerializer array { builder };
         InterruptManagement::the().enumerate_interrupt_handlers([&array](GenericInterruptHandler& handler) {
@@ -583,7 +585,7 @@ private:
             obj.add("call_count", (unsigned)handler.get_invoking_count());
         });
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 class ProcFSKeymap final : public ProcFSGlobalInformation {
@@ -592,12 +594,12 @@ public:
 
 private:
     ProcFSKeymap();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonObjectSerializer<KBufferBuilder> json { builder };
         json.add("keymap", HIDManagement::the().keymap_name());
         json.finish();
-        return true;
+        return KSuccess;
     }
 };
 
@@ -608,12 +610,12 @@ public:
 
 private:
     ProcFSPCI();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonArraySerializer array { builder };
         PCI::enumerate([&array](PCI::Address address, PCI::ID id) {
             auto obj = array.add_object();
-            obj.add("seg", address.seg());
+            obj.add("domain", address.domain());
             obj.add("bus", address.bus());
             obj.add("device", address.device());
             obj.add("function", address.function());
@@ -626,7 +628,7 @@ private:
             obj.add("subsystem_vendor_id", PCI::get_subsystem_vendor_id(address));
         });
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 
@@ -636,7 +638,7 @@ public:
 
 private:
     ProcFSDevices();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         JsonArraySerializer array { builder };
         Device::for_each([&array](auto& device) {
@@ -653,7 +655,7 @@ private:
                 VERIFY_NOT_REACHED();
         });
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 class ProcFSUptime final : public ProcFSGlobalInformation {
@@ -662,10 +664,9 @@ public:
 
 private:
     ProcFSUptime();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
-        builder.appendff("{}\n", TimeManagement::the().uptime_ms() / 1000);
-        return true;
+        return builder.appendff("{}\n", TimeManagement::the().uptime_ms() / 1000);
     }
 };
 class ProcFSCommandLine final : public ProcFSGlobalInformation {
@@ -674,11 +675,11 @@ public:
 
 private:
     ProcFSCommandLine();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
-        builder.append(kernel_command_line().string());
-        builder.append('\n');
-        return true;
+        TRY(builder.append(kernel_command_line().string()));
+        TRY(builder.append('\n'));
+        return KSuccess;
     }
 };
 class ProcFSModules final : public ProcFSGlobalInformation {
@@ -689,7 +690,7 @@ public:
 
 private:
     ProcFSModules();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
         extern HashMap<String, OwnPtr<Module>>* g_modules;
         JsonArraySerializer array { builder };
@@ -705,7 +706,7 @@ private:
             obj.add("size", size);
         }
         array.finish();
-        return true;
+        return KSuccess;
     }
 };
 class ProcFSProfile final : public ProcFSGlobalInformation {
@@ -716,13 +717,12 @@ public:
 
 private:
     ProcFSProfile();
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
-        extern PerformanceEventBuffer* g_global_perf_events;
         if (!g_global_perf_events)
-            return false;
-
-        return g_global_perf_events->to_json(builder);
+            return ENOENT;
+        TRY(g_global_perf_events->to_json(builder));
+        return KSuccess;
     }
 };
 
@@ -735,12 +735,11 @@ private:
 
     virtual mode_t required_mode() const override { return 0400; }
 
-    virtual bool output(KBufferBuilder& builder) override
+    virtual KResult try_generate(KBufferBuilder& builder) override
     {
-        if (!Process::current()->is_superuser())
-            return false;
-        builder.append(String::number(kernel_load_base));
-        return true;
+        if (!Process::current().is_superuser())
+            return EPERM;
+        return builder.append(String::number(kernel_load_base));
     }
 };
 
@@ -916,7 +915,7 @@ KResult ProcFSRootDirectory::traverse_as_directory(unsigned fsid, Function<bool(
         InodeIdentifier identifier = { fsid, component.component_index() };
         callback({ component.name(), identifier, 0 });
     }
-    processes().for_each_shared([&](Process& process) {
+    processes().for_each([&](Process& process) {
         VERIFY(!(process.pid() < 0));
         u64 process_id = (u64)process.pid().value();
         InodeIdentifier identifier = { fsid, static_cast<InodeIndex>(process_id << 36) };

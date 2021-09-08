@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/IntrusiveList.h>
 #include <Kernel/Devices/BlockDevice.h>
 #include <Kernel/Interrupts/IRQHandler.h>
 #include <Kernel/Locking/Mutex.h>
@@ -16,7 +17,6 @@ namespace Kernel {
 
 class StorageDevice : public BlockDevice {
     friend class StorageManagement;
-    AK_MAKE_ETERNAL
 
 public:
     virtual u64 max_addressable_block() const { return m_max_addressable_block; }
@@ -24,13 +24,17 @@ public:
     NonnullRefPtr<StorageController> controller() const;
 
     // ^BlockDevice
-    virtual KResultOr<size_t> read(FileDescription&, u64, UserOrKernelBuffer&, size_t) override;
-    virtual bool can_read(const FileDescription&, size_t) const override;
-    virtual KResultOr<size_t> write(FileDescription&, u64, const UserOrKernelBuffer&, size_t) override;
-    virtual bool can_write(const FileDescription&, size_t) const override;
+    virtual KResultOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override;
+    virtual bool can_read(const OpenFileDescription&, size_t) const override;
+    virtual KResultOr<size_t> write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t) override;
+    virtual bool can_write(const OpenFileDescription&, size_t) const override;
 
-    // ^Device
-    virtual mode_t required_mode() const override { return 0600; }
+    // FIXME: This is being used only during early boot, find a better way to find devices...
+    virtual String storage_name() const = 0;
+
+    virtual void prepare_for_unplug() { m_partitions.clear(); }
+
+    NonnullRefPtrVector<DiskPartition> partitions() const { return m_partitions; }
 
 protected:
     StorageDevice(const StorageController&, size_t, u64);
@@ -39,6 +43,7 @@ protected:
     virtual StringView class_name() const override;
 
 private:
+    mutable IntrusiveListNode<StorageDevice, RefPtr<StorageDevice>> m_list_node;
     NonnullRefPtr<StorageController> m_storage_controller;
     NonnullRefPtrVector<DiskPartition> m_partitions;
     u64 m_max_addressable_block;

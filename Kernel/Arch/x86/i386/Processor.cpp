@@ -58,9 +58,9 @@ NAKED void do_assume_context(Thread*, u32)
     // clang-format on
 }
 
-String Processor::platform_string() const
+StringView Processor::platform_string()
 {
-    return "i386";
+    return "i386"sv;
 }
 
 FlatPtr Processor::init_context(Thread& thread, bool leave_crit)
@@ -180,7 +180,7 @@ FlatPtr Processor::init_context(Thread& thread, bool leave_crit)
 
 void Processor::switch_context(Thread*& from_thread, Thread*& to_thread)
 {
-    VERIFY(!in_irq());
+    VERIFY(!m_in_irq);
     VERIFY(m_in_critical == 1);
     VERIFY(is_kernel_mode());
 
@@ -267,7 +267,7 @@ UNMAP_AFTER_INIT void Processor::initialize_context_switching(Thread& initial_th
         :: [new_esp] "g" (regs.esp),
            [new_eip] "a" (regs.eip),
            [from_to_thread] "b" (&initial_thread),
-           [cpu] "c" (id())
+           [cpu] "c" (Processor::current_id())
     );
     // clang-format on
 

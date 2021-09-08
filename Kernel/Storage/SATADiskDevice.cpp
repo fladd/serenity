@@ -5,7 +5,7 @@
  */
 
 #include <AK/StringView.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Storage/AHCIController.h>
 #include <Kernel/Storage/IDEChannel.h>
 #include <Kernel/Storage/SATADiskDevice.h>
@@ -34,10 +34,10 @@ StringView SATADiskDevice::class_name() const
 
 void SATADiskDevice::start_request(AsyncBlockDeviceRequest& request)
 {
-    m_port->start_request(request);
+    m_port.strong_ref()->start_request(request);
 }
 
-String SATADiskDevice::device_name() const
+String SATADiskDevice::storage_name() const
 {
     return String::formatted("hd{:c}", 'a' + minor());
 }

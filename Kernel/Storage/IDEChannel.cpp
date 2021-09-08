@@ -197,7 +197,7 @@ bool IDEChannel::handle_irq(const RegisterState&)
 
     m_entropy_source.add_random_event(status);
 
-    ScopedSpinLock lock(m_request_lock);
+    SpinlockLocker lock(m_request_lock);
     dbgln_if(PATA_DEBUG, "IDEChannel: interrupt: DRQ={}, BSY={}, DRDY={}",
         (status & ATA_SR_DRQ) != 0,
         (status & ATA_SR_BSY) != 0,
@@ -223,7 +223,7 @@ bool IDEChannel::handle_irq(const RegisterState&)
     // trigger page faults
     g_io_work->queue([this]() {
         MutexLocker locker(m_lock);
-        ScopedSpinLock lock(m_request_lock);
+        SpinlockLocker lock(m_request_lock);
         if (m_current_request->request_type() == AsyncBlockDeviceRequest::Read) {
             dbgln_if(PATA_DEBUG, "IDEChannel: Read block {}/{}", m_current_request_block_index, m_current_request->block_count());
 
@@ -379,8 +379,9 @@ UNMAP_AFTER_INIT void IDEChannel::detect_disks()
             }
         }
 
-        ByteBuffer wbuf = ByteBuffer::create_uninitialized(512);
-        ByteBuffer bbuf = ByteBuffer::create_uninitialized(512);
+        // FIXME: Handle possible OOM situation here.
+        ByteBuffer wbuf = ByteBuffer::create_uninitialized(512).release_value();
+        ByteBuffer bbuf = ByteBuffer::create_uninitialized(512).release_value();
         u8* b = bbuf.data();
         u16* w = (u16*)wbuf.data();
 
@@ -478,10 +479,10 @@ bool IDEChannel::ata_do_read_sector()
     dbgln_if(PATA_DEBUG, "IDEChannel::ata_do_read_sector");
     auto& request = *m_current_request;
     auto out_buffer = request.buffer().offset(m_current_request_block_index * 512);
-    auto result = request.write_to_buffer_buffered<512>(out_buffer, 512, [&](u8* buffer, size_t buffer_bytes) {
-        for (size_t i = 0; i < buffer_bytes; i += sizeof(u16))
-            *(u16*)&buffer[i] = IO::in16(m_io_group.io_base().offset(ATA_REG_DATA).get());
-        return buffer_bytes;
+    auto result = request.write_to_buffer_buffered<512>(out_buffer, 512, [&](Bytes bytes) {
+        for (size_t i = 0; i < bytes.size(); i += sizeof(u16))
+            *(u16*)bytes.offset_pointer(i) = IO::in16(m_io_group.io_base().offset(ATA_REG_DATA).get());
+        return bytes.size();
     });
     if (result.is_error()) {
         // TODO: Do we need to abort the PATA read if this wasn't the last block?
@@ -498,7 +499,7 @@ void IDEChannel::ata_read_sectors(bool slave_request, u16 capabilities)
     VERIFY(!m_current_request.is_null());
     VERIFY(m_current_request->block_count() <= 256);
 
-    ScopedSpinLock m_lock(m_request_lock);
+    SpinlockLocker m_lock(m_request_lock);
     dbgln_if(PATA_DEBUG, "IDEChannel::ata_read_sectors");
     dbgln_if(PATA_DEBUG, "IDEChannel: Reading {} sector(s) @ LBA {}", m_current_request->block_count(), m_current_request->block_index());
     ata_access(Direction::Read, slave_request, m_current_request->block_index(), m_current_request->block_count(), capabilities);
@@ -520,10 +521,10 @@ void IDEChannel::ata_do_write_sector()
 
     auto in_buffer = request.buffer().offset(m_current_request_block_index * 512);
     dbgln_if(PATA_DEBUG, "IDEChannel: Writing 512 bytes (part {}) (status={:#02x})...", m_current_request_block_index, status);
-    auto result = request.read_from_buffer_buffered<512>(in_buffer, 512, [&](u8 const* buffer, size_t buffer_bytes) {
-        for (size_t i = 0; i < buffer_bytes; i += sizeof(u16))
-            IO::out16(m_io_group.io_base().offset(ATA_REG_DATA).get(), *(const u16*)&buffer[i]);
-        return buffer_bytes;
+    auto result = request.read_from_buffer_buffered<512>(in_buffer, 512, [&](ReadonlyBytes readonly_bytes) {
+        for (size_t i = 0; i < readonly_bytes.size(); i += sizeof(u16))
+            IO::out16(m_io_group.io_base().offset(ATA_REG_DATA).get(), *(const u16*)readonly_bytes.offset(i));
+        return readonly_bytes.size();
     });
     if (result.is_error())
         complete_current_request(AsyncDeviceRequest::MemoryFault);
@@ -536,7 +537,7 @@ void IDEChannel::ata_write_sectors(bool slave_request, u16 capabilities)
     VERIFY(!m_current_request.is_null());
     VERIFY(m_current_request->block_count() <= 256);
 
-    ScopedSpinLock m_lock(m_request_lock);
+    SpinlockLocker m_lock(m_request_lock);
     dbgln_if(PATA_DEBUG, "IDEChannel: Writing {} sector(s) @ LBA {}", m_current_request->block_count(), m_current_request->block_index());
     ata_access(Direction::Write, slave_request, m_current_request->block_index(), m_current_request->block_count(), capabilities);
     ata_do_write_sector();

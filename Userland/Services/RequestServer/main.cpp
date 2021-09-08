@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/OwnPtr.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/LocalServer.h>
 #include <LibIPC/ClientConnection.h>
@@ -38,12 +39,17 @@ int main(int, char**)
         return 1;
     }
 
-    [[maybe_unused]] auto gemini = new RequestServer::GeminiProtocol;
-    [[maybe_unused]] auto http = new RequestServer::HttpProtocol;
-    [[maybe_unused]] auto https = new RequestServer::HttpsProtocol;
+    [[maybe_unused]] auto gemini = make<RequestServer::GeminiProtocol>();
+    [[maybe_unused]] auto http = make<RequestServer::HttpProtocol>();
+    [[maybe_unused]] auto https = make<RequestServer::HttpsProtocol>();
 
     auto socket = Core::LocalSocket::take_over_accepted_socket_from_system_server();
     VERIFY(socket);
     IPC::new_client_connection<RequestServer::ClientConnection>(socket.release_nonnull(), 1);
-    return event_loop.exec();
+    auto result = event_loop.exec();
+
+    // FIXME: We exit instead of returning, so that protocol destructors don't get called.
+    //        The Protocol base class should probably do proper de-registration instead of
+    //        just VERIFY_NOT_REACHED().
+    exit(result);
 }

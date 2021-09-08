@@ -28,22 +28,22 @@ namespace Web::DOM {
 
 // FIXME: This shouldn't be here, as retargeting is not only used by the event dispatcher.
 //        When moving this function, it needs to be generalized. https://dom.spec.whatwg.org/#retarget
-static EventTarget* retarget(EventTarget* left, [[maybe_unused]] EventTarget* right)
+static EventTarget* retarget(EventTarget* left, EventTarget* right)
 {
-    // FIXME
     for (;;) {
         if (!is<Node>(left))
             return left;
 
         auto* left_node = verify_cast<Node>(left);
-        auto* left_root = left_node->root();
+        auto& left_root = left_node->root();
         if (!is<ShadowRoot>(left_root))
             return left;
 
-        // FIXME: If right is a node and left’s root is a shadow-including inclusive ancestor of right, return left.
+        if (is<Node>(right) && left_root.is_shadow_including_inclusive_ancestor_of(verify_cast<Node>(*right)))
+            return left;
 
-        auto* left_shadow_root = verify_cast<ShadowRoot>(left_root);
-        left = left_shadow_root->host();
+        auto& left_shadow_root = verify_cast<ShadowRoot>(left_root);
+        left = left_shadow_root.host();
     }
 }
 
@@ -181,7 +181,7 @@ bool EventDispatcher::dispatch(NonnullRefPtr<EventTarget> target, NonnullRefPtr<
 
         bool is_activation_event = is<UIEvents::MouseEvent>(*event) && event->type() == HTML::EventNames::click;
 
-        if (is_activation_event && target->activation_behaviour)
+        if (is_activation_event && target->activation_behavior)
             activation_target = target;
 
         // FIXME: Let slottable be target, if target is a slottable and is assigned, and null otherwise.
@@ -201,9 +201,9 @@ bool EventDispatcher::dispatch(NonnullRefPtr<EventTarget> target, NonnullRefPtr<
                 touch_targets.append(retarget(touch_target, parent));
             }
 
-            // FIXME: or parent is a node and target’s root is a shadow-including inclusive ancestor of parent, then:
-            if (is<Window>(parent)) {
-                if (is_activation_event && event->bubbles() && !activation_target && parent->activation_behaviour)
+            if (is<Window>(parent)
+                || (is<Node>(parent) && verify_cast<Node>(*target).root().is_shadow_including_inclusive_ancestor_of(verify_cast<Node>(*parent)))) {
+                if (is_activation_event && event->bubbles() && !activation_target && parent->activation_behavior)
                     activation_target = parent;
 
                 event->append_to_path(*parent, nullptr, related_target, touch_targets, slot_in_closed_tree);
@@ -212,7 +212,7 @@ bool EventDispatcher::dispatch(NonnullRefPtr<EventTarget> target, NonnullRefPtr<
             } else {
                 target = *parent;
 
-                if (is_activation_event && !activation_target && target->activation_behaviour)
+                if (is_activation_event && !activation_target && target->activation_behavior)
                     activation_target = target;
 
                 event->append_to_path(*parent, target, related_target, touch_targets, slot_in_closed_tree);
@@ -255,8 +255,8 @@ bool EventDispatcher::dispatch(NonnullRefPtr<EventTarget> target, NonnullRefPtr<
             }
         }
 
-        if (activation_target && activation_target->legacy_pre_activation_behaviour)
-            activation_target->legacy_pre_activation_behaviour();
+        if (activation_target && activation_target->legacy_pre_activation_behavior)
+            activation_target->legacy_pre_activation_behavior();
 
         for (ssize_t i = event->path().size() - 1; i >= 0; --i) {
             auto& entry = event->path().at(i);
@@ -298,11 +298,11 @@ bool EventDispatcher::dispatch(NonnullRefPtr<EventTarget> target, NonnullRefPtr<
 
     if (activation_target) {
         if (!event->cancelled()) {
-            // NOTE: Since activation_target is set, it will have activation behaviour.
-            activation_target->activation_behaviour(event);
+            // NOTE: Since activation_target is set, it will have activation behavior.
+            activation_target->activation_behavior(event);
         } else {
-            if (activation_target->legacy_cancelled_activation_behaviour)
-                activation_target->legacy_cancelled_activation_behaviour();
+            if (activation_target->legacy_cancelled_activation_behavior)
+                activation_target->legacy_cancelled_activation_behavior();
         }
     }
 

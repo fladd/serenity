@@ -105,7 +105,7 @@ void TabWidget::set_active_widget(Widget* widget)
         if (active_widget_had_focus)
             m_active_widget->set_focus(true);
         m_active_widget->set_visible(true);
-        deferred_invoke([this](auto&) {
+        deferred_invoke([this] {
             if (on_change)
                 on_change(*m_active_widget);
         });
@@ -213,46 +213,71 @@ void TabWidget::paint_event(PaintEvent& event)
         painter.draw_scaled_bitmap(icon_rect, *icon, icon->rect());
         text_rect.set_x(icon_rect.right() + 1 + 4);
         text_rect.intersect(button_rect);
+
+        // We want to be in perfect alignment with the icon rect at all times.
+        auto icon_rect_difference = icon_rect.top() - text_rect.top();
+        text_rect.set_top(text_rect.top() + icon_rect_difference);
+        text_rect.set_height(text_rect.height() - icon_rect_difference);
+
+        // ...unless our leftover height after text drawing is uneven, in which
+        // case we want to bias towards the bottom when the tab position is at
+        // the top.
+        if ((text_rect.height() - font().glyph_height()) % 2 != 0 && m_tab_position == TabPosition::Top) {
+            text_rect.set_top(text_rect.top() + 1);
+        }
     };
 
     for (size_t i = 0; i < m_tabs.size(); ++i) {
         if (m_tabs[i].widget == m_active_widget)
             continue;
-        bool hovered = m_hovered_tab_index.has_value() && i == m_hovered_tab_index.value();
+        bool hovered = i == m_hovered_tab_index;
         auto button_rect = this->button_rect(i);
         Gfx::StylePainter::paint_tab_button(painter, button_rect, palette(), false, hovered, m_tabs[i].widget->is_enabled(), m_tab_position == TabPosition::Top, window()->is_active());
-        auto tab_button_content_rect = button_rect.translated(4, m_tab_position == TabPosition::Top ? 1 : 0);
+
+        // First we get rid of the 1px sheen on the left, then the 2px shadow
+        // on the right. Finally we shrink 3px from each side.
+        auto tab_button_content_rect = button_rect.shrunken(2, 0);
+        tab_button_content_rect.set_width(tab_button_content_rect.width() - 1);
+        tab_button_content_rect.shrink(6, 0);
+        if (m_tab_position == TabPosition::Top) {
+            tab_button_content_rect.set_top(tab_button_content_rect.top() + 1);
+            tab_button_content_rect.set_height(tab_button_content_rect.height() - 1);
+        }
 
         paint_tab_icon_if_needed(m_tabs[i].icon, button_rect, tab_button_content_rect);
-        tab_button_content_rect.set_width(tab_button_content_rect.width() - (m_close_button_enabled ? 16 : 2));
+        tab_button_content_rect.set_width(tab_button_content_rect.width() - (m_close_button_enabled ? 16 : 0));
 
-        Gfx::IntRect text_rect { 0, 0, min(tab_button_content_rect.width(), font().width(m_tabs[i].title)), font().glyph_height() };
-        text_rect.inflate(6, 4);
-        text_rect.align_within(tab_button_content_rect, m_text_alignment);
-        text_rect.intersect(tab_button_content_rect);
-
-        painter.draw_text(text_rect, m_tabs[i].title, Gfx::TextAlignment::CenterLeft, palette().button_text(), Gfx::TextElision::Right);
+        painter.draw_text(tab_button_content_rect, m_tabs[i].title, m_text_alignment, palette().button_text(), Gfx::TextElision::Right);
     }
 
     for (size_t i = 0; i < m_tabs.size(); ++i) {
         if (m_tabs[i].widget != m_active_widget)
             continue;
-        bool hovered = m_hovered_tab_index.has_value() && i == m_hovered_tab_index.value();
+        bool hovered = i == m_hovered_tab_index;
         auto button_rect = this->button_rect(i);
         Gfx::StylePainter::paint_tab_button(painter, button_rect, palette(), true, hovered, m_tabs[i].widget->is_enabled(), m_tab_position == TabPosition::Top, window()->is_active());
-        auto tab_button_content_rect = button_rect.translated(4, m_tab_position == TabPosition::Top ? 1 : 0);
+
+        // First we get rid of the 1px sheen on the left, then the 2px shadow
+        // on the right. Finally we shrink 3px from each side.
+        auto tab_button_content_rect = button_rect.shrunken(2, 0);
+        tab_button_content_rect.set_width(tab_button_content_rect.width() - 1);
+        tab_button_content_rect.shrink(6, 0);
+        if (m_tab_position == TabPosition::Top) {
+            tab_button_content_rect.set_top(tab_button_content_rect.top() + 1);
+            tab_button_content_rect.set_height(tab_button_content_rect.height() - 1);
+        }
+
         paint_tab_icon_if_needed(m_tabs[i].icon, button_rect, tab_button_content_rect);
-        tab_button_content_rect.set_width(tab_button_content_rect.width() - (m_close_button_enabled ? 16 : 2));
+        tab_button_content_rect.set_width(tab_button_content_rect.width() - (m_close_button_enabled ? 16 : 0));
 
-        Gfx::IntRect text_rect { 0, 0, min(tab_button_content_rect.width(), font().width(m_tabs[i].title)), font().glyph_height() };
-        text_rect.inflate(6, 4);
-        text_rect.align_within(tab_button_content_rect, m_text_alignment);
-        text_rect.intersect(tab_button_content_rect);
-
-        painter.draw_text(text_rect, m_tabs[i].title, Gfx::TextAlignment::CenterLeft, palette().button_text(), Gfx::TextElision::Right);
+        painter.draw_text(tab_button_content_rect, m_tabs[i].title, m_text_alignment, palette().button_text(), Gfx::TextElision::Right);
 
         if (is_focused()) {
-            painter.draw_focus_rect(text_rect, palette().focus_outline());
+            Gfx::IntRect focus_rect { 0, 0, min(tab_button_content_rect.width(), font().width(m_tabs[i].title)), font().glyph_height() };
+            focus_rect.align_within(tab_button_content_rect, m_text_alignment);
+            focus_rect.inflate(6, 4);
+
+            painter.draw_focus_rect(focus_rect, palette().focus_outline());
         }
 
         if (m_tab_position == TabPosition::Top) {
@@ -270,8 +295,8 @@ void TabWidget::paint_event(PaintEvent& event)
         return;
 
     for (size_t i = 0; i < m_tabs.size(); ++i) {
-        bool hovered_close_button = m_hovered_close_button_index.has_value() && i == m_hovered_close_button_index.value();
-        bool pressed_close_button = m_pressed_close_button_index.has_value() && i == m_pressed_close_button_index.value();
+        bool hovered_close_button = i == m_hovered_close_button_index;
+        bool pressed_close_button = i == m_pressed_close_button_index;
         auto close_button_rect = this->close_button_rect(i);
 
         if (hovered_close_button)
@@ -339,7 +364,18 @@ Gfx::IntRect TabWidget::close_button_rect(size_t index) const
 
 int TabWidget::TabData::width(const Gfx::Font& font) const
 {
-    return 16 + font.width(title) + (icon ? (16 + 4) : 0);
+    auto width = 16 + font.width(title) + (icon ? (16 + 4) : 0);
+    // NOTE: This needs to always be an odd number, because the button rect
+    //       includes 3px of light and shadow on the left and right edges. If
+    //       the button rect width is not an odd number, the area left for the
+    //       text and the focus rect has an odd number of pixels, and this
+    //       causes the text (and subsequently the focus rect) to not be aligned
+    //       to the center perfectly.
+    if (width % 2 == 0) {
+        width++;
+    }
+
+    return width;
 }
 
 void TabWidget::mousedown_event(MouseEvent& event)
@@ -360,7 +396,7 @@ void TabWidget::mousedown_event(MouseEvent& event)
             set_active_widget(m_tabs[i].widget);
         } else if (event.button() == MouseButton::Middle) {
             auto* widget = m_tabs[i].widget;
-            deferred_invoke([this, widget](auto&) {
+            deferred_invoke([this, widget] {
                 if (on_middle_click && widget)
                     on_middle_click(*widget);
             });
@@ -381,7 +417,7 @@ void TabWidget::mouseup_event(MouseEvent& event)
 
     if (close_button_rect.contains(event.position())) {
         auto* widget = m_tabs[m_pressed_close_button_index.value()].widget;
-        deferred_invoke([this, widget](auto&) {
+        deferred_invoke([this, widget] {
             if (on_tab_close_click && widget)
                 on_tab_close_click(*widget);
         });
@@ -537,7 +573,7 @@ void TabWidget::context_menu_event(ContextMenuEvent& context_menu_event)
         if (!button_rect.contains(context_menu_event.position()))
             continue;
         auto* widget = m_tabs[i].widget;
-        deferred_invoke([this, widget, context_menu_event](auto&) {
+        deferred_invoke([this, widget, context_menu_event] {
             if (on_context_menu_request && widget)
                 on_context_menu_request(*widget, context_menu_event);
         });

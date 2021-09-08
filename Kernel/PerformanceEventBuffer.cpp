@@ -164,7 +164,7 @@ PerformanceEvent& PerformanceEventBuffer::at(size_t index)
 }
 
 template<typename Serializer>
-bool PerformanceEventBuffer::to_json_impl(Serializer& object) const
+KResult PerformanceEventBuffer::to_json_impl(Serializer& object) const
 {
     {
         auto strings = object.add_array("strings");
@@ -263,10 +263,10 @@ bool PerformanceEventBuffer::to_json_impl(Serializer& object) const
     }
     array.finish();
     object.finish();
-    return true;
+    return KSuccess;
 }
 
-bool PerformanceEventBuffer::to_json(KBufferBuilder& builder) const
+KResult PerformanceEventBuffer::to_json(KBufferBuilder& builder) const
 {
     JsonObjectSerializer object(builder);
     return to_json_impl(object);
@@ -274,15 +274,15 @@ bool PerformanceEventBuffer::to_json(KBufferBuilder& builder) const
 
 OwnPtr<PerformanceEventBuffer> PerformanceEventBuffer::try_create_with_size(size_t buffer_size)
 {
-    auto buffer = KBuffer::try_create_with_size(buffer_size, Memory::Region::Access::ReadWrite, "Performance events", AllocationStrategy::AllocateNow);
-    if (!buffer)
+    auto buffer_or_error = KBuffer::try_create_with_size(buffer_size, Memory::Region::Access::ReadWrite, "Performance events", AllocationStrategy::AllocateNow);
+    if (buffer_or_error.is_error())
         return {};
-    return adopt_own_if_nonnull(new (nothrow) PerformanceEventBuffer(buffer.release_nonnull()));
+    return adopt_own_if_nonnull(new (nothrow) PerformanceEventBuffer(buffer_or_error.release_value()));
 }
 
 void PerformanceEventBuffer::add_process(const Process& process, ProcessEventType event_type)
 {
-    ScopedSpinLock locker(process.address_space().get_lock());
+    SpinlockLocker locker(process.address_space().get_lock());
 
     String executable;
     if (process.executable())

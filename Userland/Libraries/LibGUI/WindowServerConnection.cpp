@@ -16,6 +16,7 @@
 #include <LibGUI/EmojiInputDialog.h>
 #include <LibGUI/Event.h>
 #include <LibGUI/Menu.h>
+#include <LibGUI/MouseTracker.h>
 #include <LibGUI/Window.h>
 #include <LibGUI/WindowServerConnection.h>
 #include <LibGfx/Bitmap.h>
@@ -321,6 +322,13 @@ void WindowServerConnection::screen_rects_changed(Vector<Gfx::IntRect> const& re
     });
 }
 
+void WindowServerConnection::applet_area_rect_changed(Gfx::IntRect const& rect)
+{
+    Window::for_each_window({}, [&](auto& window) {
+        Core::EventLoop::current().post_event(window, make<AppletAreaRectChangeEvent>(rect));
+    });
+}
+
 void WindowServerConnection::set_wallpaper_finished(bool)
 {
     // This is handled manually by Desktop::set_wallpaper().
@@ -357,10 +365,15 @@ void WindowServerConnection::display_link_notification()
         return;
 
     m_display_link_notification_pending = true;
-    deferred_invoke([this](auto&) {
+    deferred_invoke([this] {
         DisplayLink::notify({});
         m_display_link_notification_pending = false;
     });
+}
+
+void WindowServerConnection::track_mouse_move(Gfx::IntPoint const& mouse_position)
+{
+    MouseTracker::track_mouse_move({}, mouse_position);
 }
 
 void WindowServerConnection::ping()

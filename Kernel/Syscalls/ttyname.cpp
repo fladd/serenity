@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Process.h>
 #include <Kernel/TTY/MasterPTY.h>
 #include <Kernel/TTY/TTY.h>
@@ -15,35 +15,27 @@ KResultOr<FlatPtr> Process::sys$ttyname(int fd, Userspace<char*> buffer, size_t 
 {
     VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(tty);
-    auto description = fds().file_description(fd);
-    if (!description)
-        return EBADF;
+    auto description = TRY(fds().open_file_description(fd));
     if (!description->is_tty())
         return ENOTTY;
     auto tty_name = description->tty()->tty_name();
     if (size < tty_name.length() + 1)
         return ERANGE;
-    if (!copy_to_user(buffer, tty_name.characters(), tty_name.length() + 1))
-        return EFAULT;
-    return 0;
+    return copy_to_user(buffer, tty_name.characters(), tty_name.length() + 1);
 }
 
 KResultOr<FlatPtr> Process::sys$ptsname(int fd, Userspace<char*> buffer, size_t size)
 {
     VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(tty);
-    auto description = fds().file_description(fd);
-    if (!description)
-        return EBADF;
+    auto description = TRY(fds().open_file_description(fd));
     auto* master_pty = description->master_pty();
     if (!master_pty)
         return ENOTTY;
     auto pts_name = master_pty->pts_name();
     if (size < pts_name.length() + 1)
         return ERANGE;
-    if (!copy_to_user(buffer, pts_name.characters(), pts_name.length() + 1))
-        return EFAULT;
-    return 0;
+    return copy_to_user(buffer, pts_name.characters(), pts_name.length() + 1);
 }
 
 }

@@ -107,8 +107,11 @@ public:
 
     bool did_reach_stack_space_limit() const
     {
-        // Note: the 32 kiB used to be 16 kiB, but that turned out to not be enough with ASAN enabled.
+#ifdef HAS_ADDRESS_SANITIZER
         return m_stack_info.size_free() < 32 * KiB;
+#else
+        return m_stack_info.size_free() < 16 * KiB;
+#endif
     }
 
     void push_execution_context(ExecutionContext& context, GlobalObject& global_object)
@@ -116,7 +119,7 @@ public:
         VERIFY(!exception());
         // Ensure we got some stack space left, so the next function call doesn't kill us.
         if (did_reach_stack_space_limit())
-            throw_exception<Error>(global_object, "Call stack size limit exceeded");
+            throw_exception<Error>(global_object, ErrorType::CallStackSizeExceeded);
         else
             m_execution_context_stack.append(&context);
     }
@@ -266,6 +269,8 @@ public:
     Function<void()> on_call_stack_emptied;
     Function<void(const Promise&)> on_promise_unhandled_rejection;
     Function<void(const Promise&)> on_promise_rejection_handled;
+
+    void initialize_instance_elements(Object& object, FunctionObject& constructor);
 
 private:
     VM();

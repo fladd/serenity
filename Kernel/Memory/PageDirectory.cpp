@@ -27,7 +27,7 @@ static HashMap<FlatPtr, PageDirectory*>& cr3_map()
 
 RefPtr<PageDirectory> PageDirectory::find_by_cr3(FlatPtr cr3)
 {
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     return cr3_map().get(cr3).value_or({});
 }
 
@@ -42,14 +42,12 @@ UNMAP_AFTER_INIT NonnullRefPtr<PageDirectory> PageDirectory::must_create_kernel_
     return directory;
 }
 
-RefPtr<PageDirectory> PageDirectory::try_create_for_userspace(VirtualRangeAllocator const* parent_range_allocator)
+KResultOr<NonnullRefPtr<PageDirectory>> PageDirectory::try_create_for_userspace(VirtualRangeAllocator const* parent_range_allocator)
 {
     constexpr FlatPtr userspace_range_base = 0x00800000;
     FlatPtr const userspace_range_ceiling = USER_RANGE_CEILING;
 
-    auto directory = adopt_ref_if_nonnull(new (nothrow) PageDirectory);
-    if (!directory)
-        return {};
+    auto directory = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) PageDirectory));
 
     if (parent_range_allocator) {
         directory->m_range_allocator.initialize_from_parent(*parent_range_allocator);
@@ -60,22 +58,22 @@ RefPtr<PageDirectory> PageDirectory::try_create_for_userspace(VirtualRangeAlloca
     }
 
     // NOTE: Take the MM lock since we need it for quickmap.
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
 
 #if ARCH(X86_64)
     directory->m_pml4t = MM.allocate_user_physical_page();
     if (!directory->m_pml4t)
-        return {};
+        return ENOMEM;
 #endif
 
     directory->m_directory_table = MM.allocate_user_physical_page();
     if (!directory->m_directory_table)
-        return {};
+        return ENOMEM;
     auto kernel_pd_index = (kernel_mapping_base >> 30) & 0x1ffu;
     for (size_t i = 0; i < kernel_pd_index; i++) {
         directory->m_directory_pages[i] = MM.allocate_user_physical_page();
         if (!directory->m_directory_pages[i])
-            return {};
+            return ENOMEM;
     }
 
     // Share the top 1 GiB of kernel-only mappings (>=kernel_mapping_base)
@@ -159,7 +157,7 @@ UNMAP_AFTER_INIT void PageDirectory::allocate_kernel_directory()
 
 PageDirectory::~PageDirectory()
 {
-    ScopedSpinLock lock(s_mm_lock);
+    SpinlockLocker lock(s_mm_lock);
     if (m_space)
         cr3_map().remove(cr3());
 }

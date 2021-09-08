@@ -41,20 +41,20 @@ void TTY::set_default_termios()
     memcpy(m_termios.c_cc, ttydefchars, sizeof(ttydefchars));
 }
 
-KResultOr<size_t> TTY::read(FileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
+KResultOr<size_t> TTY::read(OpenFileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
 {
-    if (Process::current()->pgid() != pgid()) {
+    if (Process::current().pgid() != pgid()) {
         // FIXME: Should we propagate this error path somehow?
-        [[maybe_unused]] auto rc = Process::current()->send_signal(SIGTTIN, nullptr);
+        [[maybe_unused]] auto rc = Process::current().send_signal(SIGTTIN, nullptr);
         return EINTR;
     }
     if (m_input_buffer.size() < static_cast<size_t>(size))
         size = m_input_buffer.size();
 
     bool need_evaluate_block_conditions = false;
-    auto result = buffer.write_buffered<512>(size, [&](u8* data, size_t data_size) {
+    auto result = buffer.write_buffered<512>(size, [&](Bytes data) {
         size_t bytes_written = 0;
-        for (; bytes_written < data_size; ++bytes_written) {
+        for (; bytes_written < data.size(); ++bytes_written) {
             auto bit_index = m_input_buffer.head_index();
             bool is_special_character = m_special_character_bitmask[bit_index / 8] & (1 << (bit_index % 8));
             if (in_canonical_mode() && is_special_character) {
@@ -80,19 +80,19 @@ KResultOr<size_t> TTY::read(FileDescription&, u64, UserOrKernelBuffer& buffer, s
     return result;
 }
 
-KResultOr<size_t> TTY::write(FileDescription&, u64, const UserOrKernelBuffer& buffer, size_t size)
+KResultOr<size_t> TTY::write(OpenFileDescription&, u64, const UserOrKernelBuffer& buffer, size_t size)
 {
-    if (m_termios.c_lflag & TOSTOP && Process::current()->pgid() != pgid()) {
-        [[maybe_unused]] auto rc = Process::current()->send_signal(SIGTTOU, nullptr);
+    if (m_termios.c_lflag & TOSTOP && Process::current().pgid() != pgid()) {
+        [[maybe_unused]] auto rc = Process::current().send_signal(SIGTTOU, nullptr);
         return EINTR;
     }
 
     constexpr size_t num_chars = 256;
-    return buffer.read_buffered<num_chars>(size, [&](u8 const* data, size_t buffer_bytes) -> KResultOr<size_t> {
+    return buffer.read_buffered<num_chars>(size, [&](ReadonlyBytes bytes) -> KResultOr<size_t> {
         u8 modified_data[num_chars * 2];
         size_t modified_data_size = 0;
-        for (size_t i = 0; i < buffer_bytes; ++i) {
-            process_output(data[i], [&modified_data, &modified_data_size](u8 out_ch) {
+        for (const auto& byte : bytes) {
+            process_output(byte, [&modified_data, &modified_data_size](u8 out_ch) {
                 modified_data[modified_data_size++] = out_ch;
             });
         }
@@ -101,14 +101,14 @@ KResultOr<size_t> TTY::write(FileDescription&, u64, const UserOrKernelBuffer& bu
             return bytes_written_or_error;
         auto bytes_written = bytes_written_or_error.value();
         if (bytes_written == modified_data_size)
-            return buffer_bytes;
+            return bytes.size();
 
         // Degenerate case where we converted some newlines and encountered a partial write
 
         // Calculate where in the input buffer the last character would have been
         size_t pos_data = 0;
         for (size_t pos_modified_data = 0; pos_modified_data < bytes_written; ++pos_data) {
-            if (data[pos_data] == '\n')
+            if (bytes[pos_data] == '\n')
                 pos_modified_data += 2;
             else
                 pos_modified_data += 1;
@@ -139,7 +139,7 @@ void TTY::process_output(u8 ch, Functor put_char)
     }
 }
 
-bool TTY::can_read(const FileDescription&, size_t) const
+bool TTY::can_read(const OpenFileDescription&, size_t) const
 {
     if (in_canonical_mode()) {
         return m_available_lines > 0;
@@ -147,7 +147,7 @@ bool TTY::can_read(const FileDescription&, size_t) const
     return !m_input_buffer.is_empty();
 }
 
-bool TTY::can_write(const FileDescription&, size_t) const
+bool TTY::can_write(const OpenFileDescription&, size_t) const
 {
     return true;
 }
@@ -454,10 +454,10 @@ KResult TTY::set_termios(const termios& t)
     return rc;
 }
 
-KResult TTY::ioctl(FileDescription&, unsigned request, Userspace<void*> arg)
+KResult TTY::ioctl(OpenFileDescription&, unsigned request, Userspace<void*> arg)
 {
     REQUIRE_PROMISE(tty);
-    auto& current_process = *Process::current();
+    auto& current_process = Process::current();
     Userspace<termios*> user_termios;
     Userspace<winsize*> user_winsize;
 
@@ -472,9 +472,7 @@ KResult TTY::ioctl(FileDescription&, unsigned request, Userspace<void*> arg)
     case TIOCGPGRP: {
         auto user_pgid = static_ptr_cast<pid_t*>(arg);
         auto pgid = this->pgid().value();
-        if (!copy_to_user(user_pgid, &pgid))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(user_pgid, &pgid);
     }
     case TIOCSPGRP: {
         ProcessGroupID pgid = static_cast<pid_t>(arg.ptr());
@@ -506,17 +504,14 @@ KResult TTY::ioctl(FileDescription&, unsigned request, Userspace<void*> arg)
     }
     case TCGETS: {
         user_termios = static_ptr_cast<termios*>(arg);
-        if (!copy_to_user(user_termios, &m_termios))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(user_termios, &m_termios);
     }
     case TCSETS:
     case TCSETSF:
     case TCSETSW: {
         user_termios = static_ptr_cast<termios*>(arg);
         termios termios;
-        if (!copy_from_user(&termios, user_termios))
-            return EFAULT;
+        TRY(copy_from_user(&termios, user_termios));
         auto rc = set_termios(termios);
         if (request == TCSETSF)
             flush_input();
@@ -539,14 +534,11 @@ KResult TTY::ioctl(FileDescription&, unsigned request, Userspace<void*> arg)
         ws.ws_col = m_columns;
         ws.ws_xpixel = 0;
         ws.ws_ypixel = 0;
-        if (!copy_to_user(user_winsize, &ws))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(user_winsize, &ws);
     case TIOCSWINSZ: {
         user_winsize = static_ptr_cast<winsize*>(arg);
         winsize ws;
-        if (!copy_from_user(&ws, user_winsize))
-            return EFAULT;
+        TRY(copy_from_user(&ws, user_winsize));
         if (ws.ws_col == m_columns && ws.ws_row == m_rows)
             return KSuccess;
         m_rows = ws.ws_row;

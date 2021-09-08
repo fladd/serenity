@@ -6,7 +6,7 @@
 
 #include <AK/Atomic.h>
 #include <AK/Checked.h>
-#include <Kernel/Bus/PCI/Access.h>
+#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Bus/PCI/IDs.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Graphics/Bochs/GraphicsAdapter.h>
@@ -63,7 +63,7 @@ UNMAP_AFTER_INIT NonnullRefPtr<BochsGraphicsAdapter> BochsGraphicsAdapter::initi
 }
 
 UNMAP_AFTER_INIT BochsGraphicsAdapter::BochsGraphicsAdapter(PCI::Address pci_address)
-    : PCI::DeviceController(pci_address)
+    : PCI::Device(pci_address)
     , m_mmio_registers(PCI::get_BAR2(pci_address) & 0xfffffff0)
     , m_registers(Memory::map_typed_writable<BochsDisplayMMIORegisters volatile>(m_mmio_registers))
 {
@@ -208,7 +208,7 @@ bool BochsGraphicsAdapter::set_y_offset(size_t output_port_index, size_t y_offse
 
 void BochsGraphicsAdapter::enable_consoles()
 {
-    ScopedSpinLock lock(m_console_mode_switch_lock);
+    SpinlockLocker lock(m_console_mode_switch_lock);
     VERIFY(m_framebuffer_console);
     m_console_enabled = true;
     m_registers->bochs_regs.y_offset = 0;
@@ -218,7 +218,7 @@ void BochsGraphicsAdapter::enable_consoles()
 }
 void BochsGraphicsAdapter::disable_consoles()
 {
-    ScopedSpinLock lock(m_console_mode_switch_lock);
+    SpinlockLocker lock(m_console_mode_switch_lock);
     VERIFY(m_framebuffer_console);
     VERIFY(m_framebuffer_device);
     m_console_enabled = false;

@@ -7,7 +7,7 @@
 #include <AK/ScopeGuard.h>
 #include <AK/Time.h>
 #include <Kernel/Debug.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Process.h>
 
 namespace Kernel {
@@ -18,20 +18,16 @@ KResultOr<FlatPtr> Process::sys$select(Userspace<const Syscall::SC_select_params
 {
     VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(stdio);
-    Syscall::SC_select_params params {};
 
-    if (!copy_from_user(&params, user_params))
-        return EFAULT;
+    auto params = TRY(copy_typed_from_user(user_params));
 
     if (params.nfds < 0)
         return EINVAL;
 
     Thread::BlockTimeout timeout;
     if (params.timeout) {
-        Optional<Time> timeout_time = copy_time_from_user(params.timeout);
-        if (!timeout_time.has_value())
-            return EFAULT;
-        timeout = Thread::BlockTimeout(false, &timeout_time.value());
+        auto timeout_time = TRY(copy_time_from_user(params.timeout));
+        timeout = Thread::BlockTimeout(false, &timeout_time);
     }
 
     auto current_thread = Thread::current();
@@ -39,8 +35,7 @@ KResultOr<FlatPtr> Process::sys$select(Userspace<const Syscall::SC_select_params
     u32 previous_signal_mask = 0;
     if (params.sigmask) {
         sigset_t sigmask_copy;
-        if (!copy_from_user(&sigmask_copy, params.sigmask))
-            return EFAULT;
+        TRY(copy_from_user(&sigmask_copy, params.sigmask));
         previous_signal_mask = current_thread->update_signal_mask(sigmask_copy);
     }
     ScopeGuard rollback_signal_mask([&]() {
@@ -54,12 +49,14 @@ KResultOr<FlatPtr> Process::sys$select(Userspace<const Syscall::SC_select_params
     if (bytes_used > sizeof(fds_read))
         return EINVAL;
 
-    if (params.readfds && !copy_from_user(&fds_read, params.readfds, bytes_used))
-        return EFAULT;
-    if (params.writefds && !copy_from_user(&fds_write, params.writefds, bytes_used))
-        return EFAULT;
-    if (params.exceptfds && !copy_from_user(&fds_except, params.exceptfds, bytes_used))
-        return EFAULT;
+    if (params.readfds)
+        TRY(copy_from_user(&fds_read, params.readfds, bytes_used));
+
+    if (params.writefds)
+        TRY(copy_from_user(&fds_write, params.writefds, bytes_used));
+
+    if (params.exceptfds)
+        TRY(copy_from_user(&fds_except, params.exceptfds, bytes_used));
 
     Thread::SelectBlocker::FDVector fds_info;
     Vector<int, FD_SETSIZE> selected_fds;
@@ -74,12 +71,8 @@ KResultOr<FlatPtr> Process::sys$select(Userspace<const Syscall::SC_select_params
         if (block_flags == BlockFlags::None)
             continue;
 
-        auto description = fds().file_description(fd);
-        if (!description) {
-            dbgln("sys$select: Bad fd number {}", fd);
-            return EBADF;
-        }
-        if (!fds_info.try_append({ description.release_nonnull(), block_flags }))
+        auto description = TRY(fds().open_file_description(fd));
+        if (!fds_info.try_append({ move(description), block_flags }))
             return ENOMEM;
         if (!selected_fds.try_append(fd))
             return ENOMEM;
@@ -119,12 +112,12 @@ KResultOr<FlatPtr> Process::sys$select(Userspace<const Syscall::SC_select_params
         }
     }
 
-    if (params.readfds && !copy_to_user(params.readfds, &fds_read, bytes_used))
-        return EFAULT;
-    if (params.writefds && !copy_to_user(params.writefds, &fds_write, bytes_used))
-        return EFAULT;
-    if (params.exceptfds && !copy_to_user(params.exceptfds, &fds_except, bytes_used))
-        return EFAULT;
+    if (params.readfds)
+        TRY(copy_to_user(params.readfds, &fds_read, bytes_used));
+    if (params.writefds)
+        TRY(copy_to_user(params.writefds, &fds_write, bytes_used));
+    if (params.exceptfds)
+        TRY(copy_to_user(params.exceptfds, &fds_except, bytes_used));
     return marked_fd_count;
 }
 
@@ -132,25 +125,20 @@ KResultOr<FlatPtr> Process::sys$poll(Userspace<const Syscall::SC_poll_params*> u
 {
     VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(stdio);
-
-    Syscall::SC_poll_params params;
-    if (!copy_from_user(&params, user_params))
-        return EFAULT;
+    auto params = TRY(copy_typed_from_user(user_params));
 
     if (params.nfds >= fds().max_open())
         return ENOBUFS;
 
     Thread::BlockTimeout timeout;
     if (params.timeout) {
-        auto timeout_time = copy_time_from_user(params.timeout);
-        if (!timeout_time.has_value())
-            return EFAULT;
-        timeout = Thread::BlockTimeout(false, &timeout_time.value());
+        auto timeout_time = TRY(copy_time_from_user(params.timeout));
+        timeout = Thread::BlockTimeout(false, &timeout_time);
     }
 
     sigset_t sigmask = {};
-    if (params.sigmask && !copy_from_user(&sigmask, params.sigmask))
-        return EFAULT;
+    if (params.sigmask)
+        TRY(copy_from_user(&sigmask, params.sigmask));
 
     Vector<pollfd, FD_SETSIZE> fds_copy;
     if (params.nfds > 0) {
@@ -160,18 +148,13 @@ KResultOr<FlatPtr> Process::sys$poll(Userspace<const Syscall::SC_poll_params*> u
             return EFAULT;
         if (!fds_copy.try_resize(params.nfds))
             return ENOMEM;
-        if (!copy_from_user(fds_copy.data(), &params.fds[0], nfds_checked.value()))
-            return EFAULT;
+        TRY(copy_from_user(fds_copy.data(), &params.fds[0], nfds_checked.value()));
     }
 
     Thread::SelectBlocker::FDVector fds_info;
     for (size_t i = 0; i < params.nfds; i++) {
         auto& pfd = fds_copy[i];
-        auto description = fds().file_description(pfd.fd);
-        if (!description) {
-            dbgln("sys$poll: Bad fd number {}", pfd.fd);
-            return EBADF;
-        }
+        auto description = TRY(fds().open_file_description(pfd.fd));
         BlockFlags block_flags = BlockFlags::Exception; // always want POLLERR, POLLHUP, POLLNVAL
         if (pfd.events & POLLIN)
             block_flags |= BlockFlags::Read;
@@ -179,7 +162,7 @@ KResultOr<FlatPtr> Process::sys$poll(Userspace<const Syscall::SC_poll_params*> u
             block_flags |= BlockFlags::Write;
         if (pfd.events & POLLPRI)
             block_flags |= BlockFlags::ReadPriority;
-        if (!fds_info.try_append({ description.release_nonnull(), block_flags }))
+        if (!fds_info.try_append({ move(description), block_flags }))
             return ENOMEM;
     }
 
@@ -234,8 +217,8 @@ KResultOr<FlatPtr> Process::sys$poll(Userspace<const Syscall::SC_poll_params*> u
             fds_with_revents++;
     }
 
-    if (params.nfds > 0 && !copy_to_user(&params.fds[0], fds_copy.data(), params.nfds * sizeof(pollfd)))
-        return EFAULT;
+    if (params.nfds > 0)
+        TRY(copy_to_user(&params.fds[0], fds_copy.data(), params.nfds * sizeof(pollfd)));
 
     return fds_with_revents;
 }

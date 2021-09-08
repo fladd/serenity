@@ -21,7 +21,7 @@ class Client {
 public:
     Client(StringView host, unsigned port, bool start_with_tls);
 
-    Optional<RefPtr<Promise<Empty>>> connect();
+    RefPtr<Promise<Empty>> connect();
     RefPtr<Promise<Optional<Response>>> send_command(Command&&);
     RefPtr<Promise<Optional<Response>>> send_simple_command(CommandType);
     void send_raw(StringView data);
@@ -69,7 +69,7 @@ private:
     // Not yet sent
     Vector<Command> m_command_queue {};
 
-    RefPtr<Promise<bool>> m_connect_pending {};
+    RefPtr<Promise<Empty>> m_connect_pending {};
 
     ByteBuffer m_buffer;
     Parser m_parser;

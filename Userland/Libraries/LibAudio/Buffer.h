@@ -60,6 +60,12 @@ struct Frame {
         right *= pct;
     }
 
+    // FIXME: This is temporary until we have log scaling
+    Frame scaled(double fraction) const
+    {
+        return Frame { left * fraction, right * fraction };
+    }
+
     Frame& operator+=(const Frame& other)
     {
         left += other.left;
@@ -105,6 +111,9 @@ public:
 
     void reset();
 
+    u32 source() const { return m_source; }
+    u32 target() const { return m_target; }
+
 private:
     const u32 m_source;
     const u32 m_target;
@@ -113,11 +122,11 @@ private:
     SampleType m_last_sample_r;
 };
 
-// A buffer of audio samples, normalized to 44100hz.
+// A buffer of audio samples.
 class Buffer : public RefCounted<Buffer> {
 public:
-    static RefPtr<Buffer> from_pcm_data(ReadonlyBytes data, ResampleHelper<double>& resampler, int num_channels, PcmSampleFormat sample_format);
-    static RefPtr<Buffer> from_pcm_stream(InputMemoryStream& stream, ResampleHelper<double>& resampler, int num_channels, PcmSampleFormat sample_format, int num_samples);
+    static RefPtr<Buffer> from_pcm_data(ReadonlyBytes data, int num_channels, PcmSampleFormat sample_format);
+    static RefPtr<Buffer> from_pcm_stream(InputMemoryStream& stream, int num_channels, PcmSampleFormat sample_format, int num_samples);
     static NonnullRefPtr<Buffer> create_with_samples(Vector<Frame>&& samples)
     {
         return adopt_ref(*new Buffer(move(samples)));
@@ -156,5 +165,8 @@ private:
     const i32 m_id;
     const int m_sample_count;
 };
+
+// This only works for double resamplers, and therefore cannot be part of the class
+NonnullRefPtr<Buffer> resample_buffer(ResampleHelper<double>& resampler, Buffer const& to_resample);
 
 }

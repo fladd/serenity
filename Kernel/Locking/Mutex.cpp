@@ -8,7 +8,7 @@
 #include <Kernel/KSyms.h>
 #include <Kernel/Locking/LockLocation.h>
 #include <Kernel/Locking/Mutex.h>
-#include <Kernel/Locking/SpinLock.h>
+#include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Thread.h>
 
 namespace Kernel {
@@ -17,11 +17,13 @@ void Mutex::lock(Mode mode, [[maybe_unused]] LockLocation const& location)
 {
     // NOTE: This may be called from an interrupt handler (not an IRQ handler)
     // and also from within critical sections!
-    VERIFY(!Processor::current().in_irq());
+    VERIFY(!Processor::current_in_irq());
+    if constexpr (LOCK_IN_CRITICAL_DEBUG)
+        VERIFY_INTERRUPTS_ENABLED();
     VERIFY(mode != Mode::Unlocked);
     auto current_thread = Thread::current();
 
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     bool did_block = false;
     Mode current_mode = m_mode;
     switch (current_mode) {
@@ -143,9 +145,11 @@ void Mutex::unlock()
 {
     // NOTE: This may be called from an interrupt handler (not an IRQ handler)
     // and also from within critical sections!
-    VERIFY(!Processor::current().in_irq());
+    if constexpr (LOCK_IN_CRITICAL_DEBUG)
+        VERIFY_INTERRUPTS_ENABLED();
+    VERIFY(!Processor::current_in_irq());
     auto current_thread = Thread::current();
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     Mode current_mode = m_mode;
     if constexpr (LOCK_TRACE_DEBUG) {
         if (current_mode == Mode::Shared)
@@ -196,8 +200,10 @@ void Mutex::unlock()
     }
 }
 
-void Mutex::block(Thread& current_thread, Mode mode, ScopedSpinLock<SpinLock<u8>>& lock, u32 requested_locks)
+void Mutex::block(Thread& current_thread, Mode mode, SpinlockLocker<Spinlock>& lock, u32 requested_locks)
 {
+    if constexpr (LOCK_IN_CRITICAL_DEBUG)
+        VERIFY_INTERRUPTS_ENABLED();
     auto& blocked_thread_list = thread_list_for_mode(mode);
     VERIFY(!blocked_thread_list.contains(current_thread));
     blocked_thread_list.append(current_thread);
@@ -253,9 +259,9 @@ auto Mutex::force_unlock_if_locked(u32& lock_count_to_restore) -> Mode
 {
     // NOTE: This may be called from an interrupt handler (not an IRQ handler)
     // and also from within critical sections!
-    VERIFY(!Processor::current().in_irq());
+    VERIFY(!Processor::current_in_irq());
     auto current_thread = Thread::current();
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     auto current_mode = m_mode;
     switch (current_mode) {
     case Mode::Exclusive: {
@@ -316,10 +322,10 @@ void Mutex::restore_lock(Mode mode, u32 lock_count, [[maybe_unused]] LockLocatio
 {
     VERIFY(mode != Mode::Unlocked);
     VERIFY(lock_count > 0);
-    VERIFY(!Processor::current().in_irq());
+    VERIFY(!Processor::current_in_irq());
     auto current_thread = Thread::current();
     bool did_block = false;
-    ScopedSpinLock lock(m_lock);
+    SpinlockLocker lock(m_lock);
     switch (mode) {
     case Mode::Exclusive: {
         auto previous_mode = m_mode;

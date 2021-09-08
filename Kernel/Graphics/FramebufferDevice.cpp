@@ -25,9 +25,9 @@ NonnullRefPtr<FramebufferDevice> FramebufferDevice::create(const GraphicsDevice&
     return adopt_ref(*new FramebufferDevice(adapter, output_port_index, paddr, width, height, pitch));
 }
 
-KResultOr<Memory::Region*> FramebufferDevice::mmap(Process& process, FileDescription&, Memory::VirtualRange const& range, u64 offset, int prot, bool shared)
+KResultOr<Memory::Region*> FramebufferDevice::mmap(Process& process, OpenFileDescription&, Memory::VirtualRange const& range, u64 offset, int prot, bool shared)
 {
-    ScopedSpinLock lock(m_activation_lock);
+    SpinlockLocker lock(m_activation_lock);
     REQUIRE_PROMISE(video);
     if (!shared)
         return ENODEV;
@@ -36,28 +36,11 @@ KResultOr<Memory::Region*> FramebufferDevice::mmap(Process& process, FileDescrip
     if (range.size() != Memory::page_round_up(framebuffer_size_in_bytes()))
         return EOVERFLOW;
 
-    auto maybe_vmobject = Memory::AnonymousVMObject::try_create_for_physical_range(m_framebuffer_address, Memory::page_round_up(framebuffer_size_in_bytes()));
-    if (maybe_vmobject.is_error())
-        return maybe_vmobject.error();
-    m_userspace_real_framebuffer_vmobject = maybe_vmobject.release_value();
-
-    auto maybe_real_framebuffer_vmobject = Memory::AnonymousVMObject::try_create_for_physical_range(m_framebuffer_address, Memory::page_round_up(framebuffer_size_in_bytes()));
-    if (maybe_real_framebuffer_vmobject.is_error())
-        return maybe_real_framebuffer_vmobject.error();
-    m_real_framebuffer_vmobject = maybe_real_framebuffer_vmobject.release_value();
-
-    auto maybe_swapped_framebuffer_vmobject = Memory::AnonymousVMObject::try_create_with_size(Memory::page_round_up(framebuffer_size_in_bytes()), AllocationStrategy::AllocateNow);
-    if (maybe_swapped_framebuffer_vmobject.is_error())
-        return maybe_swapped_framebuffer_vmobject.error();
-    m_swapped_framebuffer_vmobject = maybe_swapped_framebuffer_vmobject.release_value();
-
-    m_real_framebuffer_region = MM.allocate_kernel_region_with_vmobject(*m_real_framebuffer_vmobject, Memory::page_round_up(framebuffer_size_in_bytes()), "Framebuffer", Memory::Region::Access::ReadWrite);
-    if (!m_real_framebuffer_region)
-        return ENOMEM;
-
-    m_swapped_framebuffer_region = MM.allocate_kernel_region_with_vmobject(*m_swapped_framebuffer_vmobject, Memory::page_round_up(framebuffer_size_in_bytes()), "Framebuffer Swap (Blank)", Memory::Region::Access::ReadWrite);
-    if (!m_swapped_framebuffer_region)
-        return ENOMEM;
+    m_userspace_real_framebuffer_vmobject = TRY(Memory::AnonymousVMObject::try_create_for_physical_range(m_framebuffer_address, Memory::page_round_up(framebuffer_size_in_bytes())));
+    m_real_framebuffer_vmobject = TRY(Memory::AnonymousVMObject::try_create_for_physical_range(m_framebuffer_address, Memory::page_round_up(framebuffer_size_in_bytes())));
+    m_swapped_framebuffer_vmobject = TRY(Memory::AnonymousVMObject::try_create_with_size(Memory::page_round_up(framebuffer_size_in_bytes()), AllocationStrategy::AllocateNow));
+    m_real_framebuffer_region = TRY(MM.allocate_kernel_region_with_vmobject(*m_real_framebuffer_vmobject, Memory::page_round_up(framebuffer_size_in_bytes()), "Framebuffer", Memory::Region::Access::ReadWrite));
+    m_swapped_framebuffer_region = TRY(MM.allocate_kernel_region_with_vmobject(*m_swapped_framebuffer_vmobject, Memory::page_round_up(framebuffer_size_in_bytes()), "Framebuffer Swap (Blank)", Memory::Region::Access::ReadWrite));
 
     RefPtr<Memory::VMObject> chosen_vmobject;
     if (m_graphical_writes_enabled) {
@@ -65,22 +48,19 @@ KResultOr<Memory::Region*> FramebufferDevice::mmap(Process& process, FileDescrip
     } else {
         chosen_vmobject = m_swapped_framebuffer_vmobject;
     }
-    auto result = process.address_space().allocate_region_with_vmobject(
+    m_userspace_framebuffer_region = TRY(process.address_space().allocate_region_with_vmobject(
         range,
         chosen_vmobject.release_nonnull(),
         0,
         "Framebuffer",
         prot,
-        shared);
-    if (!result.is_error()) {
-        m_userspace_framebuffer_region = result.value();
-    }
-    return result;
+        shared));
+    return m_userspace_framebuffer_region;
 }
 
 void FramebufferDevice::deactivate_writes()
 {
-    ScopedSpinLock lock(m_activation_lock);
+    SpinlockLocker lock(m_activation_lock);
     if (!m_userspace_framebuffer_region)
         return;
     memcpy(m_swapped_framebuffer_region->vaddr().as_ptr(), m_real_framebuffer_region->vaddr().as_ptr(), Memory::page_round_up(framebuffer_size_in_bytes()));
@@ -91,7 +71,7 @@ void FramebufferDevice::deactivate_writes()
 }
 void FramebufferDevice::activate_writes()
 {
-    ScopedSpinLock lock(m_activation_lock);
+    SpinlockLocker lock(m_activation_lock);
     if (!m_userspace_framebuffer_region || !m_real_framebuffer_vmobject)
         return;
     // restore the image we had in the void area
@@ -104,33 +84,14 @@ void FramebufferDevice::activate_writes()
     m_graphical_writes_enabled = true;
 }
 
-String FramebufferDevice::device_name() const
-{
-    return String::formatted("fb{}", minor());
-}
-
 UNMAP_AFTER_INIT KResult FramebufferDevice::initialize()
 {
     // FIXME: Would be nice to be able to unify this with mmap above, but this
     //        function is UNMAP_AFTER_INIT for the time being.
-    auto maybe_real_framebuffer_vmobject = Memory::AnonymousVMObject::try_create_for_physical_range(m_framebuffer_address, Memory::page_round_up(framebuffer_size_in_bytes()));
-    if (maybe_real_framebuffer_vmobject.is_error())
-        return maybe_real_framebuffer_vmobject.error();
-    m_real_framebuffer_vmobject = maybe_real_framebuffer_vmobject.release_value();
-
-    auto maybe_swapped_framebuffer_vmobject = Memory::AnonymousVMObject::try_create_with_size(Memory::page_round_up(framebuffer_size_in_bytes()), AllocationStrategy::AllocateNow);
-    if (maybe_swapped_framebuffer_vmobject.is_error())
-        return maybe_swapped_framebuffer_vmobject.error();
-    m_swapped_framebuffer_vmobject = maybe_swapped_framebuffer_vmobject.release_value();
-
-    m_real_framebuffer_region = MM.allocate_kernel_region_with_vmobject(*m_real_framebuffer_vmobject, Memory::page_round_up(framebuffer_size_in_bytes()), "Framebuffer", Memory::Region::Access::ReadWrite);
-    if (!m_real_framebuffer_region)
-        return ENOMEM;
-
-    m_swapped_framebuffer_region = MM.allocate_kernel_region_with_vmobject(*m_swapped_framebuffer_vmobject, Memory::page_round_up(framebuffer_size_in_bytes()), "Framebuffer Swap (Blank)", Memory::Region::Access::ReadWrite);
-    if (!m_swapped_framebuffer_region)
-        return ENOMEM;
-
+    m_real_framebuffer_vmobject = TRY(Memory::AnonymousVMObject::try_create_for_physical_range(m_framebuffer_address, Memory::page_round_up(framebuffer_size_in_bytes())));
+    m_swapped_framebuffer_vmobject = TRY(Memory::AnonymousVMObject::try_create_with_size(Memory::page_round_up(framebuffer_size_in_bytes()), AllocationStrategy::AllocateNow));
+    m_real_framebuffer_region = TRY(MM.allocate_kernel_region_with_vmobject(*m_real_framebuffer_vmobject, Memory::page_round_up(framebuffer_size_in_bytes()), "Framebuffer", Memory::Region::Access::ReadWrite));
+    m_swapped_framebuffer_region = TRY(MM.allocate_kernel_region_with_vmobject(*m_swapped_framebuffer_vmobject, Memory::page_round_up(framebuffer_size_in_bytes()), "Framebuffer Swap (Blank)", Memory::Region::Access::ReadWrite));
     return KSuccess;
 }
 
@@ -157,22 +118,19 @@ size_t FramebufferDevice::framebuffer_size_in_bytes() const
     return m_framebuffer_pitch * m_framebuffer_height;
 }
 
-KResult FramebufferDevice::ioctl(FileDescription&, unsigned request, Userspace<void*> arg)
+KResult FramebufferDevice::ioctl(OpenFileDescription&, unsigned request, Userspace<void*> arg)
 {
     REQUIRE_PROMISE(video);
     switch (request) {
     case FB_IOCTL_GET_SIZE_IN_BYTES: {
         auto user_size = static_ptr_cast<size_t*>(arg);
         size_t value = framebuffer_size_in_bytes();
-        if (!copy_to_user(user_size, &value))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(user_size, &value);
     }
     case FB_IOCTL_GET_BUFFER: {
         auto user_index = static_ptr_cast<int*>(arg);
         int value = m_y_offset == 0 ? 0 : 1;
-        if (!copy_to_user(user_index, &value))
-            return EFAULT;
+        TRY(copy_to_user(user_index, &value));
         if (!m_graphics_adapter->double_framebuffering_capable())
             return ENOTIMPL;
         return KSuccess;
@@ -192,15 +150,12 @@ KResult FramebufferDevice::ioctl(FileDescription&, unsigned request, Userspace<v
         resolution.pitch = m_framebuffer_pitch;
         resolution.width = m_framebuffer_width;
         resolution.height = m_framebuffer_height;
-        if (!copy_to_user(user_resolution, &resolution))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(user_resolution, &resolution);
     }
     case FB_IOCTL_SET_RESOLUTION: {
         auto user_resolution = static_ptr_cast<FBResolution*>(arg);
         FBResolution resolution;
-        if (!copy_from_user(&resolution, user_resolution))
-            return EFAULT;
+        TRY(copy_from_user(&resolution, user_resolution));
         if (resolution.width > MAX_RESOLUTION_WIDTH || resolution.height > MAX_RESOLUTION_HEIGHT)
             return EINVAL;
 
@@ -208,8 +163,7 @@ KResult FramebufferDevice::ioctl(FileDescription&, unsigned request, Userspace<v
             resolution.pitch = m_framebuffer_pitch;
             resolution.width = m_framebuffer_width;
             resolution.height = m_framebuffer_height;
-            if (!copy_to_user(user_resolution, &resolution))
-                return EFAULT;
+            TRY(copy_to_user(user_resolution, &resolution));
             return ENOTIMPL;
         }
 
@@ -223,8 +177,7 @@ KResult FramebufferDevice::ioctl(FileDescription&, unsigned request, Userspace<v
             resolution.pitch = m_framebuffer_pitch;
             resolution.width = m_framebuffer_width;
             resolution.height = m_framebuffer_height;
-            if (!copy_to_user(user_resolution, &resolution))
-                return EFAULT;
+            TRY(copy_to_user(user_resolution, &resolution));
             return EINVAL;
         }
         m_framebuffer_width = resolution.width;
@@ -235,21 +188,16 @@ KResult FramebufferDevice::ioctl(FileDescription&, unsigned request, Userspace<v
         resolution.pitch = m_framebuffer_pitch;
         resolution.width = m_framebuffer_width;
         resolution.height = m_framebuffer_height;
-        if (!copy_to_user(user_resolution, &resolution))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(user_resolution, &resolution);
     }
     case FB_IOCTL_GET_BUFFER_OFFSET: {
         auto user_buffer_offset = static_ptr_cast<FBBufferOffset*>(arg);
         FBBufferOffset buffer_offset;
-        if (!copy_from_user(&buffer_offset, user_buffer_offset))
-            return EFAULT;
+        TRY(copy_from_user(&buffer_offset, user_buffer_offset));
         if (buffer_offset.buffer_index != 0 && buffer_offset.buffer_index != 1)
             return EINVAL;
         buffer_offset.offset = (size_t)buffer_offset.buffer_index * m_framebuffer_pitch * m_framebuffer_height;
-        if (!copy_to_user(user_buffer_offset, &buffer_offset))
-            return EFAULT;
-        return KSuccess;
+        return copy_to_user(user_buffer_offset, &buffer_offset);
     }
     case FB_IOCTL_FLUSH_BUFFERS:
         return ENOTSUP;

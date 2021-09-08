@@ -29,6 +29,9 @@
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/GlobalObject.h>
+#include <LibJS/Runtime/Intl/DisplayNames.h>
+#include <LibJS/Runtime/Intl/ListFormat.h>
+#include <LibJS/Runtime/Intl/Locale.h>
 #include <LibJS/Runtime/Map.h>
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/NumberObject.h>
@@ -46,7 +49,9 @@
 #include <LibJS/Runtime/Temporal/Instant.h>
 #include <LibJS/Runtime/Temporal/PlainDate.h>
 #include <LibJS/Runtime/Temporal/PlainDateTime.h>
+#include <LibJS/Runtime/Temporal/PlainMonthDay.h>
 #include <LibJS/Runtime/Temporal/PlainTime.h>
+#include <LibJS/Runtime/Temporal/PlainYearMonth.h>
 #include <LibJS/Runtime/Temporal/TimeZone.h>
 #include <LibJS/Runtime/Temporal/ZonedDateTime.h>
 #include <LibJS/Runtime/TypedArray.h>
@@ -458,25 +463,51 @@ static void print_temporal_instant(JS::Object const& object, HashTable<JS::Objec
     print_value(&instant.nanoseconds(), seen_objects);
 }
 
-static void print_temporal_plain_date(JS::Object const& object, HashTable<JS::Object*>&)
+static void print_temporal_plain_date(JS::Object const& object, HashTable<JS::Object*>& seen_objects)
 {
     auto& plain_date = static_cast<JS::Temporal::PlainDate const&>(object);
     print_type("Temporal.PlainDate");
     out(" \033[34;1m{:04}-{:02}-{:02}\033[0m", plain_date.iso_year(), plain_date.iso_month(), plain_date.iso_day());
+    out("\n  calendar: ");
+    print_value(&plain_date.calendar(), seen_objects);
 }
 
-static void print_temporal_plain_date_time(JS::Object const& object, HashTable<JS::Object*>&)
+static void print_temporal_plain_date_time(JS::Object const& object, HashTable<JS::Object*>& seen_objects)
 {
     auto& plain_date_time = static_cast<JS::Temporal::PlainDateTime const&>(object);
     print_type("Temporal.PlainDateTime");
     out(" \033[34;1m{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}{:03}{:03}\033[0m", plain_date_time.iso_year(), plain_date_time.iso_month(), plain_date_time.iso_day(), plain_date_time.iso_hour(), plain_date_time.iso_minute(), plain_date_time.iso_second(), plain_date_time.iso_millisecond(), plain_date_time.iso_microsecond(), plain_date_time.iso_nanosecond());
+    out("\n  calendar: ");
+    print_value(&plain_date_time.calendar(), seen_objects);
 }
 
-static void print_temporal_plain_time(JS::Object const& object, HashTable<JS::Object*>&)
+static void print_temporal_plain_month_day(JS::Object const& object, HashTable<JS::Object*>& seen_objects)
+{
+    auto& plain_month_day = static_cast<JS::Temporal::PlainMonthDay const&>(object);
+    print_type("Temporal.PlainMonthDay");
+    // Also has an [[ISOYear]] internal slot, but showing that here seems rather unexpected.
+    out(" \033[34;1m{:02}-{:02}\033[0m", plain_month_day.iso_month(), plain_month_day.iso_day());
+    out("\n  calendar: ");
+    print_value(&plain_month_day.calendar(), seen_objects);
+}
+
+static void print_temporal_plain_time(JS::Object const& object, HashTable<JS::Object*>& seen_objects)
 {
     auto& plain_time = static_cast<JS::Temporal::PlainTime const&>(object);
     print_type("Temporal.PlainTime");
     out(" \033[34;1m{:02}:{:02}:{:02}.{:03}{:03}{:03}\033[0m", plain_time.iso_hour(), plain_time.iso_minute(), plain_time.iso_second(), plain_time.iso_millisecond(), plain_time.iso_microsecond(), plain_time.iso_nanosecond());
+    out("\n  calendar: ");
+    print_value(&plain_time.calendar(), seen_objects);
+}
+
+static void print_temporal_plain_year_month(JS::Object const& object, HashTable<JS::Object*>& seen_objects)
+{
+    auto& plain_year_month = static_cast<JS::Temporal::PlainYearMonth const&>(object);
+    print_type("Temporal.PlainYearMonth");
+    // Also has an [[ISODay]] internal slot, but showing that here seems rather unexpected.
+    out(" \033[34;1m{:04}-{:02}\033[0m", plain_year_month.iso_year(), plain_year_month.iso_month());
+    out("\n  calendar: ");
+    print_value(&plain_year_month.calendar(), seen_objects);
 }
 
 static void print_temporal_time_zone(JS::Object const& object, HashTable<JS::Object*>& seen_objects)
@@ -501,6 +532,62 @@ static void print_temporal_zoned_date_time(JS::Object const& object, HashTable<J
     print_value(&zoned_date_time.time_zone(), seen_objects);
     out("\n  calendar: ");
     print_value(&zoned_date_time.calendar(), seen_objects);
+}
+
+static void print_intl_display_names(JS::Object const& object, HashTable<JS::Object*>& seen_objects)
+{
+    auto& display_names = static_cast<JS::Intl::DisplayNames const&>(object);
+    print_type("Intl.DisplayNames");
+    out("\n  locale: ");
+    print_value(js_string(object.vm(), display_names.locale()), seen_objects);
+    out("\n  type: ");
+    print_value(js_string(object.vm(), display_names.type_string()), seen_objects);
+    out("\n  style: ");
+    print_value(js_string(object.vm(), display_names.style_string()), seen_objects);
+    out("\n  fallback: ");
+    print_value(js_string(object.vm(), display_names.fallback_string()), seen_objects);
+}
+
+static void print_intl_locale(JS::Object const& object, HashTable<JS::Object*>& seen_objects)
+{
+    auto& locale = static_cast<JS::Intl::Locale const&>(object);
+    print_type("Intl.Locale");
+    out("\n  locale: ");
+    print_value(js_string(object.vm(), locale.locale()), seen_objects);
+    if (locale.has_calendar()) {
+        out("\n  calendar: ");
+        print_value(js_string(object.vm(), locale.calendar()), seen_objects);
+    }
+    if (locale.has_case_first()) {
+        out("\n  caseFirst: ");
+        print_value(js_string(object.vm(), locale.case_first()), seen_objects);
+    }
+    if (locale.has_collation()) {
+        out("\n  collation: ");
+        print_value(js_string(object.vm(), locale.collation()), seen_objects);
+    }
+    if (locale.has_hour_cycle()) {
+        out("\n  hourCycle: ");
+        print_value(js_string(object.vm(), locale.hour_cycle()), seen_objects);
+    }
+    if (locale.has_numbering_system()) {
+        out("\n  numberingSystem: ");
+        print_value(js_string(object.vm(), locale.numbering_system()), seen_objects);
+    }
+    out("\n  numeric: ");
+    print_value(JS::Value(locale.numeric()), seen_objects);
+}
+
+static void print_intl_list_format(JS::Object const& object, HashTable<JS::Object*>& seen_objects)
+{
+    auto& list_format = static_cast<JS::Intl::ListFormat const&>(object);
+    print_type("Intl.ListFormat");
+    out("\n  locale: ");
+    print_value(js_string(object.vm(), list_format.locale()), seen_objects);
+    out("\n  type: ");
+    print_value(js_string(object.vm(), list_format.type_string()), seen_objects);
+    out("\n  style: ");
+    print_value(js_string(object.vm(), list_format.style_string()), seen_objects);
 }
 
 static void print_primitive_wrapper_object(FlyString const& name, JS::Object const& object, HashTable<JS::Object*>& seen_objects)
@@ -570,12 +657,22 @@ static void print_value(JS::Value value, HashTable<JS::Object*>& seen_objects)
             return print_temporal_plain_date(object, seen_objects);
         if (is<JS::Temporal::PlainDateTime>(object))
             return print_temporal_plain_date_time(object, seen_objects);
+        if (is<JS::Temporal::PlainMonthDay>(object))
+            return print_temporal_plain_month_day(object, seen_objects);
         if (is<JS::Temporal::PlainTime>(object))
             return print_temporal_plain_time(object, seen_objects);
+        if (is<JS::Temporal::PlainYearMonth>(object))
+            return print_temporal_plain_year_month(object, seen_objects);
         if (is<JS::Temporal::TimeZone>(object))
             return print_temporal_time_zone(object, seen_objects);
         if (is<JS::Temporal::ZonedDateTime>(object))
             return print_temporal_zoned_date_time(object, seen_objects);
+        if (is<JS::Intl::DisplayNames>(object))
+            return print_intl_display_names(object, seen_objects);
+        if (is<JS::Intl::Locale>(object))
+            return print_intl_locale(object, seen_objects);
+        if (is<JS::Intl::ListFormat>(object))
+            return print_intl_list_format(object, seen_objects);
         return print_object(object, seen_objects);
     }
 
@@ -991,7 +1088,7 @@ int main(int argc, char** argv)
             JS::Lexer lexer(line);
             bool indenters_starting_line = true;
             for (JS::Token token = lexer.next(); token.type() != JS::TokenType::Eof; token = lexer.next()) {
-                auto length = token.value().length();
+                auto length = Utf8View { token.value() }.length();
                 auto start = token.line_column() - 1;
                 auto end = start + length;
                 if (indenters_starting_line) {
@@ -1004,13 +1101,13 @@ int main(int argc, char** argv)
 
                 switch (token.category()) {
                 case JS::TokenCategory::Invalid:
-                    stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Red), Line::Style::Underline });
+                    stylize({ start, end, Line::Span::CodepointOriented }, { Line::Style::Foreground(Line::Style::XtermColor::Red), Line::Style::Underline });
                     break;
                 case JS::TokenCategory::Number:
-                    stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Magenta) });
+                    stylize({ start, end, Line::Span::CodepointOriented }, { Line::Style::Foreground(Line::Style::XtermColor::Magenta) });
                     break;
                 case JS::TokenCategory::String:
-                    stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Green), Line::Style::Bold });
+                    stylize({ start, end, Line::Span::CodepointOriented }, { Line::Style::Foreground(Line::Style::XtermColor::Green), Line::Style::Bold });
                     break;
                 case JS::TokenCategory::Punctuation:
                     break;
@@ -1020,18 +1117,18 @@ int main(int argc, char** argv)
                     switch (token.type()) {
                     case JS::TokenType::BoolLiteral:
                     case JS::TokenType::NullLiteral:
-                        stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Yellow), Line::Style::Bold });
+                        stylize({ start, end, Line::Span::CodepointOriented }, { Line::Style::Foreground(Line::Style::XtermColor::Yellow), Line::Style::Bold });
                         break;
                     default:
-                        stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Blue), Line::Style::Bold });
+                        stylize({ start, end, Line::Span::CodepointOriented }, { Line::Style::Foreground(Line::Style::XtermColor::Blue), Line::Style::Bold });
                         break;
                     }
                     break;
                 case JS::TokenCategory::ControlKeyword:
-                    stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Cyan), Line::Style::Italic });
+                    stylize({ start, end, Line::Span::CodepointOriented }, { Line::Style::Foreground(Line::Style::XtermColor::Cyan), Line::Style::Italic });
                     break;
                 case JS::TokenCategory::Identifier:
-                    stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::White), Line::Style::Bold });
+                    stylize({ start, end, Line::Span::CodepointOriented }, { Line::Style::Foreground(Line::Style::XtermColor::White), Line::Style::Bold });
                     break;
                 default:
                     break;

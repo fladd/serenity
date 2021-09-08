@@ -5,10 +5,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Variant.h>
 #include <LibCrypto/BigInt/SignedBigInteger.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Temporal/AbstractOperations.h>
+#include <LibJS/Runtime/Temporal/Calendar.h>
 #include <LibJS/Runtime/Temporal/Instant.h>
 #include <LibJS/Runtime/Temporal/InstantConstructor.h>
 #include <LibJS/Runtime/Temporal/PlainDateTime.h>
@@ -189,41 +191,53 @@ BigInt* add_instant(GlobalObject& global_object, BigInt const& epoch_nanoseconds
     return result;
 }
 
+// 8.5.7 DifferenceInstant ( ns1, ns2, roundingIncrement, smallestUnit, roundingMode ), https://tc39.es/proposal-temporal/#sec-temporal-differenceinstant
+BigInt* difference_instant(GlobalObject& global_object, BigInt const& nanoseconds1, BigInt const& nanoseconds2, u64 rounding_increment, StringView smallest_unit, StringView rounding_mode)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: Type(ns1) is BigInt.
+    // 2. Assert: Type(ns2) is BigInt.
+
+    // 3. Return ! RoundTemporalInstant(ns2 − ns1, roundingIncrement, smallestUnit, roundingMode).
+    return round_temporal_instant(global_object, *js_bigint(vm, nanoseconds2.big_integer().minus(nanoseconds1.big_integer())), rounding_increment, smallest_unit, rounding_mode);
+}
+
 // 8.5.8 RoundTemporalInstant ( ns, increment, unit, roundingMode ), https://tc39.es/proposal-temporal/#sec-temporal-roundtemporalinstant
-BigInt* round_temporal_instant(GlobalObject& global_object, BigInt const& nanoseconds, u64 increment, String const& unit, String const& rounding_mode)
+BigInt* round_temporal_instant(GlobalObject& global_object, BigInt const& nanoseconds, u64 increment, StringView unit, StringView rounding_mode)
 {
     // 1. Assert: Type(ns) is BigInt.
 
     u64 increment_nanoseconds;
     // 2. If unit is "hour", then
-    if (unit == "hour") {
+    if (unit == "hour"sv) {
         // a. Let incrementNs be increment × 3.6 × 10^12.
         increment_nanoseconds = increment * 3600000000000;
     }
     // 3. Else if unit is "minute", then
-    else if (unit == "minute") {
+    else if (unit == "minute"sv) {
         // a. Let incrementNs be increment × 6 × 10^10.
         increment_nanoseconds = increment * 60000000000;
     }
     // 4. Else if unit is "second", then
-    else if (unit == "second") {
+    else if (unit == "second"sv) {
         // a. Let incrementNs be increment × 10^9.
         increment_nanoseconds = increment * 1000000000;
     }
     // 5. Else if unit is "millisecond", then
-    else if (unit == "millisecond") {
+    else if (unit == "millisecond"sv) {
         // a. Let incrementNs be increment × 10^6.
         increment_nanoseconds = increment * 1000000;
     }
     // 6. Else if unit is "microsecond", then
-    else if (unit == "microsecond") {
+    else if (unit == "microsecond"sv) {
         // a. Let incrementNs be increment × 10^3.
         increment_nanoseconds = increment * 1000;
     }
     // 7. Else,
     else {
         // a. Assert: unit is "nanosecond".
-        VERIFY(unit == "nanosecond");
+        VERIFY(unit == "nanosecond"sv);
 
         // b. Let incrementNs be increment.
         increment_nanoseconds = increment;
@@ -231,6 +245,58 @@ BigInt* round_temporal_instant(GlobalObject& global_object, BigInt const& nanose
 
     // 8. Return ! RoundNumberToIncrement(ℝ(ns), incrementNs, roundingMode).
     return round_number_to_increment(global_object, nanoseconds, increment_nanoseconds, rounding_mode);
+}
+
+// 8.5.9 TemporalInstantToString ( instant, timeZone, precision ), https://tc39.es/proposal-temporal/#sec-temporal-temporalinstanttostring
+Optional<String> temporal_instant_to_string(GlobalObject& global_object, Instant& instant, Value time_zone, Variant<String, u8> const& precision)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: Type(instant) is Object.
+    // 2. Assert: instant has an [[InitializedTemporalInstant]] internal slot.
+
+    // 3. Let outputTimeZone be timeZone.
+    auto output_time_zone = time_zone;
+
+    // 4. If outputTimeZone is undefined, then
+    if (output_time_zone.is_undefined()) {
+        // a. Set outputTimeZone to ? CreateTemporalTimeZone("UTC").
+        output_time_zone = create_temporal_time_zone(global_object, "UTC"sv);
+        // TODO: Can this really throw...?
+        if (vm.exception())
+            return {};
+    }
+
+    // 5. Let isoCalendar be ! GetISO8601Calendar().
+    auto* iso_calendar = get_iso8601_calendar(global_object);
+
+    // 6. Let dateTime be ? BuiltinTimeZoneGetPlainDateTimeFor(outputTimeZone, instant, isoCalendar).
+    auto* date_time = builtin_time_zone_get_plain_date_time_for(global_object, output_time_zone, instant, *iso_calendar);
+    if (vm.exception())
+        return {};
+
+    // 7. Let dateTimeString be ? TemporalDateTimeToString(dateTime.[[ISOYear]], dateTime.[[ISOMonth]], dateTime.[[ISODay]], dateTime.[[ISOHour]], dateTime.[[ISOMinute]], dateTime.[[ISOSecond]], dateTime.[[ISOMillisecond]], dateTime.[[ISOMicrosecond]], dateTime.[[ISONanosecond]], undefined, precision, "never").
+    auto date_time_string = temporal_date_time_to_string(global_object, date_time->iso_year(), date_time->iso_month(), date_time->iso_day(), date_time->iso_hour(), date_time->iso_minute(), date_time->iso_second(), date_time->iso_millisecond(), date_time->iso_microsecond(), date_time->iso_nanosecond(), js_undefined(), precision, "never"sv);
+    if (vm.exception())
+        return {};
+
+    Optional<String> time_zone_string;
+
+    // 8. If timeZone is undefined, then
+    if (time_zone.is_undefined()) {
+        // a. Let timeZoneString be "Z".
+        time_zone_string = "Z"sv;
+    }
+    // 9. Else,
+    else {
+        // a. Let timeZoneString be ? BuiltinTimeZoneGetOffsetStringFor(timeZone, instant).
+        time_zone_string = builtin_time_zone_get_offset_string_for(global_object, time_zone, instant);
+        if (vm.exception())
+            return {};
+    }
+
+    // 10. Return the string-concatenation of dateTimeString and timeZoneString.
+    return String::formatted("{}{}", *date_time_string, *time_zone_string);
 }
 
 }

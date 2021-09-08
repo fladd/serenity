@@ -7,7 +7,7 @@
 
 #include <AK/StringView.h>
 #include <Kernel/Arch/PC/BIOS.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/KBufferBuilder.h>
 #include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Memory/TypedMapping.h>
@@ -29,18 +29,15 @@ UNMAP_AFTER_INIT BIOSSysFSComponent::BIOSSysFSComponent(String name)
 {
 }
 
-KResultOr<size_t> BIOSSysFSComponent::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, FileDescription*) const
+KResultOr<size_t> BIOSSysFSComponent::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, OpenFileDescription*) const
 {
-    auto blob = try_to_generate_buffer();
-    if (!blob)
-        return KResult(EFAULT);
+    auto blob = TRY(try_to_generate_buffer());
 
     if ((size_t)offset >= blob->size())
         return KSuccess;
 
     ssize_t nread = min(static_cast<off_t>(blob->size() - offset), static_cast<off_t>(count));
-    if (!buffer.write(blob->data() + offset, nread))
-        return KResult(EFAULT);
+    TRY(buffer.write(blob->data() + offset, nread));
     return nread;
 }
 
@@ -51,7 +48,7 @@ UNMAP_AFTER_INIT DMIEntryPointExposedBlob::DMIEntryPointExposedBlob(PhysicalAddr
 {
 }
 
-OwnPtr<KBuffer> DMIEntryPointExposedBlob::try_to_generate_buffer() const
+KResultOr<NonnullOwnPtr<KBuffer>> DMIEntryPointExposedBlob::try_to_generate_buffer() const
 {
     auto dmi_blob = Memory::map_typed<u8>((m_dmi_entry_point), m_dmi_entry_point_length);
     return KBuffer::try_create_with_bytes(Span<u8> { dmi_blob.ptr(), m_dmi_entry_point_length });
@@ -69,7 +66,7 @@ UNMAP_AFTER_INIT SMBIOSExposedTable::SMBIOSExposedTable(PhysicalAddress smbios_s
 {
 }
 
-OwnPtr<KBuffer> SMBIOSExposedTable::try_to_generate_buffer() const
+KResultOr<NonnullOwnPtr<KBuffer>> SMBIOSExposedTable::try_to_generate_buffer() const
 {
     auto dmi_blob = Memory::map_typed<u8>((m_smbios_structure_table), m_smbios_structure_table_length);
     return KBuffer::try_create_with_bytes(Span<u8> { dmi_blob.ptr(), m_smbios_structure_table_length });
@@ -102,19 +99,20 @@ UNMAP_AFTER_INIT void BIOSSysFSDirectory::initialize()
 
 void BIOSSysFSDirectory::create_components()
 {
+    if (m_dmi_entry_point.is_null() || m_smbios_structure_table.is_null())
+        return;
+    if (m_dmi_entry_point_length == 0) {
+        dbgln("BIOSSysFSDirectory: invalid dmi entry length");
+        return;
+    }
+    if (m_smbios_structure_table_length == 0) {
+        dbgln("BIOSSysFSDirectory: invalid smbios structure table length");
+        return;
+    }
     auto dmi_entry_point = DMIEntryPointExposedBlob::create(m_dmi_entry_point, m_dmi_entry_point_length);
     m_components.append(dmi_entry_point);
     auto smbios_table = SMBIOSExposedTable::create(m_smbios_structure_table, m_smbios_structure_table_length);
     m_components.append(smbios_table);
-}
-
-size_t BIOSSysFSDirectory::dmi_entry_point_length() const
-{
-    return m_dmi_entry_point_length;
-}
-size_t BIOSSysFSDirectory::smbios_structure_table_length() const
-{
-    return m_smbios_structure_table_length;
 }
 
 UNMAP_AFTER_INIT void BIOSSysFSDirectory::initialize_dmi_exposer()
@@ -128,17 +126,13 @@ UNMAP_AFTER_INIT void BIOSSysFSDirectory::initialize_dmi_exposer()
     dbgln("BIOSSysFSDirectory: Data table @ {}", m_smbios_structure_table);
 }
 
-OwnPtr<KBuffer> BIOSSysFSDirectory::smbios_structure_table() const
-{
-    auto dmi_blob = Memory::map_typed<u8>(m_smbios_structure_table, m_smbios_structure_table_length);
-    return KBuffer::try_create_with_bytes(Span<u8> { dmi_blob.ptr(), m_smbios_structure_table_length });
-}
-
 UNMAP_AFTER_INIT BIOSSysFSDirectory::BIOSSysFSDirectory()
     : SysFSDirectory("bios", SysFSComponentRegistry::the().root_directory())
 {
     auto entry_32bit = find_dmi_entry32bit_point();
-    m_dmi_entry_point = entry_32bit.value();
+    if (entry_32bit.has_value()) {
+        m_dmi_entry_point = entry_32bit.value();
+    }
 
     auto entry_64bit = find_dmi_entry64bit_point();
     if (entry_64bit.has_value()) {
@@ -165,7 +159,7 @@ Memory::MappedROM map_bios()
     Memory::MappedROM mapping;
     mapping.size = 128 * KiB;
     mapping.paddr = PhysicalAddress(0xe0000);
-    mapping.region = MM.allocate_kernel_region(mapping.paddr, Memory::page_round_up(mapping.size), {}, Memory::Region::Access::Read);
+    mapping.region = MM.allocate_kernel_region(mapping.paddr, Memory::page_round_up(mapping.size), {}, Memory::Region::Access::Read).release_value();
     return mapping;
 }
 
@@ -179,7 +173,7 @@ Memory::MappedROM map_ebda()
     size_t ebda_size = (*ebda_length_ptr_b1 << 8) | *ebda_length_ptr_b0;
 
     Memory::MappedROM mapping;
-    mapping.region = MM.allocate_kernel_region(ebda_paddr.page_base(), Memory::page_round_up(ebda_size), {}, Memory::Region::Access::Read);
+    mapping.region = MM.allocate_kernel_region(ebda_paddr.page_base(), Memory::page_round_up(ebda_size), {}, Memory::Region::Access::Read).release_value();
     mapping.offset = ebda_paddr.offset_in_page();
     mapping.size = ebda_size;
     mapping.paddr = ebda_paddr;

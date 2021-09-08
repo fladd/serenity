@@ -137,12 +137,12 @@ double calendar_year(GlobalObject& global_object, Object& calendar, Object& date
 
     // 3. If result is undefined, throw a RangeError exception.
     if (result.is_undefined()) {
-        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidCalendarFunctionResult, vm.names.year.as_string());
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidCalendarFunctionResult, vm.names.year.as_string(), vm.names.undefined.as_string());
         return {};
     }
 
-    // 4. Return ? ToIntegerOrInfinity(result).
-    return result.to_integer_or_infinity(global_object);
+    // 4. Return ? ToIntegerThrowOnInfinity(result).
+    return to_integer_throw_on_infinity(global_object, result, ErrorType::TemporalInvalidCalendarFunctionResult, vm.names.year.as_string(), vm.names.Infinity.as_string());
 }
 
 // 12.1.10 CalendarMonth ( calendar, dateLike ), https://tc39.es/proposal-temporal/#sec-temporal-calendarmonth
@@ -158,12 +158,12 @@ double calendar_month(GlobalObject& global_object, Object& calendar, Object& dat
 
     // 3. If result is undefined, throw a RangeError exception.
     if (result.is_undefined()) {
-        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidCalendarFunctionResult, vm.names.month.as_string());
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidCalendarFunctionResult, vm.names.month.as_string(), vm.names.undefined.as_string());
         return {};
     }
 
-    // 4. Return ? ToPositiveIntegerOrInfinity(result).
-    return to_positive_integer_or_infinity(global_object, result);
+    // 4. Return ? ToPositiveInteger(result).
+    return to_positive_integer(global_object, result);
 }
 
 // 12.1.11 CalendarMonthCode ( calendar, dateLike ), https://tc39.es/proposal-temporal/#sec-temporal-calendarmonthcode
@@ -179,7 +179,7 @@ String calendar_month_code(GlobalObject& global_object, Object& calendar, Object
 
     // 3. If result is undefined, throw a RangeError exception.
     if (result.is_undefined()) {
-        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidCalendarFunctionResult, vm.names.monthCode.as_string());
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidCalendarFunctionResult, vm.names.monthCode.as_string(), vm.names.undefined.as_string());
         return {};
     }
 
@@ -200,12 +200,12 @@ double calendar_day(GlobalObject& global_object, Object& calendar, Object& date_
 
     // 3. If result is undefined, throw a RangeError exception.
     if (result.is_undefined()) {
-        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidCalendarFunctionResult, vm.names.day.as_string());
+        vm.throw_exception<RangeError>(global_object, ErrorType::TemporalInvalidCalendarFunctionResult, vm.names.day.as_string(), vm.names.undefined.as_string());
         return {};
     }
 
-    // 4. Return ? ToPositiveIntegerOrInfinity(result).
-    return to_positive_integer_or_infinity(global_object, result);
+    // 4. Return ? ToPositiveInteger(result).
+    return to_positive_integer(global_object, result);
 }
 
 // 12.1.13 CalendarDayOfWeek ( calendar, dateLike ), https://tc39.es/proposal-temporal/#sec-temporal-calendardayofweek
@@ -286,6 +286,53 @@ Value calendar_in_leap_year(GlobalObject& global_object, Object& calendar, Objec
 
     // 2. Return ? Invoke(calendar, "inLeapYear", « dateLike »).
     return Value(&calendar).invoke(global_object, vm.names.inLeapYear, &date_like);
+}
+
+// 15.6.1.2 CalendarEra ( calendar, dateLike ), https://tc39.es/proposal-temporal/#sec-temporal-calendarera
+Value calendar_era(GlobalObject& global_object, Object& calendar, Object& date_like)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: Type(calendar) is Object.
+
+    // 2. Let result be ? Invoke(calendar, "era", « dateLike »).
+    auto result = Value(&calendar).invoke(global_object, vm.names.era, &date_like);
+    if (vm.exception())
+        return {};
+
+    // 3. If result is not undefined, set result to ? ToString(result).
+    if (!result.is_undefined()) {
+        auto result_string = result.to_string(global_object);
+        if (vm.exception())
+            return {};
+        result = js_string(vm, move(result_string));
+    }
+
+    // 4. Return result.
+    return result;
+}
+
+// 15.6.1.3 CalendarEraYear ( calendar, dateLike ), https://tc39.es/proposal-temporal/#sec-temporal-calendarerayear
+Value calendar_era_year(GlobalObject& global_object, Object& calendar, Object& date_like)
+{
+    auto& vm = global_object.vm();
+
+    // 1. Assert: Type(calendar) is Object.
+
+    // 2. Let result be ? Invoke(calendar, "eraYear", « dateLike »).
+    auto result = Value(&calendar).invoke(global_object, vm.names.eraYear, &date_like);
+    if (vm.exception())
+        return {};
+
+    // 3. If result is not undefined, set result to ? ToIntegerThrowOnInfinity(result).
+    if (!result.is_undefined()) {
+        result = Value(to_integer_throw_on_infinity(global_object, result, ErrorType::TemporalInvalidCalendarFunctionResult, vm.names.eraYear.as_string(), "Infinity"sv));
+        if (vm.exception())
+            return {};
+    }
+
+    // 4. Return result.
+    return result;
 }
 
 // 12.1.21 ToTemporalCalendar ( temporalCalendarLike ), https://tc39.es/proposal-temporal/#sec-temporal-totemporalcalendar
@@ -475,6 +522,24 @@ PlainMonthDay* month_day_from_fields(GlobalObject& global_object, Object& calend
 
     // 7. Return monthDay.
     return static_cast<PlainMonthDay*>(month_day_object);
+}
+
+// 12.1.27 FormatCalendarAnnotation ( id, showCalendar ), https://tc39.es/proposal-temporal/#sec-temporal-formatcalendarannotation
+String format_calendar_annotation(StringView id, StringView show_calendar)
+{
+    // 1. Assert: showCalendar is "auto", "always", or "never".
+    VERIFY(show_calendar == "auto"sv || show_calendar == "always"sv || show_calendar == "never"sv);
+
+    // 2. If showCalendar is "never", return the empty String.
+    if (show_calendar == "never"sv)
+        return String::empty();
+
+    // 3. If showCalendar is "auto" and id is "iso8601", return the empty String.
+    if (show_calendar == "auto"sv && id == "iso8601"sv)
+        return String::empty();
+
+    // 4. Return the string-concatenation of "[u-ca=", id, and "]".
+    return String::formatted("[u-ca={}]", id);
 }
 
 // 12.1.28 CalendarEquals ( one, two ), https://tc39.es/proposal-temporal/#sec-temporal-calendarequals

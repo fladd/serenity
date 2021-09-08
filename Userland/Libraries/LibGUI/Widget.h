@@ -223,9 +223,6 @@ public:
     void set_font_weight(unsigned);
     void set_font_fixed_width(bool);
 
-    void set_global_cursor_tracking(bool);
-    bool global_cursor_tracking() const;
-
     void notify_layout_changed(Badge<Layout>);
     void invalidate_layout();
 
@@ -319,6 +316,7 @@ protected:
     virtual void theme_change_event(ThemeChangeEvent&);
     virtual void fonts_change_event(FontsChangeEvent&);
     virtual void screen_rects_change_event(ScreenRectsChangeEvent&);
+    virtual void applet_area_rect_change_event(AppletAreaRectChangeEvent&);
 
     virtual void did_begin_inspection() override;
     virtual void did_end_inspection() override;

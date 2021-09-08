@@ -74,6 +74,11 @@ public:
     Key key() const override;
     SQLType type() const { return m_type; }
     size_t column_number() const { return m_index; }
+    void set_not_null(bool can_not_be_null) { m_not_null = can_not_be_null; }
+    bool not_null() const { return m_not_null; }
+    void set_default_value(Value const& default_value);
+    Value const& default_value() const { return m_default; }
+
     static NonnullRefPtr<IndexDef> index_def();
     static Key make_key(TableDef const&);
 
@@ -83,6 +88,8 @@ protected:
 private:
     size_t m_index;
     SQLType m_type { SQLType::Text };
+    bool m_not_null { false };
+    Value m_default;
 };
 
 class KeyPartDef : public ColumnDef {
@@ -107,7 +114,7 @@ public:
     [[nodiscard]] size_t size() const { return m_key_definition.size(); }
     void append_column(String, SQLType, Order = Order::Ascending);
     Key key() const override;
-    [[nodiscard]] TupleDescriptor to_tuple_descriptor() const;
+    [[nodiscard]] NonnullRefPtr<TupleDescriptor> to_tuple_descriptor() const;
     static NonnullRefPtr<IndexDef> index_def();
     static Key make_key(TableDef const& table_def);
 
@@ -132,7 +139,7 @@ public:
     size_t num_indexes() { return m_indexes.size(); }
     NonnullRefPtrVector<ColumnDef> columns() const { return m_columns; }
     NonnullRefPtrVector<IndexDef> indexes() const { return m_indexes; }
-    [[nodiscard]] TupleDescriptor to_tuple_descriptor() const;
+    [[nodiscard]] NonnullRefPtr<TupleDescriptor> to_tuple_descriptor() const;
 
     static NonnullRefPtr<IndexDef> index_def();
     static Key make_key(SchemaDef const& schema_def);

@@ -16,7 +16,7 @@
 #include <LibTest/TestCase.h>
 
 NonnullRefPtr<SQL::SchemaDef> setup_schema(SQL::Database&);
-NonnullRefPtr<SQL::SchemaDef> setup_table(SQL::Database&);
+NonnullRefPtr<SQL::TableDef> setup_table(SQL::Database&);
 void insert_into_table(SQL::Database&, int);
 void verify_table_contents(SQL::Database&, int);
 void insert_and_verify(int);
@@ -28,7 +28,7 @@ NonnullRefPtr<SQL::SchemaDef> setup_schema(SQL::Database& db)
     return schema;
 }
 
-NonnullRefPtr<SQL::SchemaDef> setup_table(SQL::Database& db)
+NonnullRefPtr<SQL::TableDef> setup_table(SQL::Database& db)
 {
     auto schema = setup_schema(db);
     auto table = SQL::TableDef::construct(schema, "TestTable");
@@ -66,7 +66,7 @@ void verify_table_contents(SQL::Database& db, int expected_count)
     for (auto& row : db.select_all(*table)) {
         StringBuilder builder;
         builder.appendff("Test{}", row["IntColumn"].to_int().value());
-        EXPECT_EQ(row["TextColumn"].to_string().value(), builder.build());
+        EXPECT_EQ(row["TextColumn"].to_string(), builder.build());
         count++;
         sum += row["IntColumn"].to_int().value();
     }

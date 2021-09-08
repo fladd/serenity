@@ -105,18 +105,6 @@ void RollWidget::paint_event(GUI::PaintEvent& event)
         background_painter.translate(-x_offset, -y_offset);
         background_painter.translate(horizontal_note_offset_remainder, note_offset_remainder);
 
-        for (int note = note_count - (note_offset + notes_to_paint); note <= (note_count - 1) - note_offset; ++note) {
-            int y = ((note_count - 1) - note) * note_height;
-
-            Gfx::IntRect note_name_rect(3, y, 1, note_height);
-            const char* note_name = note_names[note % notes_per_octave];
-
-            background_painter.draw_text(note_name_rect, note_name, Gfx::TextAlignment::CenterLeft);
-            note_name_rect.translate_by(Gfx::FontDatabase::default_font().width(note_name) + 2, 0);
-            if (note % notes_per_octave == 0)
-                background_painter.draw_text(note_name_rect, String::formatted("{}", note / notes_per_octave + 1), Gfx::TextAlignment::CenterLeft);
-        }
-
         m_prev_zoom_level = m_zoom_level;
         m_prev_scroll_x = horizontal_scrollbar().value();
         m_prev_scroll_y = vertical_scrollbar().value();
@@ -165,6 +153,14 @@ void RollWidget::paint_event(GUI::PaintEvent& event)
             painter.fill_rect(rect, note_pressed_color);
             painter.draw_rect(rect, Color::Black);
         }
+
+        Gfx::IntRect note_name_rect(3, y, 1, note_height);
+        const char* note_name = note_names[note % notes_per_octave];
+
+        painter.draw_text(note_name_rect, note_name, Gfx::TextAlignment::CenterLeft);
+        note_name_rect.translate_by(Gfx::FontDatabase::default_font().width(note_name) + 2, 0);
+        if (note % notes_per_octave == 0)
+            painter.draw_text(note_name_rect, String::formatted("{}", note / notes_per_octave + 1), Gfx::TextAlignment::CenterLeft);
     }
 
     int x = m_roll_width * (static_cast<double>(m_track_manager.time()) / roll_length);
@@ -228,7 +224,7 @@ void RollWidget::mousemove_event(GUI::MouseEvent& event)
     u32 on_sample = roll_length * (static_cast<double>(min(x0, x1)) / m_num_notes);
     u32 off_sample = (roll_length * (static_cast<double>(max(x0, x1) + 1) / m_num_notes)) - 1;
     m_track_manager.current_track().set_roll_note(m_drag_note, on_sample, off_sample);
-    m_note_drag_location = RollNote({ on_sample, off_sample });
+    m_note_drag_location = RollNote { on_sample, off_sample, (u8)m_drag_note, 0 };
 
     update();
 }

@@ -25,35 +25,43 @@ BrushTool::~BrushTool()
 {
 }
 
-void BrushTool::on_mousedown(Layer& layer, GUI::MouseEvent& event, GUI::MouseEvent&)
+void BrushTool::on_mousedown(Layer* layer, MouseEvent& event)
 {
-    if (event.button() != GUI::MouseButton::Left && event.button() != GUI::MouseButton::Right)
+    if (!layer)
+        return;
+
+    auto& layer_event = event.layer_event();
+    if (layer_event.button() != GUI::MouseButton::Left && layer_event.button() != GUI::MouseButton::Right)
         return;
 
     const int first_draw_opacity = 10;
 
     for (int i = 0; i < first_draw_opacity; ++i)
-        draw_point(layer.bitmap(), m_editor->color_for(event), event.position());
+        draw_point(layer->bitmap(), m_editor->color_for(layer_event), layer_event.position());
 
-    layer.did_modify_bitmap(Gfx::IntRect::centered_on(event.position(), Gfx::IntSize { m_size * 2, m_size * 2 }));
-    m_last_position = event.position();
+    layer->did_modify_bitmap(Gfx::IntRect::centered_on(layer_event.position(), Gfx::IntSize { m_size * 2, m_size * 2 }));
+    m_last_position = layer_event.position();
 }
 
-void BrushTool::on_mousemove(Layer& layer, GUI::MouseEvent& event, GUI::MouseEvent&)
+void BrushTool::on_mousemove(Layer* layer, MouseEvent& event)
 {
-    if (!(event.buttons() & GUI::MouseButton::Left || event.buttons() & GUI::MouseButton::Right))
+    if (!layer)
         return;
 
-    draw_line(layer.bitmap(), m_editor->color_for(event), m_last_position, event.position());
+    auto& layer_event = event.layer_event();
+    if (!(layer_event.buttons() & GUI::MouseButton::Left || layer_event.buttons() & GUI::MouseButton::Right))
+        return;
 
-    auto modified_rect = Gfx::IntRect::from_two_points(m_last_position, event.position()).inflated(m_size * 2, m_size * 2);
+    draw_line(layer->bitmap(), m_editor->color_for(layer_event), m_last_position, layer_event.position());
 
-    layer.did_modify_bitmap(modified_rect);
-    m_last_position = event.position();
+    auto modified_rect = Gfx::IntRect::from_two_points(m_last_position, layer_event.position()).inflated(m_size * 2, m_size * 2);
+
+    layer->did_modify_bitmap(modified_rect);
+    m_last_position = layer_event.position();
     m_was_drawing = true;
 }
 
-void BrushTool::on_mouseup(Layer&, GUI::MouseEvent&, GUI::MouseEvent&)
+void BrushTool::on_mouseup(Layer*, MouseEvent&)
 {
     if (m_was_drawing) {
         m_editor->did_complete_action();
@@ -133,6 +141,7 @@ GUI::Widget* BrushTool::get_properties_widget()
         size_slider.on_change = [&](int value) {
             m_size = value;
         };
+        set_primary_slider(&size_slider);
 
         auto& hardness_container = m_properties_widget->add<GUI::Widget>();
         hardness_container.set_fixed_height(20);
@@ -149,6 +158,7 @@ GUI::Widget* BrushTool::get_properties_widget()
         hardness_slider.on_change = [&](int value) {
             m_hardness = value;
         };
+        set_secondary_slider(&hardness_slider);
     }
 
     return m_properties_widget.ptr();

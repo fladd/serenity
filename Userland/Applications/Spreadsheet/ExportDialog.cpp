@@ -35,7 +35,7 @@ CSVExportDialogPage::CSVExportDialogPage(const Sheet& sheet)
     m_headers.extend(m_data.take_first());
 
     auto temp_template = String::formatted("{}/spreadsheet-csv-export.{}.XXXXXX", Core::StandardPaths::tempfile_directory(), getpid());
-    auto temp_path = ByteBuffer::create_uninitialized(temp_template.length() + 1);
+    auto temp_path = ByteBuffer::create_uninitialized(temp_template.length() + 1).release_value();
     auto buf = reinterpret_cast<char*>(temp_path.data());
     auto copy_ok = temp_template.copy_characters_to_buffer(buf, temp_path.size());
     VERIFY(copy_ok);
@@ -154,17 +154,17 @@ auto CSVExportDialogPage::make_writer() -> Optional<XSV>
         quote_escape,
     };
 
-    auto behaviours = Writer::default_behaviours();
+    auto behaviors = Writer::default_behaviors();
     Vector<String> empty_headers;
     auto* headers = &empty_headers;
 
     if (should_export_headers) {
-        behaviours = behaviours | Writer::WriterBehaviour::WriteHeaders;
+        behaviors = behaviors | Writer::WriterBehavior::WriteHeaders;
         headers = &m_headers;
     }
 
     if (should_quote_all_fields)
-        behaviours = behaviours | Writer::WriterBehaviour::QuoteAll;
+        behaviors = behaviors | Writer::WriterBehavior::QuoteAll;
 
     // Note that the stream is used only by the ctor.
     auto stream = Core::OutputFileStream::open(m_temp_output_file_path);
@@ -172,7 +172,7 @@ auto CSVExportDialogPage::make_writer() -> Optional<XSV>
         dbgln("Cannot open {} for writing: {}", m_temp_output_file_path, stream.error());
         return {};
     }
-    XSV writer(stream.value(), m_data, traits, *headers, behaviours);
+    XSV writer(stream.value(), m_data, traits, *headers, behaviors);
 
     if (stream.value().has_any_error()) {
         dbgln("Write error when making preview");

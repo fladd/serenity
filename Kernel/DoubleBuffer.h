@@ -16,20 +16,20 @@ namespace Kernel {
 
 class DoubleBuffer {
 public:
-    [[nodiscard]] static OwnPtr<DoubleBuffer> try_create(size_t capacity = 65536);
-    [[nodiscard]] KResultOr<size_t> write(const UserOrKernelBuffer&, size_t);
-    [[nodiscard]] KResultOr<size_t> write(const u8* data, size_t size)
+    static KResultOr<NonnullOwnPtr<DoubleBuffer>> try_create(size_t capacity = 65536);
+    KResultOr<size_t> write(const UserOrKernelBuffer&, size_t);
+    KResultOr<size_t> write(const u8* data, size_t size)
     {
         return write(UserOrKernelBuffer::for_kernel_buffer(const_cast<u8*>(data)), size);
     }
-    [[nodiscard]] KResultOr<size_t> read(UserOrKernelBuffer&, size_t);
-    [[nodiscard]] KResultOr<size_t> read(u8* data, size_t size)
+    KResultOr<size_t> read(UserOrKernelBuffer&, size_t);
+    KResultOr<size_t> read(u8* data, size_t size)
     {
         auto buffer = UserOrKernelBuffer::for_kernel_buffer(data);
         return read(buffer, size);
     }
-    [[nodiscard]] KResultOr<size_t> peek(UserOrKernelBuffer&, size_t);
-    [[nodiscard]] KResultOr<size_t> peek(u8* data, size_t size)
+    KResultOr<size_t> peek(UserOrKernelBuffer&, size_t);
+    KResultOr<size_t> peek(u8* data, size_t size)
     {
         auto buffer = UserOrKernelBuffer::for_kernel_buffer(data);
         return peek(buffer, size);
@@ -38,6 +38,10 @@ public:
     bool is_empty() const { return m_empty; }
 
     size_t space_for_writing() const { return m_space_for_writing; }
+    size_t immediately_readable() const
+    {
+        return (m_read_buffer->size - m_read_buffer_index) + m_write_buffer->size;
+    }
 
     void set_unblock_callback(Function<void()> callback)
     {

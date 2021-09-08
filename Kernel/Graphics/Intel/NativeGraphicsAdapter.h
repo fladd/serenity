@@ -8,7 +8,7 @@
 
 #include <AK/String.h>
 #include <AK/Types.h>
-#include <Kernel/Bus/PCI/DeviceController.h>
+#include <Kernel/Bus/PCI/Device.h>
 #include <Kernel/Graphics/Definitions.h>
 #include <Kernel/Graphics/FramebufferDevice.h>
 #include <Kernel/Graphics/VGACompatibleAdapter.h>
@@ -161,9 +161,9 @@ private:
 
     Optional<PLLSettings> create_pll_settings(u64 target_frequency, u64 reference_clock, const PLLMaxSettings&);
 
-    SpinLock<u8> m_control_lock;
-    SpinLock<u8> m_modeset_lock;
-    mutable SpinLock<u8> m_registers_lock;
+    Spinlock m_control_lock;
+    Spinlock m_modeset_lock;
+    mutable Spinlock m_registers_lock;
 
     Graphics::VideoInfoBlock m_crt_edid;
     const PhysicalAddress m_registers;

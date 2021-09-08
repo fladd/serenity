@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Badge.h>
 #include <AK/HashTable.h>
 #include <AK/IntrusiveList.h>
 #include <AK/Noncopyable.h>
@@ -49,8 +50,10 @@ public:
         if constexpr (is_object)
             static_cast<Object*>(cell)->disable_transitions();
         cell->initialize(global_object);
-        if constexpr (is_object)
+        if constexpr (is_object) {
             static_cast<Object*>(cell)->enable_transitions();
+            static_cast<Object*>(cell)->set_initialized(Badge<Heap> {});
+        }
         return cell;
     }
 
@@ -79,6 +82,8 @@ public:
     void undefer_gc(Badge<DeferGC>);
 
     BlockAllocator& block_allocator() { return m_block_allocator; }
+
+    void uproot_cell(Cell* cell);
 
 private:
     Cell* allocate_cell(size_t);
@@ -113,6 +118,8 @@ private:
     MarkedValueList::List m_marked_value_lists;
 
     WeakContainer::List m_weak_containers;
+
+    Vector<Cell*> m_uprooted_cells;
 
     BlockAllocator m_block_allocator;
 

@@ -17,10 +17,7 @@ KResultOr<FlatPtr> Process::sys$create_thread(void* (*entry)(void*), Userspace<c
 {
     VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(thread);
-
-    Syscall::SC_create_thread_params params;
-    if (!copy_from_user(&params, user_params))
-        return EFAULT;
+    auto params = TRY(copy_typed_from_user(user_params));
 
     unsigned detach_state = params.detach_state;
     int schedule_priority = params.schedule_priority;
@@ -44,30 +41,25 @@ KResultOr<FlatPtr> Process::sys$create_thread(void* (*entry)(void*), Userspace<c
 
     // FIXME: Do something with guard pages?
 
-    auto thread_or_error = Thread::try_create(*this);
-    if (thread_or_error.is_error())
-        return thread_or_error.error();
+    auto thread = TRY(Thread::try_create(*this));
 
-    auto& thread = thread_or_error.value();
+    // FIXME: Don't make a temporary String here
+    auto new_thread_name = TRY(KString::try_create(String::formatted("{} [{}]", m_name, thread->tid().value())));
 
     // We know this thread is not the main_thread,
     // So give it a unique name until the user calls $set_thread_name on it
     // length + 4 to give space for our extra junk at the end
-    StringBuilder builder(m_name.length() + 4);
-    thread->set_name(KString::try_create(String::formatted("{} [{}]", m_name, thread->tid().value())));
+    StringBuilder builder(m_name->length() + 4);
+    thread->set_name(move(new_thread_name));
 
     if (!is_thread_joinable)
         thread->detach();
 
     auto& regs = thread->regs();
-#if ARCH(I386)
-    regs.eip = (FlatPtr)entry;
-    regs.eflags = 0x0202;
-    regs.esp = user_sp.value();
-#else
-    regs.rip = (FlatPtr)entry;
-    regs.rflags = 0x0202;
-    regs.rsp = user_sp.value();
+    regs.set_ip((FlatPtr)entry);
+    regs.set_flags(0x0202);
+    regs.set_sp(user_sp.value());
+#if ARCH(X86_64)
     regs.rdi = params.rdi;
     regs.rsi = params.rsi;
     regs.rdx = params.rdx;
@@ -75,13 +67,11 @@ KResultOr<FlatPtr> Process::sys$create_thread(void* (*entry)(void*), Userspace<c
 #endif
     regs.cr3 = address_space().page_directory().cr3();
 
-    auto tsr_result = thread->make_thread_specific_region({});
-    if (tsr_result.is_error())
-        return tsr_result.error();
+    TRY(thread->make_thread_specific_region({}));
 
     PerformanceManager::add_thread_created_event(*thread);
 
-    ScopedSpinLock lock(g_scheduler_lock);
+    SpinlockLocker lock(g_scheduler_lock);
     thread->set_priority(requested_thread_priority);
     thread->set_state(Thread::State::Runnable);
     return thread->tid().value();
@@ -155,9 +145,10 @@ KResultOr<FlatPtr> Process::sys$join_thread(pid_t tid, Userspace<void**> exit_va
         dbgln("join_thread: retrying");
     }
 
-    if (exit_value && !copy_to_user(exit_value, &joinee_exit_value))
-        return EFAULT;
-    return 0;
+    if (exit_value)
+        TRY(copy_to_user(exit_value, &joinee_exit_value));
+
+    return KSuccess;
 }
 
 KResultOr<FlatPtr> Process::sys$kill_thread(pid_t tid, int signal)
@@ -172,12 +163,8 @@ KResultOr<FlatPtr> Process::sys$kill_thread(pid_t tid, int signal)
     if (!thread || thread->pid() != pid())
         return ESRCH;
 
-    auto process = Process::current();
-    if (!process)
-        return ESRCH;
-
     if (signal != 0)
-        thread->send_signal(signal, process);
+        thread->send_signal(signal, &Process::current());
 
     return 0;
 }
@@ -187,10 +174,7 @@ KResultOr<FlatPtr> Process::sys$set_thread_name(pid_t tid, Userspace<const char*
     VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(stdio);
 
-    auto name_or_error = try_copy_kstring_from_user(user_name, user_name_length);
-    if (name_or_error.is_error())
-        return name_or_error.error();
-    auto name = name_or_error.release_value();
+    auto name = TRY(try_copy_kstring_from_user(user_name, user_name_length));
 
     const size_t max_thread_name_size = 64;
     if (name->length() > max_thread_name_size)
@@ -215,22 +199,19 @@ KResultOr<FlatPtr> Process::sys$get_thread_name(pid_t tid, Userspace<char*> buff
     if (!thread || thread->pid() != pid())
         return ESRCH;
 
-    ScopedSpinLock locker(thread->get_lock());
+    SpinlockLocker locker(thread->get_lock());
     auto thread_name = thread->name();
 
     if (thread_name.is_null()) {
         char null_terminator = '\0';
-        if (!copy_to_user(buffer, &null_terminator, sizeof(null_terminator)))
-            return EFAULT;
-        return 0;
+        TRY(copy_to_user(buffer, &null_terminator, sizeof(null_terminator)));
+        return KSuccess;
     }
 
     if (thread_name.length() + 1 > buffer_size)
         return ENAMETOOLONG;
 
-    if (!copy_to_user(buffer, thread_name.characters_without_null_termination(), thread_name.length() + 1))
-        return EFAULT;
-    return 0;
+    return copy_to_user(buffer, thread_name.characters_without_null_termination(), thread_name.length() + 1);
 }
 
 KResultOr<FlatPtr> Process::sys$gettid()

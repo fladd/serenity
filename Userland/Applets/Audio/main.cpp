@@ -6,7 +6,7 @@
  */
 
 #include <LibAudio/ClientConnection.h>
-#include <LibCore/ConfigFile.h>
+#include <LibConfig/Client.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/CheckBox.h>
@@ -22,10 +22,9 @@
 class AudioWidget final : public GUI::Widget {
     C_OBJECT(AudioWidget)
 public:
-    AudioWidget(NonnullRefPtr<Core::ConfigFile> config, int initial_volume, bool initial_mute_state)
+    AudioWidget(int initial_volume, bool initial_mute_state)
         : m_audio_client(Audio::ClientConnection::construct())
-        , m_config(move(config))
-        , m_show_percent(m_config->read_bool_entry("Applet", "ShowPercent", false))
+        , m_show_percent(Config::read_bool("AudioApplet", "Applet", "ShowPercent", false))
         , m_audio_muted(initial_mute_state)
         , m_audio_volume(initial_volume)
     {
@@ -82,13 +81,9 @@ public:
                 window()->resize(44, 16);
                 m_percent_box->set_tooltip("Hide percent");
             }
-            reposition_slider_window();
             GUI::Application::the()->hide_tooltip();
 
-            m_config->write_bool_entry("Applet", "ShowPercent", m_show_percent);
-            auto sync_success = m_config->sync();
-            if (!sync_success)
-                warnln("Could not write applet configuration.");
+            Config::write_bool("AudioApplet", "Applet", "ShowPercent", m_show_percent);
         };
 
         m_slider = m_root_container->add<GUI::VerticalSlider>();
@@ -156,6 +151,11 @@ private:
         }
     }
 
+    virtual void applet_area_rect_change_event(GUI::AppletAreaRectChangeEvent&) override
+    {
+        reposition_slider_window();
+    }
+
     void open()
     {
         reposition_slider_window();
@@ -191,7 +191,6 @@ private:
     };
 
     NonnullRefPtr<Audio::ClientConnection> m_audio_client;
-    NonnullRefPtr<Core::ConfigFile> m_config;
     Vector<VolumeBitmapPair, 5> m_volume_level_bitmaps;
     bool m_show_percent { false };
     bool m_audio_muted { false };
@@ -211,22 +210,21 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    auto config = Core::ConfigFile::get_for_app("AudioApplet");
-    // To not upset the audio server state, we responsibly read this once.
-    auto audio_master_config = Core::ConfigFile::get_for_app("Audio");
-
     auto app = GUI::Application::construct(argc, argv);
+    Config::pledge_domains({ "Audio", "AudioApplet" });
 
     auto window = GUI::Window::construct();
     window->set_has_alpha_channel(true);
     window->set_title("Audio");
     window->set_window_type(GUI::WindowType::Applet);
 
-    window->set_main_widget<AudioWidget>(config, audio_master_config->read_num_entry("Master", "Volume", 100), audio_master_config->read_bool_entry("Master", "Mute", false));
+    auto initial_volume = Config::read_i32("Audio", "Master", "Volume", 100);
+    auto initial_mute = Config::read_bool("Audio", "Master", "Mute", false);
+    window->set_main_widget<AudioWidget>(initial_volume, initial_mute);
     window->show();
 
     // This positioning code depends on the window actually existing.
-    if (!config->read_bool_entry("Applet", "ShowPercent")) {
+    if (!Config::read_bool("AudioApplet", "Applet", "ShowPercent", false)) {
         window->resize(16, 16);
     } else {
         window->resize(44, 16);
@@ -236,14 +234,10 @@ int main(int argc, char** argv)
         perror("unveil");
         return 1;
     }
-    if (unveil(config->filename().characters(), "rwc") < 0) {
-        perror("unveil");
-        return 1;
-    }
 
     unveil(nullptr, nullptr);
 
-    if (pledge("stdio recvfd sendfd rpath wpath cpath", nullptr) < 0) {
+    if (pledge("stdio recvfd sendfd rpath", nullptr) < 0) {
         perror("pledge");
         return 1;
     }

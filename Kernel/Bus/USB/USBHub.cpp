@@ -15,34 +15,18 @@ namespace Kernel::USB {
 
 KResultOr<NonnullRefPtr<Hub>> Hub::try_create_root_hub(NonnullRefPtr<USBController> controller, DeviceSpeed device_speed)
 {
-    auto pipe_or_error = Pipe::try_create_pipe(controller, Pipe::Type::Control, Pipe::Direction::Bidirectional, 0, 8, 0);
-    if (pipe_or_error.is_error())
-        return pipe_or_error.error();
-
-    auto hub = AK::try_create<Hub>(controller, device_speed, pipe_or_error.release_value());
-    if (!hub)
-        return ENOMEM;
-
     // NOTE: Enumeration does not happen here, as the controller must know what the device address is at all times during enumeration to intercept requests.
-
-    return hub.release_nonnull();
+    auto pipe = TRY(Pipe::try_create_pipe(controller, Pipe::Type::Control, Pipe::Direction::Bidirectional, 0, 8, 0));
+    auto hub = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Hub(controller, device_speed, move(pipe))));
+    return hub;
 }
 
 KResultOr<NonnullRefPtr<Hub>> Hub::try_create_from_device(Device const& device)
 {
-    auto pipe_or_error = Pipe::try_create_pipe(device.controller(), Pipe::Type::Control, Pipe::Direction::Bidirectional, 0, device.device_descriptor().max_packet_size, device.address());
-    if (pipe_or_error.is_error())
-        return pipe_or_error.error();
-
-    auto hub = AK::try_create<Hub>(device, pipe_or_error.release_value());
-    if (!hub)
-        return ENOMEM;
-
-    auto result = hub->enumerate_and_power_on_hub();
-    if (result.is_error())
-        return result;
-
-    return hub.release_nonnull();
+    auto pipe = TRY(Pipe::try_create_pipe(device.controller(), Pipe::Type::Control, Pipe::Direction::Bidirectional, 0, device.device_descriptor().max_packet_size, device.address()));
+    auto hub = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Hub(device, move(pipe))));
+    TRY(hub->enumerate_and_power_on_hub());
+    return hub;
 }
 
 Hub::Hub(NonnullRefPtr<USBController> controller, DeviceSpeed device_speed, NonnullOwnPtr<Pipe> default_pipe)
@@ -70,13 +54,11 @@ KResult Hub::enumerate_and_power_on_hub()
     USBHubDescriptor descriptor {};
 
     // Get the first hub descriptor. All hubs are required to have a hub descriptor at index 0. USB 2.0 Specification Section 11.24.2.5.
-    auto transfer_length_or_error = m_default_pipe->control_transfer(USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST | USB_REQUEST_TYPE_CLASS, HubRequest::GET_DESCRIPTOR, (DESCRIPTOR_TYPE_HUB << 8), 0, sizeof(USBHubDescriptor), &descriptor);
-    if (transfer_length_or_error.is_error())
-        return transfer_length_or_error.error();
+    auto transfer_length = TRY(m_default_pipe->control_transfer(USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST | USB_REQUEST_TYPE_CLASS, HubRequest::GET_DESCRIPTOR, (DESCRIPTOR_TYPE_HUB << 8), 0, sizeof(USBHubDescriptor), &descriptor));
 
     // FIXME: This be "not equal to" instead of "less than", but control transfers report a higher transfer length than expected.
-    if (transfer_length_or_error.value() < sizeof(USBHubDescriptor)) {
-        dbgln("USB Hub: Unexpected hub descriptor size. Expected {}, got {}", sizeof(USBHubDescriptor), transfer_length_or_error.value());
+    if (transfer_length < sizeof(USBHubDescriptor)) {
+        dbgln("USB Hub: Unexpected hub descriptor size. Expected {}, got {}", sizeof(USBHubDescriptor), transfer_length);
         return EIO;
     }
 
@@ -112,13 +94,11 @@ KResult Hub::get_port_status(u8 port, HubStatus& hub_status)
     if (port == 0 || port > m_hub_descriptor.number_of_downstream_ports)
         return EINVAL;
 
-    auto transfer_length_or_error = m_default_pipe->control_transfer(USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST | USB_REQUEST_TYPE_CLASS | USB_REQUEST_RECIPIENT_OTHER, HubRequest::GET_STATUS, 0, port, sizeof(HubStatus), &hub_status);
-    if (transfer_length_or_error.is_error())
-        return transfer_length_or_error.error();
+    auto transfer_length = TRY(m_default_pipe->control_transfer(USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST | USB_REQUEST_TYPE_CLASS | USB_REQUEST_RECIPIENT_OTHER, HubRequest::GET_STATUS, 0, port, sizeof(HubStatus), &hub_status));
 
     // FIXME: This be "not equal to" instead of "less than", but control transfers report a higher transfer length than expected.
-    if (transfer_length_or_error.value() < sizeof(HubStatus)) {
-        dbgln("USB Hub: Unexpected hub status size. Expected {}, got {}.", sizeof(HubStatus), transfer_length_or_error.value());
+    if (transfer_length < sizeof(HubStatus)) {
+        dbgln("USB Hub: Unexpected hub status size. Expected {}, got {}.", sizeof(HubStatus), transfer_length);
         return EIO;
     }
 
@@ -132,10 +112,7 @@ KResult Hub::clear_port_feature(u8 port, HubFeatureSelector feature_selector)
     if (port == 0 || port > m_hub_descriptor.number_of_downstream_ports)
         return EINVAL;
 
-    auto result = m_default_pipe->control_transfer(USB_REQUEST_TRANSFER_DIRECTION_HOST_TO_DEVICE | USB_REQUEST_TYPE_CLASS | USB_REQUEST_RECIPIENT_OTHER, HubRequest::CLEAR_FEATURE, feature_selector, port, 0, nullptr);
-    if (result.is_error())
-        return result.error();
-
+    TRY(m_default_pipe->control_transfer(USB_REQUEST_TRANSFER_DIRECTION_HOST_TO_DEVICE | USB_REQUEST_TYPE_CLASS | USB_REQUEST_RECIPIENT_OTHER, HubRequest::CLEAR_FEATURE, feature_selector, port, 0, nullptr));
     return KSuccess;
 }
 
@@ -146,10 +123,7 @@ KResult Hub::set_port_feature(u8 port, HubFeatureSelector feature_selector)
     if (port == 0 || port > m_hub_descriptor.number_of_downstream_ports)
         return EINVAL;
 
-    auto result = m_default_pipe->control_transfer(USB_REQUEST_TRANSFER_DIRECTION_HOST_TO_DEVICE | USB_REQUEST_TYPE_CLASS | USB_REQUEST_RECIPIENT_OTHER, HubRequest::SET_FEATURE, feature_selector, port, 0, nullptr);
-    if (result.is_error())
-        return result.error();
-
+    TRY(m_default_pipe->control_transfer(USB_REQUEST_TRANSFER_DIRECTION_HOST_TO_DEVICE | USB_REQUEST_TYPE_CLASS | USB_REQUEST_RECIPIENT_OTHER, HubRequest::SET_FEATURE, feature_selector, port, 0, nullptr));
     return KSuccess;
 }
 

@@ -5,7 +5,9 @@ else()
     add_compile_options(-Os)
 endif()
 
-if ("${SERENITY_ARCH}" STREQUAL "i686")
+if ("${SERENITY_ARCH}" STREQUAL "aarch64")
+    set(KERNEL_ARCH aarch64)
+elseif ("${SERENITY_ARCH}" STREQUAL "i686")
     set(KERNEL_ARCH i386)
 elseif("${SERENITY_ARCH}" STREQUAL "x86_64")
     set(KERNEL_ARCH x86_64)
@@ -25,30 +27,28 @@ set(KERNEL_SOURCES
     Arch/PC/BIOS.cpp
     Arch/x86/SmapDisabler.h
     Bus/PCI/Access.cpp
+    Bus/PCI/API.cpp
     Bus/PCI/Device.cpp
-    Bus/PCI/DeviceController.cpp
-    Bus/PCI/IOAccess.cpp
-    Bus/PCI/MMIOAccess.cpp
     Bus/PCI/Initializer.cpp
-    Bus/PCI/WindowedMMIOAccess.cpp
+    Bus/PCI/SysFSPCI.cpp
     Bus/USB/SysFSUSB.cpp
-    Bus/USB/UHCIController.cpp
-    Bus/USB/UHCIRootHub.cpp
+    Bus/USB/UHCI/UHCIController.cpp
+    Bus/USB/UHCI/UHCIRootHub.cpp
     Bus/USB/USBController.cpp
     Bus/USB/USBDevice.cpp
     Bus/USB/USBHub.cpp
     Bus/USB/USBManagement.cpp
     Bus/USB/USBPipe.cpp
     Bus/USB/USBTransfer.cpp
-    Bus/VirtIO/VirtIO.cpp
-    Bus/VirtIO/VirtIOConsole.cpp
-    Bus/VirtIO/VirtIOConsolePort.cpp
-    Bus/VirtIO/VirtIOQueue.cpp
-    Bus/VirtIO/VirtIORNG.cpp
+    Bus/VirtIO/Console.cpp
+    Bus/VirtIO/ConsolePort.cpp
+    Bus/VirtIO/Device.cpp
+    Bus/VirtIO/Queue.cpp
+    Bus/VirtIO/RNG.cpp
     CMOS.cpp
     CommandLine.cpp
     ConsoleDevice.cpp
-    CoreDump.cpp
+    Coredump.cpp
     Devices/AsyncDeviceRequest.cpp
     Devices/BlockDevice.cpp
     Devices/CharacterDevice.cpp
@@ -109,19 +109,19 @@ set(KERNEL_SOURCES
     FileSystem/AnonymousFile.cpp
     FileSystem/BlockBasedFileSystem.cpp
     FileSystem/Custody.cpp
-    FileSystem/DevFS.cpp
     FileSystem/DevPtsFS.cpp
+    FileSystem/DevTmpFS.cpp
     FileSystem/Ext2FileSystem.cpp
     FileSystem/FIFO.cpp
     FileSystem/File.cpp
     FileSystem/FileBackedFileSystem.cpp
-    FileSystem/FileDescription.cpp
     FileSystem/FileSystem.cpp
     FileSystem/Inode.cpp
     FileSystem/InodeFile.cpp
     FileSystem/InodeWatcher.cpp
     FileSystem/ISO9660FileSystem.cpp
     FileSystem/Mount.cpp
+    FileSystem/OpenFileDescription.cpp
     FileSystem/Plan9FileSystem.cpp
     FileSystem/ProcFS.cpp
     FileSystem/SysFS.cpp
@@ -151,7 +151,7 @@ set(KERNEL_SOURCES
     Memory/PhysicalRegion.cpp
     Memory/PhysicalZone.cpp
     Memory/PrivateInodeVMObject.cpp
-    Memory/ProcessPagingScope.cpp
+        Memory/ScopedAddressSpaceSwitcher.cpp
     Memory/Region.cpp
     Memory/RingBuffer.cpp
     Memory/ScatterGatherList.cpp
@@ -160,6 +160,7 @@ set(KERNEL_SOURCES
     Memory/VirtualRange.cpp
     Memory/VirtualRangeAllocator.cpp
     MiniStdLib.cpp
+    Locking/LockRank.cpp
     Locking/Mutex.cpp
     Net/E1000ENetworkAdapter.cpp
     Net/E1000NetworkAdapter.cpp
@@ -284,24 +285,26 @@ set(KERNEL_SOURCES
     kprintf.cpp
 )
 
-set(KERNEL_SOURCES
-    ${KERNEL_SOURCES}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/${KERNEL_ARCH}/ASM_wrapper.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/${KERNEL_ARCH}/Boot/ap_setup.S
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/${KERNEL_ARCH}/InterruptEntry.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/${KERNEL_ARCH}/Processor.cpp
-)
+if ("${SERENITY_ARCH}" STREQUAL "i686" OR "${SERENITY_ARCH}" STREQUAL "x86_64")
+    set(KERNEL_SOURCES
+        ${KERNEL_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/${KERNEL_ARCH}/ASM_wrapper.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/${KERNEL_ARCH}/Boot/ap_setup.S
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/${KERNEL_ARCH}/InterruptEntry.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/${KERNEL_ARCH}/Processor.cpp
+    )
 
-set(KERNEL_SOURCES
-    ${KERNEL_SOURCES}
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/ASM_wrapper.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/CPU.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/Interrupts.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/Processor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/ProcessorInfo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/SafeMem.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/TrapFrame.cpp
-)
+    set(KERNEL_SOURCES
+        ${KERNEL_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/ASM_wrapper.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/CPU.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/Interrupts.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/Processor.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/ProcessorInfo.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/SafeMem.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86/common/TrapFrame.cpp
+    )
+endif()
 
 set(AK_SOURCES
     ../AK/FlyString.cpp
@@ -341,18 +344,29 @@ set(CRYPTO_SOURCES
     ../Userland/Libraries/LibCrypto/Hash/SHA2.cpp
 )
 
-set(SOURCES
-    ${KERNEL_SOURCES}
-    ${AK_SOURCES}
-    ${ELF_SOURCES}
-    ${VT_SOURCES}
-    ${KEYBOARD_SOURCES}
-    ${CRYPTO_SOURCES}
-)
+if (NOT "${SERENITY_ARCH}" STREQUAL "aarch64")
+    set(SOURCES
+        ${KERNEL_SOURCES}
+        ${SOURCES}
+        ${AK_SOURCES}
+        ${ELF_SOURCES}
+        ${VT_SOURCES}
+        ${KEYBOARD_SOURCES}
+        ${CRYPTO_SOURCES}
+    )
+else()
+    set(SOURCES
+        Arch/aarch64/dummy.cpp
+    )
+endif()
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-warning-option -Wvla -Wnull-dereference")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti -ffreestanding -fbuiltin")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mno-80387 -mno-mmx -mno-sse -mno-sse2")
+
+if ("${SERENITY_ARCH}" STREQUAL "i686" OR "${SERENITY_ARCH}" STREQUAL "x86_64")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mno-80387 -mno-mmx -mno-sse -mno-sse2")
+endif()
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-asynchronous-unwind-tables")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstack-protector-strong")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions")
@@ -396,7 +410,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-pie")
 # secure to run in production builds. Useful for coverage guided fuzzing.
 if (ENABLE_KERNEL_COVERAGE_COLLECTION)
     add_definitions(-DENABLE_KERNEL_COVERAGE_COLLECTION)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize-coverage=trace-pc")
+    add_compile_options(-fsanitize-coverage=trace-pc)
     set(KCOV_EXCLUDED_SOURCES
         # Make sure we don't instrument any code called from __sanitizer_cov_trace_pc
         # otherwise we'll end up with recursive calls to that function.
@@ -406,7 +420,7 @@ if (ENABLE_KERNEL_COVERAGE_COLLECTION)
         ../Kernel/Devices/KCOVDevice.cpp
         ../Kernel/Devices/KCOVInstance.cpp
         ../Kernel/FileSystem/File.cpp
-        ../Kernel/FileSystem/FileDescription.cpp
+        ../Kernel/FileSystem/OpenFileDescription.cpp
         ../Kernel/Heap/SlabAllocator.cpp
         ../Kernel/init.cpp
         ../Kernel/SanCov.cpp
@@ -428,7 +442,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined")
 # is not currently meant to be used, besides when developing Kernel ASAN support.
 #
 if (ENABLE_KERNEL_ADDRESS_SANITIZER)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=kernel-address")
+    add_compile_options(-fsanitize=kernel-address)
 endif()
 
 add_compile_definitions(KERNEL)
@@ -443,7 +457,9 @@ if (USE_CLANG_TOOLCHAIN)
     add_link_options(LINKER:--build-id=none)
 endif()
 
-add_library(kernel_heap STATIC ${KERNEL_HEAP_SOURCES})
+if (NOT "${SERENITY_ARCH}" STREQUAL "aarch64")
+    add_library(kernel_heap STATIC ${KERNEL_HEAP_SOURCES})
+endif()
 
 if (${CMAKE_HOST_SYSTEM_NAME} MATCHES SerenityOS)
     include_directories(/usr/local/include/c++/${GCC_VERSION}/)
@@ -484,13 +500,16 @@ if (ENABLE_KERNEL_LTO)
     set_property(TARGET Kernel PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
-if (USE_CLANG_TOOLCHAIN)
-    target_link_libraries(Kernel kernel_heap clang_rt.builtins-${SERENITY_CLANG_ARCH})
-else()
-    target_link_libraries(Kernel kernel_heap gcc)
+if (NOT "${SERENITY_ARCH}" STREQUAL "aarch64")
+    if (USE_CLANG_TOOLCHAIN)
+        target_link_libraries(Kernel kernel_heap clang_rt.builtins-${SERENITY_CLANG_ARCH})
+    else()
+        target_link_libraries(Kernel kernel_heap gcc)
+    endif()
+
+    add_dependencies(Kernel kernel_heap)
 endif()
 
-add_dependencies(Kernel kernel_heap)
 
 add_custom_command(
     TARGET Kernel POST_BUILD

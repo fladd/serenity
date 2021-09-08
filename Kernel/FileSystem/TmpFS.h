@@ -19,7 +19,7 @@ class TmpFS final : public FileSystem {
 
 public:
     virtual ~TmpFS() override;
-    static RefPtr<TmpFS> create();
+    static KResultOr<NonnullRefPtr<TmpFS>> try_create();
     virtual KResult initialize() override;
 
     virtual StringView class_name() const override { return "TmpFS"sv; }
@@ -34,7 +34,7 @@ private:
     RefPtr<TmpFSInode> m_root_inode;
 
     HashMap<InodeIndex, NonnullRefPtr<TmpFSInode>> m_inodes;
-    RefPtr<Inode> get_inode(InodeIdentifier identifier) const;
+    KResultOr<NonnullRefPtr<Inode>> get_inode(InodeIdentifier identifier) const;
     void register_inode(TmpFSInode&);
     void unregister_inode(InodeIdentifier);
 
@@ -52,17 +52,17 @@ public:
     const TmpFS& fs() const { return static_cast<const TmpFS&>(Inode::fs()); }
 
     // ^Inode
-    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer& buffer, FileDescription*) const override;
+    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer& buffer, OpenFileDescription*) const override;
     virtual InodeMetadata metadata() const override;
     virtual KResult traverse_as_directory(Function<bool(FileSystem::DirectoryEntryView const&)>) const override;
     virtual KResultOr<NonnullRefPtr<Inode>> lookup(StringView name) override;
     virtual void flush_metadata() override;
-    virtual KResultOr<size_t> write_bytes(off_t, size_t, const UserOrKernelBuffer& buffer, FileDescription*) override;
-    virtual KResultOr<NonnullRefPtr<Inode>> create_child(StringView name, mode_t, dev_t, uid_t, gid_t) override;
+    virtual KResultOr<size_t> write_bytes(off_t, size_t, const UserOrKernelBuffer& buffer, OpenFileDescription*) override;
+    virtual KResultOr<NonnullRefPtr<Inode>> create_child(StringView name, mode_t, dev_t, UserID, GroupID) override;
     virtual KResult add_child(Inode&, const StringView& name, mode_t) override;
     virtual KResult remove_child(const StringView& name) override;
     virtual KResult chmod(mode_t) override;
-    virtual KResult chown(uid_t, gid_t) override;
+    virtual KResult chown(UserID, GroupID) override;
     virtual KResult truncate(u64) override;
     virtual KResult set_atime(time_t) override;
     virtual KResult set_ctime(time_t) override;
@@ -70,9 +70,9 @@ public:
     virtual void one_ref_left() override;
 
 private:
-    TmpFSInode(TmpFS& fs, InodeMetadata metadata, InodeIdentifier parent);
-    static RefPtr<TmpFSInode> create(TmpFS&, InodeMetadata metadata, InodeIdentifier parent);
-    static RefPtr<TmpFSInode> create_root(TmpFS&);
+    TmpFSInode(TmpFS& fs, const InodeMetadata& metadata, InodeIdentifier parent);
+    static KResultOr<NonnullRefPtr<TmpFSInode>> try_create(TmpFS&, InodeMetadata const& metadata, InodeIdentifier parent);
+    static KResultOr<NonnullRefPtr<TmpFSInode>> try_create_root(TmpFS&);
     void notify_watchers();
 
     struct Child {

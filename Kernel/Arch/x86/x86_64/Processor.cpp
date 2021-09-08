@@ -53,9 +53,9 @@ NAKED void do_assume_context(Thread*, u32)
     // clang-format on
 }
 
-String Processor::platform_string() const
+StringView Processor::platform_string()
 {
-    return "x86_64";
+    return "x86_64"sv;
 }
 
 // FIXME: For the most part this is a copy of the i386-specific function, get rid of the code duplication
@@ -164,7 +164,7 @@ FlatPtr Processor::init_context(Thread& thread, bool leave_crit)
 
 void Processor::switch_context(Thread*& from_thread, Thread*& to_thread)
 {
-    VERIFY(!in_irq());
+    VERIFY(!m_in_irq);
     VERIFY(m_in_critical == 1);
     VERIFY(is_kernel_mode());
 

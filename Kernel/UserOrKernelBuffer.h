@@ -1,12 +1,12 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
+ * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/String.h>
 #include <AK/Types.h>
 #include <AK/Userspace.h>
 #include <Kernel/Memory/MemoryManager.h>
@@ -54,42 +54,43 @@ public:
         return offset_buffer;
     }
 
-    [[nodiscard]] String copy_into_string(size_t size) const;
-    [[nodiscard]] KResultOr<NonnullOwnPtr<KString>> try_copy_into_kstring(size_t) const;
-    [[nodiscard]] bool write(const void* src, size_t offset, size_t len);
-    [[nodiscard]] bool write(const void* src, size_t len)
+    KResultOr<NonnullOwnPtr<KString>> try_copy_into_kstring(size_t) const;
+    KResult write(const void* src, size_t offset, size_t len);
+    KResult write(const void* src, size_t len)
     {
         return write(src, 0, len);
     }
-    [[nodiscard]] bool write(ReadonlyBytes bytes)
+    KResult write(ReadonlyBytes bytes)
     {
         return write(bytes.data(), bytes.size());
     }
 
-    [[nodiscard]] bool read(void* dest, size_t offset, size_t len) const;
-    [[nodiscard]] bool read(void* dest, size_t len) const
+    KResult read(void* dest, size_t offset, size_t len) const;
+    KResult read(void* dest, size_t len) const
     {
         return read(dest, 0, len);
     }
-    [[nodiscard]] bool read(Bytes bytes) const
+
+    KResult read(Bytes bytes) const
     {
         return read(bytes.data(), bytes.size());
     }
 
-    [[nodiscard]] bool memset(int value, size_t offset, size_t len);
-    [[nodiscard]] bool memset(int value, size_t len)
+    KResult memset(int value, size_t offset, size_t len);
+    KResult memset(int value, size_t len)
     {
         return memset(value, 0, len);
     }
 
     template<size_t BUFFER_BYTES, typename F>
-    [[nodiscard]] KResultOr<size_t> write_buffered(size_t offset, size_t len, F f)
+    KResultOr<size_t> write_buffered(size_t offset, size_t len, F f)
     {
         if (!m_buffer)
             return EFAULT;
         if (is_kernel_buffer()) {
             // We're transferring directly to a kernel buffer, bypass
-            return f(m_buffer + offset, len);
+            Bytes bytes { m_buffer + offset, len };
+            return f(bytes);
         }
 
         // The purpose of using a buffer on the stack is that we can
@@ -98,13 +99,13 @@ public:
         size_t nwritten = 0;
         while (nwritten < len) {
             auto to_copy = min(sizeof(buffer), len - nwritten);
-            KResultOr<size_t> copied_or_error = f(buffer, to_copy);
+            Bytes bytes { buffer, to_copy };
+            KResultOr<size_t> copied_or_error = f(bytes);
             if (copied_or_error.is_error())
                 return copied_or_error.error();
             auto copied = copied_or_error.value();
             VERIFY(copied <= to_copy);
-            if (!write(buffer, nwritten, copied))
-                return EFAULT;
+            TRY(write(buffer, nwritten, copied));
             nwritten += copied;
             if (copied < to_copy)
                 break;
@@ -112,19 +113,19 @@ public:
         return nwritten;
     }
     template<size_t BUFFER_BYTES, typename F>
-    [[nodiscard]] KResultOr<size_t> write_buffered(size_t len, F f)
+    KResultOr<size_t> write_buffered(size_t len, F f)
     {
         return write_buffered<BUFFER_BYTES, F>(0, len, f);
     }
 
     template<size_t BUFFER_BYTES, typename F>
-    [[nodiscard]] KResultOr<size_t> read_buffered(size_t offset, size_t len, F f) const
+    KResultOr<size_t> read_buffered(size_t offset, size_t len, F f) const
     {
         if (!m_buffer)
             return EFAULT;
         if (is_kernel_buffer()) {
             // We're transferring directly from a kernel buffer, bypass
-            return f(m_buffer + offset, len);
+            return f({ m_buffer + offset, len });
         }
 
         // The purpose of using a buffer on the stack is that we can
@@ -133,9 +134,9 @@ public:
         size_t nread = 0;
         while (nread < len) {
             auto to_copy = min(sizeof(buffer), len - nread);
-            if (!read(buffer, nread, to_copy))
-                return EFAULT;
-            KResultOr<size_t> copied_or_error = f(buffer, to_copy);
+            TRY(read(buffer, nread, to_copy));
+            ReadonlyBytes read_only_bytes { buffer, to_copy };
+            KResultOr<size_t> copied_or_error = f(read_only_bytes);
             if (copied_or_error.is_error())
                 return copied_or_error.error();
             auto copied = copied_or_error.value();
@@ -147,7 +148,7 @@ public:
         return nread;
     }
     template<size_t BUFFER_BYTES, typename F>
-    [[nodiscard]] KResultOr<size_t> read_buffered(size_t len, F f) const
+    KResultOr<size_t> read_buffered(size_t len, F f) const
     {
         return read_buffered<BUFFER_BYTES, F>(0, len, f);
     }

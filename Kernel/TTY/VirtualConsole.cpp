@@ -120,7 +120,7 @@ UNMAP_AFTER_INIT void VirtualConsole::initialize()
 
     // Allocate twice of the max row * max column * sizeof(Cell) to ensure we can have some sort of history mechanism...
     auto size = GraphicsManagement::the().console()->max_column() * GraphicsManagement::the().console()->max_row() * sizeof(Cell) * 2;
-    m_cells = MM.allocate_kernel_region(Memory::page_round_up(size), "Virtual Console Cells", Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow);
+    m_cells = MM.allocate_kernel_region(Memory::page_round_up(size), "Virtual Console Cells", Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow).release_value();
 
     // Add the lines, so we also ensure they will be flushed now
     for (size_t row = 0; row < rows(); row++) {
@@ -139,7 +139,7 @@ void VirtualConsole::refresh_after_resolution_change()
     // Note: From now on, columns() and rows() are updated with the new settings.
 
     auto size = GraphicsManagement::the().console()->max_column() * GraphicsManagement::the().console()->max_row() * sizeof(Cell) * 2;
-    auto new_cells = MM.allocate_kernel_region(Memory::page_round_up(size), "Virtual Console Cells", Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow);
+    auto new_cells = MM.allocate_kernel_region(Memory::page_round_up(size), "Virtual Console Cells", Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow).release_value();
 
     if (rows() < old_rows_count) {
         m_lines.shrink(rows());
@@ -259,11 +259,11 @@ void VirtualConsole::on_key_pressed(KeyEvent event)
 
 KResultOr<size_t> VirtualConsole::on_tty_write(const UserOrKernelBuffer& data, size_t size)
 {
-    ScopedSpinLock global_lock(ConsoleManagement::the().tty_write_lock());
-    auto result = data.read_buffered<512>(size, [&](u8 const* buffer, size_t buffer_bytes) {
-        for (size_t i = 0; i < buffer_bytes; ++i)
-            m_console_impl.on_input(buffer[i]);
-        return buffer_bytes;
+    SpinlockLocker global_lock(ConsoleManagement::the().tty_write_lock());
+    auto result = data.read_buffered<512>(size, [&](ReadonlyBytes buffer) {
+        for (const auto& byte : buffer)
+            m_console_impl.on_input(byte);
+        return buffer.size();
     });
     if (m_active)
         flush_dirty_lines();
@@ -357,11 +357,6 @@ void VirtualConsole::emit(const u8* data, size_t size)
 void VirtualConsole::set_cursor_style(VT::CursorStyle)
 {
     // Do nothing
-}
-
-String VirtualConsole::device_name() const
-{
-    return String::formatted("tty{}", minor());
 }
 
 void VirtualConsole::echo(u8 ch)

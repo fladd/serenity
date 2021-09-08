@@ -13,9 +13,9 @@
 
 namespace Kernel {
 
-static Singleton<SpinLockProtectedValue<SlavePTY::List>> s_all_instances;
+static Singleton<SpinlockProtected<SlavePTY::List>> s_all_instances;
 
-SpinLockProtectedValue<SlavePTY::List>& SlavePTY::all_instances()
+SpinlockProtected<SlavePTY::List>& SlavePTY::all_instances()
 {
     return s_all_instances;
 }
@@ -39,9 +39,9 @@ SlavePTY::SlavePTY(MasterPTY& master, unsigned index)
     , m_index(index)
 {
     m_tty_name = String::formatted("/dev/pts/{}", m_index);
-    auto process = Process::current();
-    set_uid(process->uid());
-    set_gid(process->gid());
+    auto& process = Process::current();
+    set_uid(process.uid());
+    set_gid(process.gid());
     set_size(80, 25);
 
     SlavePTY::all_instances().with([&](auto& list) { list.append(*this); });
@@ -67,10 +67,10 @@ void SlavePTY::echo(u8 ch)
 
 void SlavePTY::on_master_write(const UserOrKernelBuffer& buffer, size_t size)
 {
-    auto result = buffer.read_buffered<128>(size, [&](u8 const* data, size_t data_size) {
-        for (size_t i = 0; i < data_size; ++i)
-            emit(data[i], false);
-        return data_size;
+    auto result = buffer.read_buffered<128>(size, [&](ReadonlyBytes data) {
+        for (const auto& byte : data)
+            emit(byte, false);
+        return data.size();
     });
     if (!result.is_error())
         evaluate_block_conditions();
@@ -82,19 +82,19 @@ KResultOr<size_t> SlavePTY::on_tty_write(const UserOrKernelBuffer& data, size_t 
     return m_master->on_slave_write(data, size);
 }
 
-bool SlavePTY::can_write(const FileDescription&, size_t) const
+bool SlavePTY::can_write(const OpenFileDescription&, size_t) const
 {
     return m_master->can_write_from_slave();
 }
 
-bool SlavePTY::can_read(const FileDescription& description, size_t offset) const
+bool SlavePTY::can_read(const OpenFileDescription& description, size_t offset) const
 {
     if (m_master->is_closed())
         return true;
     return TTY::can_read(description, offset);
 }
 
-KResultOr<size_t> SlavePTY::read(FileDescription& description, u64 offset, UserOrKernelBuffer& buffer, size_t size)
+KResultOr<size_t> SlavePTY::read(OpenFileDescription& description, u64 offset, UserOrKernelBuffer& buffer, size_t size)
 {
     if (m_master->is_closed())
         return 0;
@@ -107,14 +107,9 @@ KResult SlavePTY::close()
     return KSuccess;
 }
 
-String SlavePTY::device_name() const
+FileBlockerSet& SlavePTY::blocker_set()
 {
-    return String::formatted("{}", minor());
-}
-
-FileBlockCondition& SlavePTY::block_condition()
-{
-    return m_master->block_condition();
+    return m_master->blocker_set();
 }
 
 }

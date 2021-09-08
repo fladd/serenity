@@ -74,7 +74,7 @@ endpoint WindowServer
     invalidate_rect(i32 window_id, Vector<Gfx::IntRect> rects, bool ignore_occlusion) =|
     did_finish_painting(i32 window_id, Vector<Gfx::IntRect> rects) =|
 
-    set_global_cursor_tracking(i32 window_id, bool enabled) =|
+    set_global_mouse_tracking(bool enabled) =|
     set_window_opacity(i32 window_id, float opacity) =|
 
     set_window_alpha_hit_threshold(i32 window_id, float threshold) =|
@@ -113,6 +113,9 @@ endpoint WindowServer
     set_system_theme(String theme_path, [UTF8] String theme_name) => (bool success)
     get_system_theme() => ([UTF8] String theme_name)
     refresh_system_theme() =|
+
+    apply_cursor_theme(String name) =|
+    get_cursor_theme() => (String name)
 
     set_system_fonts(String default_font_query, String fixed_width_font_query) => (bool success)
 

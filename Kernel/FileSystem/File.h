@@ -11,8 +11,8 @@
 #include <AK/String.h>
 #include <AK/Types.h>
 #include <AK/Weakable.h>
+#include <Kernel/API/KResult.h>
 #include <Kernel/Forward.h>
-#include <Kernel/KResult.h>
 #include <Kernel/UnixTypes.h>
 #include <Kernel/UserOrKernelBuffer.h>
 #include <Kernel/VirtualAddress.h>
@@ -21,29 +21,29 @@ namespace Kernel {
 
 class File;
 
-class FileBlockCondition : public Thread::BlockCondition {
+class FileBlockerSet final : public Thread::BlockerSet {
 public:
-    FileBlockCondition() { }
+    FileBlockerSet() { }
 
     virtual bool should_add_blocker(Thread::Blocker& b, void* data) override
     {
         VERIFY(b.blocker_type() == Thread::Blocker::Type::File);
         auto& blocker = static_cast<Thread::FileBlocker&>(b);
-        return !blocker.unblock(true, data);
+        return !blocker.unblock_if_conditions_are_met(true, data);
     }
 
-    void unblock()
+    void unblock_all_blockers_whose_conditions_are_met()
     {
-        ScopedSpinLock lock(m_lock);
-        do_unblock([&](auto& b, void* data, bool&) {
+        SpinlockLocker lock(m_lock);
+        BlockerSet::unblock_all_blockers_whose_conditions_are_met_locked([&](auto& b, void* data, bool&) {
             VERIFY(b.blocker_type() == Thread::Blocker::Type::File);
             auto& blocker = static_cast<Thread::FileBlocker&>(b);
-            return blocker.unblock(false, data);
+            return blocker.unblock_if_conditions_are_met(false, data);
         });
     }
 };
 
-// File is the base class for anything that can be referenced by a FileDescription.
+// File is the base class for anything that can be referenced by a OpenFileDescription.
 //
 // The most important functions in File are:
 //
@@ -77,26 +77,26 @@ public:
     virtual bool unref() const;
     virtual ~File();
 
-    virtual KResultOr<NonnullRefPtr<FileDescription>> open(int options);
+    virtual KResultOr<NonnullRefPtr<OpenFileDescription>> open(int options);
     virtual KResult close();
 
-    virtual bool can_read(const FileDescription&, size_t) const = 0;
-    virtual bool can_write(const FileDescription&, size_t) const = 0;
+    virtual bool can_read(const OpenFileDescription&, size_t) const = 0;
+    virtual bool can_write(const OpenFileDescription&, size_t) const = 0;
 
-    virtual KResult attach(FileDescription&);
-    virtual void detach(FileDescription&);
-    virtual void did_seek(FileDescription&, off_t) { }
-    virtual KResultOr<size_t> read(FileDescription&, u64, UserOrKernelBuffer&, size_t) = 0;
-    virtual KResultOr<size_t> write(FileDescription&, u64, const UserOrKernelBuffer&, size_t) = 0;
-    virtual KResult ioctl(FileDescription&, unsigned request, Userspace<void*> arg);
-    virtual KResultOr<Memory::Region*> mmap(Process&, FileDescription&, Memory::VirtualRange const&, u64 offset, int prot, bool shared);
+    virtual KResult attach(OpenFileDescription&);
+    virtual void detach(OpenFileDescription&);
+    virtual void did_seek(OpenFileDescription&, off_t) { }
+    virtual KResultOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) = 0;
+    virtual KResultOr<size_t> write(OpenFileDescription&, u64, const UserOrKernelBuffer&, size_t) = 0;
+    virtual KResult ioctl(OpenFileDescription&, unsigned request, Userspace<void*> arg);
+    virtual KResultOr<Memory::Region*> mmap(Process&, OpenFileDescription&, Memory::VirtualRange const&, u64 offset, int prot, bool shared);
     virtual KResult stat(::stat&) const { return EBADF; }
 
-    virtual String absolute_path(const FileDescription&) const = 0;
+    virtual String absolute_path(const OpenFileDescription&) const = 0;
 
     virtual KResult truncate(u64) { return EINVAL; }
-    virtual KResult chown(FileDescription&, uid_t, gid_t) { return EBADF; }
-    virtual KResult chmod(FileDescription&, mode_t) { return EBADF; }
+    virtual KResult chown(OpenFileDescription&, UserID, GroupID) { return EBADF; }
+    virtual KResult chmod(OpenFileDescription&, mode_t) { return EBADF; }
 
     virtual StringView class_name() const = 0;
 
@@ -112,7 +112,7 @@ public:
     virtual bool is_socket() const { return false; }
     virtual bool is_inode_watcher() const { return false; }
 
-    virtual FileBlockCondition& block_condition() { return m_block_condition; }
+    virtual FileBlockerSet& blocker_set() { return m_blocker_set; }
 
     size_t attach_count() const { return m_attach_count; }
 
@@ -121,7 +121,7 @@ protected:
 
     void evaluate_block_conditions()
     {
-        if (Processor::current().in_irq()) {
+        if (Processor::current_in_irq()) {
             // If called from an IRQ handler we need to delay evaluation
             // and unblocking of waiting threads. Note that this File
             // instance may be deleted until the deferred call is executed!
@@ -137,11 +137,11 @@ protected:
 private:
     ALWAYS_INLINE void do_evaluate_block_conditions()
     {
-        VERIFY(!Processor::current().in_irq());
-        block_condition().unblock();
+        VERIFY(!Processor::current_in_irq());
+        blocker_set().unblock_all_blockers_whose_conditions_are_met();
     }
 
-    FileBlockCondition m_block_condition;
+    FileBlockerSet m_blocker_set;
     size_t m_attach_count { 0 };
 };
 

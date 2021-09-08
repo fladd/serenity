@@ -1,4 +1,5 @@
 set(AK_TEST_SOURCES
+    TestFixedPoint.cpp
     TestAllOf.cpp
     TestAnyOf.cpp
     TestArray.cpp
@@ -51,6 +52,7 @@ set(AK_TEST_SOURCES
     TestSourceLocation.cpp
     TestSpan.cpp
     TestStack.cpp
+    TestStdLibExtras.cpp
     TestString.cpp
     TestStringUtils.cpp
     TestStringView.cpp
@@ -68,6 +70,6 @@ set(AK_TEST_SOURCES
     TestWeakPtr.cpp
 )
 
-foreach(source ${AK_TEST_SOURCES})
-    serenity_test(${source} AK)
+foreach(source IN LISTS AK_TEST_SOURCES)
+    serenity_test("${source}" AK)
 endforeach()

@@ -6,7 +6,7 @@
 
 #include <AK/Singleton.h>
 #include <Kernel/Debug.h>
-#include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Sections.h>
 #include <Kernel/TTY/MasterPTY.h>
 #include <Kernel/TTY/PTYMultiplexer.h>
@@ -35,22 +35,18 @@ UNMAP_AFTER_INIT PTYMultiplexer::~PTYMultiplexer()
 {
 }
 
-KResultOr<NonnullRefPtr<FileDescription>> PTYMultiplexer::open(int options)
+KResultOr<NonnullRefPtr<OpenFileDescription>> PTYMultiplexer::open(int options)
 {
-    return m_freelist.with_exclusive([&](auto& freelist) -> KResultOr<NonnullRefPtr<FileDescription>> {
+    return m_freelist.with_exclusive([&](auto& freelist) -> KResultOr<NonnullRefPtr<OpenFileDescription>> {
         if (freelist.is_empty())
             return EBUSY;
 
         auto master_index = freelist.take_last();
-        auto master = MasterPTY::try_create(master_index);
-        if (!master)
-            return ENOMEM;
+        auto master = TRY(MasterPTY::try_create(master_index));
         dbgln_if(PTMX_DEBUG, "PTYMultiplexer::open: Vending master {}", master->index());
-        auto description = FileDescription::create(*master);
-        if (!description.is_error()) {
-            description.value()->set_rw_mode(options);
-            description.value()->set_file_flags(options);
-        }
+        auto description = TRY(OpenFileDescription::try_create(*master));
+        description->set_rw_mode(options);
+        description->set_file_flags(options);
         return description;
     });
 }

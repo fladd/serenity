@@ -17,13 +17,10 @@ inline void DoubleBuffer::compute_lockfree_metadata()
     m_space_for_writing = m_capacity - m_write_buffer->size;
 }
 
-OwnPtr<DoubleBuffer> DoubleBuffer::try_create(size_t capacity)
+KResultOr<NonnullOwnPtr<DoubleBuffer>> DoubleBuffer::try_create(size_t capacity)
 {
-    auto storage = KBuffer::try_create_with_size(capacity * 2, Memory::Region::Access::ReadWrite, "DoubleBuffer");
-    if (!storage)
-        return {};
-
-    return adopt_own_if_nonnull(new (nothrow) DoubleBuffer(capacity, storage.release_nonnull()));
+    auto storage = TRY(KBuffer::try_create_with_size(capacity * 2, Memory::Region::Access::ReadWrite, "DoubleBuffer"));
+    return adopt_nonnull_own_or_enomem(new (nothrow) DoubleBuffer(capacity, move(storage)));
 }
 
 DoubleBuffer::DoubleBuffer(size_t capacity, NonnullOwnPtr<KBuffer> storage)
@@ -41,8 +38,6 @@ DoubleBuffer::DoubleBuffer(size_t capacity, NonnullOwnPtr<KBuffer> storage)
 
 void DoubleBuffer::flip()
 {
-    if (m_storage->is_null())
-        return;
     VERIFY(m_read_buffer_index == m_read_buffer->size);
     swap(m_read_buffer, m_write_buffer);
     m_write_buffer->size = 0;
@@ -52,13 +47,12 @@ void DoubleBuffer::flip()
 
 KResultOr<size_t> DoubleBuffer::write(const UserOrKernelBuffer& data, size_t size)
 {
-    if (!size || m_storage->is_null())
+    if (!size)
         return 0;
     MutexLocker locker(m_lock);
     size_t bytes_to_write = min(size, m_space_for_writing);
     u8* write_ptr = m_write_buffer->data + m_write_buffer->size;
-    if (!data.read(write_ptr, bytes_to_write))
-        return EFAULT;
+    TRY(data.read(write_ptr, bytes_to_write));
     m_write_buffer->size += bytes_to_write;
     compute_lockfree_metadata();
     if (m_unblock_callback && !m_empty)
@@ -68,7 +62,7 @@ KResultOr<size_t> DoubleBuffer::write(const UserOrKernelBuffer& data, size_t siz
 
 KResultOr<size_t> DoubleBuffer::read(UserOrKernelBuffer& data, size_t size)
 {
-    if (!size || m_storage->is_null())
+    if (!size)
         return 0;
     MutexLocker locker(m_lock);
     if (m_read_buffer_index >= m_read_buffer->size && m_write_buffer->size != 0)
@@ -76,8 +70,7 @@ KResultOr<size_t> DoubleBuffer::read(UserOrKernelBuffer& data, size_t size)
     if (m_read_buffer_index >= m_read_buffer->size)
         return 0;
     size_t nread = min(m_read_buffer->size - m_read_buffer_index, size);
-    if (!data.write(m_read_buffer->data + m_read_buffer_index, nread))
-        return EFAULT;
+    TRY(data.write(m_read_buffer->data + m_read_buffer_index, nread));
     m_read_buffer_index += nread;
     compute_lockfree_metadata();
     if (m_unblock_callback && m_space_for_writing > 0)
@@ -87,7 +80,7 @@ KResultOr<size_t> DoubleBuffer::read(UserOrKernelBuffer& data, size_t size)
 
 KResultOr<size_t> DoubleBuffer::peek(UserOrKernelBuffer& data, size_t size)
 {
-    if (!size || m_storage->is_null())
+    if (!size)
         return 0;
     MutexLocker locker(m_lock);
     if (m_read_buffer_index >= m_read_buffer->size && m_write_buffer->size != 0) {
@@ -96,8 +89,7 @@ KResultOr<size_t> DoubleBuffer::peek(UserOrKernelBuffer& data, size_t size)
     if (m_read_buffer_index >= m_read_buffer->size)
         return 0;
     size_t nread = min(m_read_buffer->size - m_read_buffer_index, size);
-    if (!data.write(m_read_buffer->data + m_read_buffer_index, nread))
-        return EFAULT;
+    TRY(data.write(m_read_buffer->data + m_read_buffer_index, nread));
     compute_lockfree_metadata();
     if (m_unblock_callback && m_space_for_writing > 0)
         m_unblock_callback();

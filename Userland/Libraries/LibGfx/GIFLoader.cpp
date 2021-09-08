@@ -228,9 +228,9 @@ public:
 private:
     void init_code_table()
     {
-        m_code_table.clear();
+        m_code_table.ensure_capacity(m_table_capacity);
         for (u16 i = 0; i < m_table_capacity; ++i) {
-            m_code_table.append({ (u8)i });
+            m_code_table.unchecked_append({ (u8)i });
         }
         m_original_code_table = m_code_table;
     }
@@ -334,6 +334,9 @@ static bool decode_frame(GIFLoadingContext& context, size_t frame_index)
             // underlying image contents, therefore we restore the saved previous frame buffer.
             copy_frame_buffer(*context.frame_buffer, *context.prev_frame_buffer);
         }
+
+        if (image.lzw_min_code_size > 8)
+            return false;
 
         LZWDecoder decoder(image.lzw_encoded_bytes, image.lzw_min_code_size);
 

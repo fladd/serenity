@@ -20,7 +20,7 @@ class Plan9FS final : public FileBackedFileSystem {
 
 public:
     virtual ~Plan9FS() override;
-    static NonnullRefPtr<Plan9FS> create(FileDescription&);
+    static KResultOr<NonnullRefPtr<Plan9FS>> try_create(OpenFileDescription&);
 
     virtual KResult initialize() override;
 
@@ -46,13 +46,13 @@ public:
     class Message;
 
 private:
-    Plan9FS(FileDescription&);
+    Plan9FS(OpenFileDescription&);
 
     class Blocker;
 
-    class Plan9FSBlockCondition : public Thread::BlockCondition {
+    class Plan9FSBlockerSet final : public Thread::BlockerSet {
     public:
-        Plan9FSBlockCondition(Plan9FS& fs)
+        Plan9FSBlockerSet(Plan9FS& fs)
             : m_fs(fs)
         {
         }
@@ -66,11 +66,11 @@ private:
 
     private:
         Plan9FS& m_fs;
-        mutable SpinLock<u8> m_lock;
+        mutable Spinlock m_lock;
     };
 
     struct ReceiveCompletion : public RefCounted<ReceiveCompletion> {
-        mutable SpinLock<u8> lock;
+        mutable Spinlock lock;
         bool completed { false };
         const u16 tag;
         OwnPtr<Message> message;
@@ -87,11 +87,11 @@ private:
             , m_message(message)
             , m_completion(move(completion))
         {
-            set_block_condition(fs.m_completion_blocker);
         }
+        virtual bool setup_blocker() override;
         virtual StringView state_string() const override { return "Waiting"sv; }
         virtual Type blocker_type() const override { return Type::Plan9FS; }
-        virtual void not_blocking(bool) override;
+        virtual void will_unblock_immediately_without_blocking(UnblockImmediatelyReason) override;
 
         const NonnullRefPtr<ReceiveCompletion>& completion() const { return m_completion; }
         u16 tag() const { return m_completion->tag; }
@@ -136,10 +136,10 @@ private:
     size_t m_max_message_size { 4 * KiB };
 
     Mutex m_send_lock { "Plan9FS send" };
-    Plan9FSBlockCondition m_completion_blocker;
+    Plan9FSBlockerSet m_completion_blocker;
     HashMap<u16, NonnullRefPtr<ReceiveCompletion>> m_completions;
 
-    SpinLock<u8> m_thread_lock;
+    Spinlock m_thread_lock;
     RefPtr<Thread> m_thread;
     Atomic<bool> m_thread_running { false };
     Atomic<bool, AK::MemoryOrder::memory_order_relaxed> m_thread_shutdown { false };
@@ -156,20 +156,20 @@ public:
     // ^Inode
     virtual InodeMetadata metadata() const override;
     virtual void flush_metadata() override;
-    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer& buffer, FileDescription*) const override;
-    virtual KResultOr<size_t> write_bytes(off_t, size_t, const UserOrKernelBuffer& data, FileDescription*) override;
+    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer& buffer, OpenFileDescription*) const override;
+    virtual KResultOr<size_t> write_bytes(off_t, size_t, const UserOrKernelBuffer& data, OpenFileDescription*) override;
     virtual KResult traverse_as_directory(Function<bool(FileSystem::DirectoryEntryView const&)>) const override;
     virtual KResultOr<NonnullRefPtr<Inode>> lookup(StringView name) override;
-    virtual KResultOr<NonnullRefPtr<Inode>> create_child(StringView name, mode_t, dev_t, uid_t, gid_t) override;
+    virtual KResultOr<NonnullRefPtr<Inode>> create_child(StringView name, mode_t, dev_t, UserID, GroupID) override;
     virtual KResult add_child(Inode&, const StringView& name, mode_t) override;
     virtual KResult remove_child(const StringView& name) override;
     virtual KResult chmod(mode_t) override;
-    virtual KResult chown(uid_t, gid_t) override;
+    virtual KResult chown(UserID, GroupID) override;
     virtual KResult truncate(u64) override;
 
 private:
     Plan9FSInode(Plan9FS&, u32 fid);
-    static NonnullRefPtr<Plan9FSInode> create(Plan9FS&, u32 fid);
+    static KResultOr<NonnullRefPtr<Plan9FSInode>> try_create(Plan9FS&, u32 fid);
 
     enum class GetAttrMask : u64 {
         Mode = 0x1,

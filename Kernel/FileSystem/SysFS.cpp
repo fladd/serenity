@@ -6,6 +6,7 @@
 
 #include <AK/Singleton.h>
 #include <AK/StringView.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/FileSystem/SysFS.h>
 #include <Kernel/Sections.h>
 
@@ -35,6 +36,11 @@ UNMAP_AFTER_INIT void SysFSComponentRegistry::register_new_component(SysFSCompon
     m_root_directory->m_components.append(component);
 }
 
+SysFSComponentRegistry::DevicesList& SysFSComponentRegistry::devices_list()
+{
+    return m_devices_list;
+}
+
 NonnullRefPtr<SysFSRootDirectory> SysFSRootDirectory::create()
 {
     return adopt_ref(*new (nothrow) SysFSRootDirectory);
@@ -57,17 +63,18 @@ SysFSRootDirectory::SysFSRootDirectory()
     : SysFSDirectory(".")
 {
     auto buses_directory = SysFSBusDirectory::must_create(*this);
+    auto devices_directory = SysFSDevicesDirectory::must_create(*this);
     m_components.append(buses_directory);
+    m_components.append(devices_directory);
     m_buses_directory = buses_directory;
 }
 
-NonnullRefPtr<SysFS> SysFS::create()
+KResultOr<NonnullRefPtr<SysFS>> SysFS::try_create()
 {
-    return adopt_ref(*new (nothrow) SysFS);
+    return adopt_nonnull_ref_or_enomem(new (nothrow) SysFS);
 }
 
 SysFS::SysFS()
-    : m_root_inode(SysFSComponentRegistry::the().root_directory().to_inode(*this))
 {
 }
 
@@ -77,6 +84,7 @@ SysFS::~SysFS()
 
 KResult SysFS::initialize()
 {
+    m_root_inode = TRY(SysFSComponentRegistry::the().root_directory().to_inode(*this));
     return KSuccess;
 }
 
@@ -85,9 +93,9 @@ Inode& SysFS::root_inode()
     return *m_root_inode;
 }
 
-NonnullRefPtr<SysFSInode> SysFSInode::create(SysFS const& fs, SysFSComponent const& component)
+KResultOr<NonnullRefPtr<SysFSInode>> SysFSInode::try_create(SysFS const& fs, SysFSComponent const& component)
 {
-    return adopt_ref(*new (nothrow) SysFSInode(fs, component));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) SysFSInode(fs, component));
 }
 
 SysFSInode::SysFSInode(SysFS const& fs, SysFSComponent const& component)
@@ -96,7 +104,23 @@ SysFSInode::SysFSInode(SysFS const& fs, SysFSComponent const& component)
 {
 }
 
-KResultOr<size_t> SysFSInode::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, FileDescription* fd) const
+void SysFSInode::did_seek(OpenFileDescription& description, off_t new_offset)
+{
+    if (new_offset != 0)
+        return;
+    auto result = m_associated_component->refresh_data(description);
+    if (result.is_error()) {
+        // Subsequent calls to read will return EIO!
+        dbgln("SysFS: Could not refresh contents: {}", result.error());
+    }
+}
+
+KResult SysFSInode::attach(OpenFileDescription& description)
+{
+    return m_associated_component->refresh_data(description);
+}
+
+KResultOr<size_t> SysFSInode::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, OpenFileDescription* fd) const
 {
     return m_associated_component->read_bytes(offset, count, buffer, fd);
 }
@@ -113,13 +137,13 @@ KResultOr<NonnullRefPtr<Inode>> SysFSInode::lookup(StringView)
 
 InodeMetadata SysFSInode::metadata() const
 {
-    MutexLocker locker(m_inode_lock);
+    // NOTE: No locking required as m_associated_component or its component index will never change during our lifetime.
     InodeMetadata metadata;
     metadata.inode = { fsid(), m_associated_component->component_index() };
     metadata.mode = S_IFREG | S_IRUSR | S_IRGRP | S_IROTH;
     metadata.uid = 0;
     metadata.gid = 0;
-    metadata.size = m_associated_component->size();
+    metadata.size = 0;
     metadata.mtime = mepoch;
     return metadata;
 }
@@ -128,12 +152,12 @@ void SysFSInode::flush_metadata()
 {
 }
 
-KResultOr<size_t> SysFSInode::write_bytes(off_t offset, size_t count, UserOrKernelBuffer const& buffer, FileDescription* fd)
+KResultOr<size_t> SysFSInode::write_bytes(off_t offset, size_t count, UserOrKernelBuffer const& buffer, OpenFileDescription* fd)
 {
     return m_associated_component->write_bytes(offset, count, buffer, fd);
 }
 
-KResultOr<NonnullRefPtr<Inode>> SysFSInode::create_child(StringView, mode_t, dev_t, uid_t, gid_t)
+KResultOr<NonnullRefPtr<Inode>> SysFSInode::create_child(StringView, mode_t, dev_t, UserID, GroupID)
 {
     return EROFS;
 }
@@ -153,7 +177,7 @@ KResult SysFSInode::chmod(mode_t)
     return EPERM;
 }
 
-KResult SysFSInode::chown(uid_t, gid_t)
+KResult SysFSInode::chown(UserID, GroupID)
 {
     return EPERM;
 }
@@ -163,9 +187,9 @@ KResult SysFSInode::truncate(u64)
     return EPERM;
 }
 
-NonnullRefPtr<SysFSDirectoryInode> SysFSDirectoryInode::create(SysFS const& sysfs, SysFSComponent const& component)
+KResultOr<NonnullRefPtr<SysFSDirectoryInode>> SysFSDirectoryInode::try_create(SysFS const& sysfs, SysFSComponent const& component)
 {
-    return adopt_ref(*new (nothrow) SysFSDirectoryInode(sysfs, component));
+    return adopt_nonnull_ref_or_enomem(new (nothrow) SysFSDirectoryInode(sysfs, component));
 }
 
 SysFSDirectoryInode::SysFSDirectoryInode(SysFS const& fs, SysFSComponent const& component)
@@ -179,7 +203,7 @@ SysFSDirectoryInode::~SysFSDirectoryInode()
 
 InodeMetadata SysFSDirectoryInode::metadata() const
 {
-    MutexLocker locker(m_inode_lock);
+    // NOTE: No locking required as m_associated_component or its component index will never change during our lifetime.
     InodeMetadata metadata;
     metadata.inode = { fsid(), m_associated_component->component_index() };
     metadata.mode = S_IFDIR | S_IRUSR | S_IRGRP | S_IROTH | S_IXOTH;
@@ -201,7 +225,7 @@ KResultOr<NonnullRefPtr<Inode>> SysFSDirectoryInode::lookup(StringView name)
     auto component = m_associated_component->lookup(name);
     if (!component)
         return ENOENT;
-    return component->to_inode(fs());
+    return TRY(component->to_inode(fs()));
 }
 
 SysFSBusDirectory& SysFSComponentRegistry::buses_directory()

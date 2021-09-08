@@ -10,7 +10,6 @@
 #include <AK/CharacterTypes.h>
 #include <AK/GenericLexer.h>
 #include <AK/StringBuilder.h>
-#include <AK/Utf16View.h>
 
 namespace JS {
 
@@ -57,7 +56,7 @@ double Token::double_value() const
 
     StringBuilder builder;
 
-    for (auto ch : m_value) {
+    for (auto ch : value()) {
         if (ch == '_')
             continue;
         builder.append(ch);
@@ -76,7 +75,7 @@ double Token::double_value() const
             return static_cast<double>(strtoul(value_string.characters() + 2, nullptr, 2));
         } else if (is_ascii_digit(value_string[1])) {
             // also octal, but syntax error in strict mode
-            if (!m_value.contains('8') && !m_value.contains('9'))
+            if (!value().contains('8') && !value().contains('9'))
                 return static_cast<double>(strtoul(value_string.characters() + 1, nullptr, 8));
         }
     }
@@ -96,28 +95,45 @@ String Token::string_value(StringValueStatus& status) const
     VERIFY(type() == TokenType::StringLiteral || type() == TokenType::TemplateLiteralString);
 
     auto is_template = type() == TokenType::TemplateLiteralString;
-    GenericLexer lexer(is_template ? m_value : m_value.substring_view(1, m_value.length() - 2));
+    GenericLexer lexer(is_template ? value() : value().substring_view(1, value().length() - 2));
 
     auto encoding_failure = [&status](StringValueStatus parse_status) -> String {
         status = parse_status;
         return {};
     };
 
-    auto decode_surrogate = [&lexer]() -> Optional<u16> {
-        u16 surrogate = 0;
-        for (int j = 0; j < 4; ++j) {
-            if (!lexer.next_is(is_ascii_hex_digit))
-                return {};
-            surrogate = (surrogate << 4u) | hex2int(lexer.consume());
-        }
-        return surrogate;
-    };
-
     StringBuilder builder;
     while (!lexer.is_eof()) {
         // No escape, consume one char and continue
         if (!lexer.next_is('\\')) {
+
+            if (is_template && lexer.next_is('\r')) {
+                lexer.ignore();
+                if (lexer.next_is('\n'))
+                    lexer.ignore();
+
+                builder.append('\n');
+                continue;
+            }
+
             builder.append(lexer.consume());
+            continue;
+        }
+
+        // Unicode escape
+        if (lexer.next_is("\\u"sv)) {
+            auto code_point_or_error = lexer.consume_escaped_code_point();
+
+            if (code_point_or_error.is_error()) {
+                switch (code_point_or_error.error()) {
+                case GenericLexer::UnicodeEscapeError::MalformedUnicodeEscape:
+                    return encoding_failure(StringValueStatus::MalformedUnicodeEscape);
+                case GenericLexer::UnicodeEscapeError::UnicodeEscapeOverflow:
+                    return encoding_failure(StringValueStatus::UnicodeEscapeOverflow);
+                }
+            }
+
+            builder.append_code_point(code_point_or_error.value());
             continue;
         }
 
@@ -126,6 +142,8 @@ String Token::string_value(StringValueStatus& status) const
 
         // Line continuation
         if (lexer.next_is('\n') || lexer.next_is('\r')) {
+            if (lexer.next_is("\r\n"))
+                lexer.ignore();
             lexer.ignore();
             continue;
         }
@@ -147,47 +165,6 @@ String Token::string_value(StringValueStatus& status) const
                 return encoding_failure(StringValueStatus::MalformedHexEscape);
             auto code_point = hex2int(lexer.consume()) * 16 + hex2int(lexer.consume());
             VERIFY(code_point <= 255);
-            builder.append_code_point(code_point);
-            continue;
-        }
-        // Unicode escape
-        if (lexer.next_is('u')) {
-            lexer.ignore();
-            u32 code_point = 0;
-            if (lexer.next_is('{')) {
-                lexer.ignore();
-                while (true) {
-                    if (!lexer.next_is(is_ascii_hex_digit))
-                        return encoding_failure(StringValueStatus::MalformedUnicodeEscape);
-                    auto new_code_point = (code_point << 4u) | hex2int(lexer.consume());
-                    if (new_code_point < code_point)
-                        return encoding_failure(StringValueStatus::UnicodeEscapeOverflow);
-                    code_point = new_code_point;
-                    if (lexer.next_is('}'))
-                        break;
-                }
-                lexer.ignore();
-            } else {
-                auto high_surrogate = decode_surrogate();
-                if (!high_surrogate.has_value())
-                    return encoding_failure(StringValueStatus::MalformedUnicodeEscape);
-
-                if (Utf16View::is_high_surrogate(*high_surrogate) && lexer.consume_specific("\\u"sv)) {
-                    auto low_surrogate = decode_surrogate();
-                    if (!low_surrogate.has_value())
-                        return encoding_failure(StringValueStatus::MalformedUnicodeEscape);
-
-                    if (Utf16View::is_low_surrogate(*low_surrogate)) {
-                        code_point = Utf16View::decode_surrogate_pair(*high_surrogate, *low_surrogate);
-                    } else {
-                        builder.append_code_point(*high_surrogate);
-                        code_point = *low_surrogate;
-                    }
-
-                } else {
-                    code_point = *high_surrogate;
-                }
-            }
             builder.append_code_point(code_point);
             continue;
         }
@@ -227,10 +204,19 @@ String Token::string_value(StringValueStatus& status) const
     return builder.to_string();
 }
 
+// 12.8.6.2 Static Semantics: TRV, https://tc39.es/ecma262/multipage/ecmascript-language-lexical-grammar.html#sec-static-semantics-trv
+String Token::raw_template_value() const
+{
+    String base = value().to_string();
+    base.replace("\r\n", "\n", true);
+    base.replace("\r", "\n", true);
+    return base;
+}
+
 bool Token::bool_value() const
 {
     VERIFY(type() == TokenType::BoolLiteral);
-    return m_value == "true";
+    return value() == "true";
 }
 
 bool Token::is_identifier_name() const
@@ -239,6 +225,7 @@ bool Token::is_identifier_name() const
     // The standard defines this reversed: Identifiers are IdentifierNames except reserved words
     // https://tc39.es/ecma262/#prod-Identifier
     return m_type == TokenType::Identifier
+        || m_type == TokenType::EscapedKeyword
         || m_type == TokenType::Await
         || m_type == TokenType::BoolLiteral
         || m_type == TokenType::Break

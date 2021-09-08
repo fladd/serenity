@@ -27,6 +27,7 @@ using ByteCodeValueType = u64;
 #define ENUMERATE_OPCODES                          \
     __ENUMERATE_OPCODE(Compare)                    \
     __ENUMERATE_OPCODE(Jump)                       \
+    __ENUMERATE_OPCODE(JumpNonEmpty)               \
     __ENUMERATE_OPCODE(ForkJump)                   \
     __ENUMERATE_OPCODE(ForkStay)                   \
     __ENUMERATE_OPCODE(FailForks)                  \
@@ -41,6 +42,8 @@ using ByteCodeValueType = u64;
     __ENUMERATE_OPCODE(GoBack)                     \
     __ENUMERATE_OPCODE(ClearCaptureGroup)          \
     __ENUMERATE_OPCODE(Repeat)                     \
+    __ENUMERATE_OPCODE(ResetRepeat)                \
+    __ENUMERATE_OPCODE(Checkpoint)                 \
     __ENUMERATE_OPCODE(Exit)
 
 // clang-format off
@@ -318,44 +321,76 @@ public:
         empend(static_cast<ByteCodeValueType>(OpCodeId::ForkJump));
         empend(right.size() + 2); // Jump to the _ALT label
 
-        for (auto& op : right)
-            append(move(op));
+        extend(right);
 
         empend(static_cast<ByteCodeValueType>(OpCodeId::Jump));
         empend(left.size()); // Jump to the _END label
 
         // LABEL _ALT = bytecode.size() + 2
 
-        for (auto& op : left)
-            append(move(op));
+        extend(left);
 
         // LABEL _END = alterantive_bytecode.size
     }
 
     template<typename T>
-    static void transform_bytecode_repetition_min_max(ByteCode& bytecode_to_repeat, T minimum, Optional<T> maximum, size_t repetition_mark_id, bool greedy = true) requires(IsIntegral<T>)
+    static void transform_bytecode_repetition_min_max(ByteCode& bytecode_to_repeat, T minimum, Optional<T> maximum, size_t min_repetition_mark_id, size_t max_repetition_mark_id, bool greedy = true) requires(IsIntegral<T>)
     {
         ByteCode new_bytecode;
-        new_bytecode.insert_bytecode_repetition_n(bytecode_to_repeat, minimum, repetition_mark_id);
+        new_bytecode.insert_bytecode_repetition_n(bytecode_to_repeat, minimum, min_repetition_mark_id);
 
         if (maximum.has_value()) {
+            // (REPEAT REGEXP MIN)
+            // LABEL _MAX_LOOP            |
+            // FORK END                   |
+            // REGEXP                     |
+            // REPEAT _MAX_LOOP MAX-MIN   | if max > min
+            // FORK END                   |
+            // REGEXP                     |
+            // LABEL END                  |
+            // RESET _MAX_LOOP            |
             auto jump_kind = static_cast<ByteCodeValueType>(greedy ? OpCodeId::ForkStay : OpCodeId::ForkJump);
             if (maximum.value() > minimum) {
-                auto diff = maximum.value() - minimum;
                 new_bytecode.empend(jump_kind);
-                new_bytecode.empend(diff * (bytecode_to_repeat.size() + 2)); // Jump to the _END label
-
-                for (T i = 0; i < diff; ++i) {
-                    new_bytecode.extend(bytecode_to_repeat);
+                new_bytecode.empend((ByteCodeValueType)0); // Placeholder for the jump target.
+                auto pre_loop_fork_jump_index = new_bytecode.size();
+                new_bytecode.extend(bytecode_to_repeat);
+                auto repetitions = maximum.value() - minimum;
+                auto fork_jump_address = new_bytecode.size();
+                if (repetitions > 1) {
+                    new_bytecode.empend((ByteCodeValueType)OpCodeId::Repeat);
+                    new_bytecode.empend(bytecode_to_repeat.size() + 2);
+                    new_bytecode.empend(static_cast<ByteCodeValueType>(repetitions - 1));
+                    new_bytecode.empend(max_repetition_mark_id);
                     new_bytecode.empend(jump_kind);
-                    new_bytecode.empend((diff - i - 1) * (bytecode_to_repeat.size() + 2)); // Jump to the _END label
+                    new_bytecode.empend((ByteCodeValueType)0); // Placeholder for the jump target.
+                    auto post_loop_fork_jump_index = new_bytecode.size();
+                    new_bytecode.extend(bytecode_to_repeat);
+                    fork_jump_address = new_bytecode.size();
+
+                    new_bytecode[post_loop_fork_jump_index - 1] = (ByteCodeValueType)(fork_jump_address - post_loop_fork_jump_index);
+
+                    new_bytecode.empend((ByteCodeValueType)OpCodeId::ResetRepeat);
+                    new_bytecode.empend((ByteCodeValueType)max_repetition_mark_id);
                 }
+                new_bytecode[pre_loop_fork_jump_index - 1] = (ByteCodeValueType)(fork_jump_address - pre_loop_fork_jump_index);
             }
         } else {
-            // no maximum value set, repeat finding if possible
+            // no maximum value set, repeat finding if possible:
+            // (REPEAT REGEXP MIN)
+            // LABEL _START
+            // CHECKPOINT _C
+            // REGEXP
+            // JUMP_NONEMPTY _C _START FORK
+
+            // Note: This is only safe because REPEAT will leave one iteration outside (see repetition_n)
+            new_bytecode.insert(new_bytecode.size() - bytecode_to_repeat.size(), (ByteCodeValueType)OpCodeId::Checkpoint);
+
             auto jump_kind = static_cast<ByteCodeValueType>(greedy ? OpCodeId::ForkJump : OpCodeId::ForkStay);
+            new_bytecode.empend((ByteCodeValueType)OpCodeId::JumpNonEmpty);
+            new_bytecode.empend(-bytecode_to_repeat.size() - 4 - 1); // Jump to the last iteration
+            new_bytecode.empend(-bytecode_to_repeat.size() - 4 - 1); // if _C is not empty.
             new_bytecode.empend(jump_kind);
-            new_bytecode.empend(-bytecode_to_repeat.size() - 2); // Jump to the last iteration
         }
 
         bytecode_to_repeat = move(new_bytecode);
@@ -388,23 +423,29 @@ public:
     static void transform_bytecode_repetition_min_one(ByteCode& bytecode_to_repeat, bool greedy)
     {
         // LABEL _START = -bytecode_to_repeat.size()
+        // CHECKPOINT _C
         // REGEXP
-        // FORKSTAY _START  (FORKJUMP -> Greedy)
+        // JUMP_NONEMPTY _C _START FORKSTAY (FORKJUMP -> Greedy)
+
+        bytecode_to_repeat.prepend((ByteCodeValueType)OpCodeId::Checkpoint);
+
+        bytecode_to_repeat.empend((ByteCodeValueType)OpCodeId::JumpNonEmpty);
+        bytecode_to_repeat.empend(-bytecode_to_repeat.size() - 3); // Jump to the _START label...
+        bytecode_to_repeat.empend(-bytecode_to_repeat.size() - 2); // ...if _C is not empty
 
         if (greedy)
             bytecode_to_repeat.empend(static_cast<ByteCodeValueType>(OpCodeId::ForkJump));
         else
             bytecode_to_repeat.empend(static_cast<ByteCodeValueType>(OpCodeId::ForkStay));
-
-        bytecode_to_repeat.empend(-(bytecode_to_repeat.size() + 1)); // Jump to the _START label
     }
 
     static void transform_bytecode_repetition_any(ByteCode& bytecode_to_repeat, bool greedy)
     {
         // LABEL _START
         // FORKJUMP _END  (FORKSTAY -> Greedy)
+        // CHECKPOINT _C
         // REGEXP
-        // JUMP  _START
+        // JUMP_NONEMPTY _C _START JUMP
         // LABEL _END
 
         // LABEL _START = m_bytes.size();
@@ -415,13 +456,17 @@ public:
         else
             bytecode.empend(static_cast<ByteCodeValueType>(OpCodeId::ForkJump));
 
-        bytecode.empend(bytecode_to_repeat.size() + 2); // Jump to the _END label
+        bytecode.empend(bytecode_to_repeat.size() + 1 + 4); // Jump to the _END label
 
-        for (auto& op : bytecode_to_repeat)
-            bytecode.append(move(op));
+        auto c_label = bytecode.size();
+        bytecode.empend(static_cast<ByteCodeValueType>(OpCodeId::Checkpoint));
 
-        bytecode.empend(static_cast<ByteCodeValueType>(OpCodeId::Jump));
-        bytecode.empend(-bytecode.size() - 1); // Jump to the _START label
+        bytecode.extend(bytecode_to_repeat);
+
+        bytecode.empend(static_cast<ByteCodeValueType>(OpCodeId::JumpNonEmpty));
+        bytecode.empend(-bytecode.size() - 3);          // Jump(...) to the _START label...
+        bytecode.empend(c_label - bytecode.size() - 2); // ...only if _C passes.
+        bytecode.empend((ByteCodeValueType)OpCodeId::Jump);
         // LABEL _END = bytecode.size()
 
         bytecode_to_repeat = move(bytecode);
@@ -704,6 +749,44 @@ public:
     {
         auto reps = id() < state().repetition_marks.size() ? state().repetition_marks.at(id()) : 0;
         return String::formatted("offset={} count={} id={} rep={}, sp: {}", offset(), count() + 1, id(), reps + 1, state().string_position);
+    }
+};
+
+class OpCode_ResetRepeat : public OpCode {
+public:
+    ExecutionResult execute(MatchInput const& input, MatchState& state) const override;
+    ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::ResetRepeat; }
+    ALWAYS_INLINE size_t size() const override { return 2; }
+    ALWAYS_INLINE size_t id() const { return argument(0); }
+    String const arguments_string() const override
+    {
+        auto reps = id() < state().repetition_marks.size() ? state().repetition_marks.at(id()) : 0;
+        return String::formatted("id={} rep={}", id(), reps + 1);
+    }
+};
+
+class OpCode_Checkpoint final : public OpCode {
+public:
+    ExecutionResult execute(MatchInput const& input, MatchState& state) const override;
+    ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::Checkpoint; }
+    ALWAYS_INLINE size_t size() const override { return 1; }
+    String const arguments_string() const override { return ""; }
+};
+
+class OpCode_JumpNonEmpty final : public OpCode {
+public:
+    ExecutionResult execute(MatchInput const& input, MatchState& state) const override;
+    ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::JumpNonEmpty; }
+    ALWAYS_INLINE size_t size() const override { return 4; }
+    ALWAYS_INLINE ssize_t offset() const { return argument(0); }
+    ALWAYS_INLINE ssize_t checkpoint() const { return argument(1); }
+    ALWAYS_INLINE OpCodeId form() const { return (OpCodeId)argument(2); }
+    String const arguments_string() const override
+    {
+        return String::formatted("{} offset={} [&{}], cp={} [&{}]",
+            opcode_id_name(form()),
+            offset(), state().instruction_position + size() + offset(),
+            checkpoint(), state().instruction_position + size() + checkpoint());
     }
 };
 
